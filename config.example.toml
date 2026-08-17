@@ -1,0 +1,19 @@
+[gemini]
+# The secret itself belongs in .env; this file only names the environment variable.
+api_key_env = "GEMINI_API_KEY"
+generation_model = "gemini-3.7-flash"
+judge_model = "gemini-3.7-flash"
+
+[generation]
+max_questions = 30
+chunk_chars = 12000
+chunk_overlap_chars = 800
+batch_chunks = 8
+unanswerable_ratio = 0.10
+min_topic_questions = 1
+max_topic_share = 0.35
+
+[evaluation]
+request_timeout_seconds = 60
+max_retries = 2
+
