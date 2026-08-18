@@ -8,6 +8,8 @@ from pathlib import Path
 from docx import Document
 from pypdf import PdfReader
 
+from .progress import track
+
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".rst", ".csv", ".json", ".jsonl", ".pdf", ".docx"}
 
@@ -41,14 +43,14 @@ def _read_file(path: Path) -> str:
     raise ValueError(f"Unsupported file type: {path}")
 
 
-def load_chunks(root: Path, chunk_chars: int, overlap_chars: int) -> list[Chunk]:
+def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabled: bool = False) -> list[Chunk]:
     if overlap_chars >= chunk_chars:
         raise ValueError("chunk overlap must be smaller than chunk size")
     files = [p for p in sorted(root.rglob("*")) if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES]
     if not files:
         raise ValueError(f"No supported documents found under {root}")
     chunks: list[Chunk] = []
-    for path in files:
+    for path in track(files, enabled=progress_enabled, description="קורא מסמכים", total=len(files)):
         text = " ".join(_read_file(path).split())
         relative = str(path.relative_to(root))
         step = chunk_chars - overlap_chars
@@ -60,4 +62,3 @@ def load_chunks(root: Path, chunk_chars: int, overlap_chars: int) -> list[Chunk]
     if not chunks:
         raise ValueError("Documents contained no extractable text")
     return chunks
-

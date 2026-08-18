@@ -23,6 +23,9 @@ class Settings:
     max_topic_share: float
     request_timeout_seconds: int
     max_retries: int
+    progress_enabled: bool
+    log_file: str
+    log_level: str
 
 
 def _get(data: dict[str, Any], section: str, key: str, default: Any) -> Any:
@@ -54,5 +57,8 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         max_topic_share=float(_get(data, "generation", "max_topic_share", 0.35)),
         request_timeout_seconds=int(_get(data, "evaluation", "request_timeout_seconds", 60)),
         max_retries=int(_get(data, "evaluation", "max_retries", 2)),
+        progress_enabled=bool(_get(data, "runtime", "progress_enabled", True)),
+        log_file=str(_get(data, "runtime", "log_file", "")),
+        log_level=str(_get(data, "runtime", "log_level", "INFO")),
     )
 

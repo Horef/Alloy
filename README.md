@@ -7,6 +7,8 @@ Two standalone Python components for a fleet of internal knowledge chatbots:
    exports a human-reviewable CSV plus lossless JSONL.
 2. **Evaluation** sends approved questions to any JSON-over-HTTP chatbot, judges answers against the
    reviewed reference and source evidence, and creates CSV/JSONL details plus a simple HTML report.
+3. **Premade-result evaluation** reads existing `.xlsx`, `.csv`, or `.jsonl` question/answer exports
+   and runs the same judge without contacting the chatbot again.
 
 The package does not import or require the existing chatbot platform. Integration is isolated in the
 `ChatbotAdapter` protocol and the included generic HTTP adapter.
@@ -32,8 +34,10 @@ outcomes:
 | Outcome | Meaning |
 |---|---|
 | `correct_answer` | Answerable and correctly answered |
-| `partial_answer` | Useful, but materially incomplete or partly wrong |
-| `incorrect_answer` | Answerable, but answer is wrong |
+| `partial_too_little` | Useful core answer, but necessary information is missing |
+| `partial_too_much` | Core answer is present, but excessive unrelated detail reduces quality |
+| `unrelated_answer` | Clearly off-topic/nonresponsive and unlikely to be mistaken as correct |
+| `misleading_hallucination` | Plausible or assertive but materially false/unsupported |
 | `incorrect_abstention` | Said “I don't know” although the corpus contains the answer |
 | `correct_abstention` | Correctly declined an unanswerable question |
 | `should_have_abstained` | Invented/attempted an answer to an unanswerable question |
@@ -107,6 +111,94 @@ chatbot-eval ... --header 'Authorization=Bearer $CHATBOT_TOKEN'
 
 For fleet integration, implement `ChatbotAdapter.ask(SilverQuestion) -> ChatbotResult`; the
 generation and judging code remains unchanged.
+
+### Evaluate an existing results file
+
+The bundled importer recognizes common English column names and the Hebrew headers in
+`qa-miluim-5_8-results.xlsx`: `שאלה`, `תשובה צפויה`, `תשובה מהמודל`, `מקור`, and `messageId`.
+
+```bash
+chatbot-eval --config config.toml evaluate-file \
+  --results ./qa-miluim-5_8-results.xlsx \
+  --sheet Sheet1 \
+  --output ./outputs/qa-miluim-evaluation
+```
+
+For a different export schema, pass explicit mappings such as:
+
+```bash
+chatbot-eval --config config.toml evaluate-file \
+  --results ./custom-results.xlsx \
+  --question-column prompt \
+  --expected-answer-column gold_answer \
+  --answer-column bot_response \
+  --source-column retrieved_chunks
+```
+
+The required fields are question, expected/reference answer, and chatbot answer. Source, ID, topic,
+answerability, and explicit error columns are optional. Empty answers and recognizable API fault
+payloads are reported as `chatbot_error` and are not sent to the judge.
+
+The importer does not retry errors already stored in a results file: they describe the earlier
+chatbot run, not the current Gemini judging run. Such rows remain visible as infrastructure failures
+but are logged at `INFO`, not as new runtime warnings. Automatic function calling is explicitly
+disabled because generation and judging use structured output only and expose no tools.
+
+If the file has no topic column, add `--infer-topics` to make an additional Gemini clustering call
+(one call per 250 questions) and assign concise Hebrew topic labels before evaluation:
+
+```bash
+chatbot-eval --config config.toml evaluate-file \
+  --results ./qa-miluim-5_8-results.xlsx \
+  --infer-topics \
+  --output ./outputs/qa-miluim-evaluation
+```
+
+## Hebrew reports and retrieval diagnostics
+
+Judge explanations, result labels, CSV headers, and the interactive HTML report are in Hebrew. The
+HTML report is right-to-left and includes KPI cards, outcome and score charts, a retrieval-versus-
+generation pipeline view, per-topic statistics, and searchable/filterable question drill-down with
+the original question, reference answer, chatbot answer, retrieved chunks, and judge explanations.
+
+Retrieved chunks are scored independently from 0 to 4 for:
+
+- relevance to the question;
+- correctness against the reviewed reference answer;
+- completeness/coverage of the facts needed to answer.
+
+`0` means the export did not include retrieved context; it is treated as missing telemetry and is
+excluded from retrieval averages. “Good retrieval + incorrect answer” is reported separately so it
+is easy to identify cases where retrieval found the right information but generation failed to use
+or summarize it.
+
+## Progress and operational logs
+
+Progress bars cover document loading, topic discovery, question generation, premade-file ingestion,
+and judging. Disable them in production either globally in `config.toml`:
+
+```toml
+[runtime]
+progress_enabled = false
+```
+
+or for one command with `--no-progress` (global options go before the subcommand):
+
+```bash
+chatbot-eval --config config.toml --no-progress evaluate-file --results ./results.xlsx
+```
+
+File logging is opt-in and records run counts, row/question IDs, outcomes, latency, and errors without
+logging complete questions, answers, API keys, or authentication headers:
+
+```bash
+chatbot-eval --config config.toml \
+  --log-file ./outputs/logs/evaluation.log \
+  --log-level INFO \
+  evaluate-file --results ./results.xlsx
+```
+
+The same defaults can be set with `runtime.log_file` and `runtime.log_level` in `config.toml`.
 
 ## Recommended evaluation process
 

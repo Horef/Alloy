@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from .labels import ANSWER_SCOPE_HEBREW, INCORRECT_TYPE_HEBREW, OUTCOME_HEBREW
 from .models import EvaluationRecord, SilverQuestion
 
 
@@ -66,21 +67,36 @@ def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuesti
 def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path, jsonl_path = output_dir / "evaluation_details.csv", output_dir / "evaluation_details.jsonl"
-    fields = ["question_id", "topic", "question", "expected_answer", "answerable", "chatbot_answer", "outcome", "correctness", "completeness", "relevance", "groundedness", "explanation", "missing_or_wrong", "latency_ms", "error"]
+    fields = [
+        "מזהה שאלה", "נושא", "שאלה", "תשובה צפויה", "ניתנת למענה", "תשובת הצ׳אטבוט",
+        "מקטעים שאוחזרו", "סיווג", "קוד סיווג", "נכונות", "שלמות", "רלוונטיות",
+        "הישענות על מקורות", "היקף התשובה", "סוג שגיאה", "רלוונטיות המקטעים",
+        "נכונות המקטעים", "כיסוי המידע במקטעים", "הסבר הבדיקה", "מידע חסר או שגוי",
+        "הסבר האחזור", "זמן תגובה במילישניות", "שגיאת מערכת",
+    ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for record in records:
             scores = record.scores
             writer.writerow({
-                "question_id": record.question.id, "topic": record.question.topic,
-                "question": record.question.question, "expected_answer": record.question.expected_answer,
-                "answerable": record.question.answerable, "chatbot_answer": record.result.answer,
-                "outcome": record.outcome.value, "correctness": scores.correctness if scores else "",
-                "completeness": scores.completeness if scores else "", "relevance": scores.relevance if scores else "",
-                "groundedness": scores.groundedness if scores else "", "explanation": scores.explanation if scores else "",
-                "missing_or_wrong": scores.missing_or_wrong if scores else "", "latency_ms": record.result.latency_ms or "",
-                "error": record.result.error or record.judge_error,
+                "מזהה שאלה": record.question.id, "נושא": record.question.topic,
+                "שאלה": record.question.question, "תשובה צפויה": record.question.expected_answer,
+                "ניתנת למענה": "כן" if record.question.answerable else "לא",
+                "תשובת הצ׳אטבוט": record.result.answer, "מקטעים שאוחזרו": record.result.retrieved_context,
+                "סיווג": OUTCOME_HEBREW[record.outcome], "קוד סיווג": record.outcome.value,
+                "נכונות": scores.correctness if scores else "", "שלמות": scores.completeness if scores else "",
+                "רלוונטיות": scores.relevance if scores else "", "הישענות על מקורות": scores.groundedness if scores else "",
+                "היקף התשובה": ANSWER_SCOPE_HEBREW[scores.answer_scope] if scores else "",
+                "סוג שגיאה": INCORRECT_TYPE_HEBREW[scores.incorrect_type] if scores else "",
+                "רלוונטיות המקטעים": scores.retrieval_relevance if scores else "",
+                "נכונות המקטעים": scores.retrieval_correctness if scores else "",
+                "כיסוי המידע במקטעים": scores.retrieval_completeness if scores else "",
+                "הסבר הבדיקה": scores.explanation if scores else "",
+                "מידע חסר או שגוי": scores.missing_or_wrong if scores else "",
+                "הסבר האחזור": scores.retrieval_explanation if scores else "",
+                "זמן תגובה במילישניות": record.result.latency_ms or "",
+                "שגיאת מערכת": record.result.error or record.judge_error,
             })
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for record in records:
