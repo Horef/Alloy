@@ -28,16 +28,6 @@ OUTCOME_COLORS = {
     Outcome.JUDGE_ERROR: "#7c3aed",
 }
 
-SCORE_HEBREW = {
-    "correctness": "נכונות התשובה",
-    "completeness": "שלמות התשובה",
-    "relevance": "רלוונטיות התשובה",
-    "groundedness": "הישענות על המקורות",
-    "retrieval_relevance": "רלוונטיות המקטעים",
-    "retrieval_correctness": "נכונות המקטעים",
-    "retrieval_completeness": "כיסוי המידע במקטעים",
-}
-
 ANSWER_SCOPE_HEBREW = {
     "exact": "היקף מתאים",
     "too_little": "חסר מידע",

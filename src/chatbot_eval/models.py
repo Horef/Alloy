@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SourceRef(BaseModel):
@@ -59,19 +59,36 @@ class ChatbotResult(BaseModel):
 
 
 class JudgeScores(BaseModel):
-    correctness: int = Field(ge=1, le=4)
-    completeness: int = Field(ge=1, le=4)
-    relevance: int = Field(ge=1, le=4)
-    groundedness: int = Field(ge=1, le=4)
+    required_points_total: int = Field(ge=0)
+    answer_points_addressed: int = Field(ge=0)
+    answer_points_correct: int = Field(ge=0)
+    answer_false_claims: int = Field(ge=0)
+    answer_unsupported_claims: int = Field(ge=0)
+    answer_extraneous_claims: int = Field(ge=0)
+    retrieval_points_found: int = Field(ge=0)
+    retrieved_chunks_total: int = Field(ge=0)
+    retrieved_chunks_relevant: int = Field(ge=0)
+    retrieved_chunks_contradictory: int = Field(ge=0)
     answer_scope: Literal["exact", "too_little", "too_much"]
     incorrect_type: Literal["not_applicable", "unrelated", "hallucination"]
-    retrieval_relevance: int = Field(ge=0, le=4)
-    retrieval_correctness: int = Field(ge=0, le=4)
-    retrieval_completeness: int = Field(ge=0, le=4)
     response_is_abstention: bool
     explanation: str
     missing_or_wrong: str
     retrieval_explanation: str
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "JudgeScores":
+        if self.answer_points_correct > self.answer_points_addressed:
+            raise ValueError("answer_points_correct cannot exceed answer_points_addressed")
+        if self.answer_points_addressed > self.required_points_total:
+            raise ValueError("answer_points_addressed cannot exceed required_points_total")
+        if self.retrieval_points_found > self.required_points_total:
+            raise ValueError("retrieval_points_found cannot exceed required_points_total")
+        if self.retrieved_chunks_relevant > self.retrieved_chunks_total:
+            raise ValueError("retrieved_chunks_relevant cannot exceed retrieved_chunks_total")
+        if self.retrieved_chunks_contradictory > self.retrieved_chunks_total:
+            raise ValueError("retrieved_chunks_contradictory cannot exceed retrieved_chunks_total")
+        return self
 
 
 class Outcome(str, Enum):
@@ -94,6 +111,25 @@ class TopicAssignment(BaseModel):
 
 class TopicAssignments(BaseModel):
     assignments: list[TopicAssignment]
+
+
+class InsightIssue(BaseModel):
+    title: str
+    priority: Literal["high", "medium", "low"]
+    confidence: Literal["high", "medium", "low"]
+    evidence_count: int = Field(ge=1)
+    affected_topics: list[str]
+    observed_pattern: str
+    likely_cause_hypothesis: str
+    recommendation: str
+    example_question_ids: list[str]
+
+
+class EvaluationInsights(BaseModel):
+    executive_summary: str
+    strengths: list[str]
+    issues: list[InsightIssue]
+    methodology_note: str
 
 
 class EvaluationRecord(BaseModel):

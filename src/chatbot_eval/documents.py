@@ -50,7 +50,7 @@ def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabl
     if not files:
         raise ValueError(f"No supported documents found under {root}")
     chunks: list[Chunk] = []
-    for path in track(files, enabled=progress_enabled, description="קורא מסמכים", total=len(files)):
+    for path in track(files, enabled=progress_enabled, description="Reading documents", total=len(files)):
         text = " ".join(_read_file(path).split())
         relative = str(path.relative_to(root))
         step = chunk_chars - overlap_chars

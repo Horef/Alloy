@@ -43,9 +43,10 @@ outcomes:
 | `should_have_abstained` | Invented/attempted an answer to an unanswerable question |
 | `chatbot_error` / `judge_error` | Infrastructure failure, kept out of quality scores |
 
-Scores for correctness, completeness, relevance, and groundedness remain available for diagnosis.
-The deterministic abstention pass reduces unnecessary judge calls and makes the answerability
-confusion matrix explicit.
+Instead of overlapping 1-4 grades, the judge decomposes each reference answer into discrete required
+details and records how many were addressed, answered correctly, retrieved, contradicted,
+unsupported, or extraneous. This makes the answerability and retrieval/generation failure modes
+auditable rather than relying on an opaque average score.
 
 ## Setup
 
@@ -161,16 +162,34 @@ HTML report is right-to-left and includes KPI cards, outcome and score charts, a
 generation pipeline view, per-topic statistics, and searchable/filterable question drill-down with
 the original question, reference answer, chatbot answer, retrieved chunks, and judge explanations.
 
-Retrieved chunks are scored independently from 0 to 4 for:
+Retrieved chunks are evaluated with claim-level counts: required information points found, total and
+relevant chunks, and contradictory chunks. Missing retrieved context is treated as missing telemetry,
+not as a zero-quality retrieval. “Good retrieval” means every required reference point was found and
+no retrieved chunk contradicted the reference. “Good retrieval + incorrect answer” is reported
+separately so it is easy to identify cases where retrieval succeeded but generation failed to use or
+summarize the evidence.
 
-- relevance to the question;
-- correctness against the reviewed reference answer;
-- completeness/coverage of the facts needed to answer.
+### Optional cross-result insights
 
-`0` means the export did not include retrieved context; it is treated as missing telemetry and is
-excluded from retrieval averages. “Good retrieval + incorrect answer” is reported separately so it
-is easy to identify cases where retrieval found the right information but generation failed to use
-or summarize it.
+Add `--generate-insights` to perform one additional Gemini analysis after all individual questions
+have been judged:
+
+```bash
+chatbot-eval --config config.toml evaluate-file \
+  --results ./qa-miluim-5_8-results.xlsx \
+  --infer-topics \
+  --generate-insights \
+  --output ./outputs/qa-miluim-evaluation
+```
+
+The Hebrew insights block looks for recurring patterns across question wording, topics, retrieval,
+and generation—for example multi-condition policies, dates/numbers, personal-data questions,
+retrieval noise, correct retrieval ignored by generation, or excessive answers. Each issue includes
+an evidence count, affected topics, example question IDs, confidence, a likely-cause hypothesis, and
+a concrete recommendation. It does not repeat personal values and explicitly warns that detected
+relationships are hypotheses/correlations rather than proven causes. The structured result is also
+saved as `evaluation_insights.json`. If this optional call fails, the normal evaluation report is
+still produced without the insights block.
 
 ## Progress and operational logs
 
@@ -208,8 +227,8 @@ The same defaults can be set with `runtime.log_file` and `runtime.log_level` in 
 - Calibrate judge thresholds on a small double-reviewed human sample and track agreement.
 - Keep judge prompts/model versions and raw outputs with every run. Never count transport or judge
   failures as chatbot failures.
-- If retrieval context becomes available, separately inspect retrieval coverage and answer
-  groundedness; an end-to-end score alone cannot locate whether retrieval or generation failed.
+- If retrieval context becomes available, separately inspect claim coverage, chunk precision, and
+  contradictory chunks; an end-to-end score alone cannot locate whether retrieval or generation failed.
 
 ## Research basis and limitations
 

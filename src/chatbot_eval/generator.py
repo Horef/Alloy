@@ -133,7 +133,7 @@ class SilverSetGenerator:
     def discover_topics(self, chunks: list[Chunk], batch_size: int) -> list[TopicCandidate]:
         maps = []
         starts = range(0, len(chunks), batch_size)
-        for start in track(starts, enabled=self.progress_enabled, description="מגלה נושאים", total=len(starts)):
+        for start in track(starts, enabled=self.progress_enabled, description="Discovering topics", total=len(starts)):
             prompt = TOPIC_PROMPT.format(excerpts=_render_chunks(chunks[start : start + batch_size]))
             maps.append(self.llm.generate(prompt, TopicMap, self.model))
         if len(maps) == 1:
@@ -166,7 +166,7 @@ class SilverSetGenerator:
         unanswerable_budget = round(options.max_questions * options.unanswerable_ratio)
         answerable_budget = max(0, options.max_questions - unanswerable_budget)
         produced_answerable = 0
-        for topic in track(topics, enabled=self.progress_enabled, description="מייצר שאלות", total=len(topics)):
+        for topic in track(topics, enabled=self.progress_enabled, description="Generating questions", total=len(topics)):
             wanted = quotas.get(topic.name, 0)
             if wanted <= 0 or produced_answerable >= answerable_budget:
                 continue
@@ -189,7 +189,7 @@ class SilverSetGenerator:
         if unanswerable_budget and topics:
             per_topic = max(1, math.ceil(unanswerable_budget / len(topics)))
             sorted_topics = sorted(topics, key=lambda t: t.importance, reverse=True)
-            for topic in track(sorted_topics, enabled=self.progress_enabled, description="מייצר מקרי גבול", total=len(sorted_topics)):
+            for topic in track(sorted_topics, enabled=self.progress_enabled, description="Generating boundary cases", total=len(sorted_topics)):
                 if len(accepted) >= options.max_questions or unanswerable_budget <= 0:
                     break
                 relevant = _relevant_chunks(topic, chunks)

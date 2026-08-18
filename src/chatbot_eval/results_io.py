@@ -127,7 +127,7 @@ def read_premade_results(
     mapping = _resolve(headers, columns or ResultColumns())
     logger.info("premade_results_loading path=%s source=%s row_count=%d columns=%r", path, source_name, len(rows), mapping)
     results = []
-    for index, row in enumerate(track(rows, enabled=progress_enabled, description="קורא תוצאות קיימות", total=len(rows)), 2):
+    for index, row in enumerate(track(rows, enabled=progress_enabled, description="Reading premade results", total=len(rows)), 2):
         question_text = str(row.get(mapping["question"], "") or "").strip()
         expected = str(row.get(mapping["expected_answer"], "") or "").strip()
         answer = str(row.get(mapping["answer"], "") or "").strip()

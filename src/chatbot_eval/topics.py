@@ -31,7 +31,7 @@ def infer_topics(
     candidates = [(question, result) for question, result in pairs if question.topic in {"", "premade", "לא סווג"}]
     batches = [candidates[start : start + batch_size] for start in range(0, len(candidates), batch_size)]
     logger.info("topic_inference_started question_count=%d batch_count=%d", len(candidates), len(batches))
-    for batch in track(batches, enabled=progress_enabled, description="מסווג נושאים", total=len(batches)):
+    for batch in track(batches, enabled=progress_enabled, description="Inferring topics", total=len(batches)):
         rendered = "\n".join(f"[{question.id}] {question.question[:600]}" for question, _ in batch)
         response = llm.generate(TOPIC_INFERENCE_PROMPT.format(questions=rendered), TopicAssignments, model)
         by_id = {item.question_id: item.topic.strip() for item in response.assignments if item.topic.strip()}

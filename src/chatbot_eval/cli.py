@@ -11,6 +11,7 @@ from .config import load_settings
 from .documents import load_chunks
 from .evaluator import Evaluator
 from .generator import GenerationOptions, SilverSetGenerator
+from .insights import generate_insights, write_insights
 from .io import read_questions, write_evaluations, write_questions
 from .llm import GeminiStructuredLLM
 from .logging_utils import configure_logging
@@ -57,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--context-field", default="retrieved_context", help="Dotted response path")
     evaluate.add_argument("--header", action="append", default=[], help="HTTP header as Name=Value; repeatable")
     evaluate.add_argument("--approved-only", action="store_true")
+    evaluate.add_argument("--generate-insights", action="store_true", help="Generate an optional Hebrew cross-result insights block")
 
     evaluate_file = commands.add_parser("evaluate-file", help="Judge premade chatbot questions and answers")
     evaluate_file.add_argument("--results", type=Path, required=True, help="Input .xlsx, .csv, or .jsonl file")
@@ -71,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--answerable-column")
     evaluate_file.add_argument("--error-column")
     evaluate_file.add_argument("--infer-topics", action="store_true", help="Infer consistent Hebrew topics with Gemini when no topic column exists")
+    evaluate_file.add_argument("--generate-insights", action="store_true", help="Generate an optional Hebrew cross-result insights block")
     return parser
 
 
@@ -82,6 +85,17 @@ def _headers(values: list[str]) -> dict[str, str]:
         key, content = value.split("=", 1)
         result[key] = os.path.expandvars(content)
     return result
+
+
+def _optional_insights(args, records, llm, model):
+    if not args.generate_insights:
+        return None, None
+    try:
+        insights = generate_insights(records, llm, model)
+        return insights, write_insights(insights, args.output)
+    except Exception:
+        logger.exception("insight_generation_failed; continuing without insights")
+        return None, None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,10 +122,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         questions, topics = SilverSetGenerator(llm, settings.generation_model, progress_enabled).generate(chunks, options)
         csv_path, jsonl_path = write_questions(questions, args.output)
-        print(f"נוצרו {len(questions)} שאלות ב-{len(topics)} נושאים שזוהו.")
-        print(f"קובץ CSV לבדיקה: {csv_path}\nקובץ JSONL עם מקורות: {jsonl_path}")
+        print(f"Generated {len(questions)} questions across {len(topics)} discovered topics.")
+        print(f"Review CSV: {csv_path}\nProvenance JSONL: {jsonl_path}")
         if len(questions) < maximum:
-            print(f"הערה: נוצרו פחות שאלות מהמבוקש ({len(questions)}/{maximum}), משום ששאלות ללא ביסוס או שאלות כפולות הוסרו.")
+            print(f"Note: generated fewer than requested ({len(questions)}/{maximum}) because unsupported or duplicate candidates were discarded.")
         logger.info("command_completed command=generate question_count=%d output=%s", len(questions), args.output)
         return 0
 
@@ -132,9 +146,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("Premade evaluation must not invoke a chatbot")
 
         records = Evaluator(NeverCalledAdapter(), llm, settings.judge_model, progress_enabled).judge_results(pairs)
+        insights, insights_path = _optional_insights(args, records, llm, settings.judge_model)
         details_csv, details_jsonl = write_evaluations(records, args.output)
-        summary_json, report_html = write_report(records, args.output)
-        print(f"הוערכו {len(records)} תוצאות קיימות.\nפירוט: {details_csv}\nנתונים גולמיים: {details_jsonl}\nסיכום: {summary_json}\nדוח: {report_html}")
+        summary_json, report_html = write_report(records, args.output, insights)
+        print(f"Evaluated {len(records)} premade results.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")
+        if insights_path:
+            print(f"Insights: {insights_path}")
         logger.info("command_completed command=evaluate-file record_count=%d output=%s", len(records), args.output)
         return 0
 
@@ -146,9 +163,12 @@ def main(argv: list[str] | None = None) -> int:
         settings.request_timeout_seconds, _headers(args.header),
     )
     records = Evaluator(adapter, llm, settings.judge_model, progress_enabled).evaluate(questions)
+    insights, insights_path = _optional_insights(args, records, llm, settings.judge_model)
     details_csv, details_jsonl = write_evaluations(records, args.output)
-    summary_json, report_html = write_report(records, args.output)
-    print(f"הוערכו {len(records)} שאלות.\nפירוט: {details_csv}\nנתונים גולמיים: {details_jsonl}\nסיכום: {summary_json}\nדוח: {report_html}")
+    summary_json, report_html = write_report(records, args.output, insights)
+    print(f"Evaluated {len(records)} questions.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")
+    if insights_path:
+        print(f"Insights: {insights_path}")
     logger.info("command_completed command=evaluate record_count=%d output=%s", len(records), args.output)
     return 0
 

@@ -4,9 +4,11 @@ from chatbot_eval.report import build_summary, write_report
 
 def test_hebrew_report_and_pipeline_statistics(tmp_path):
     scores = JudgeScores(
-        correctness=1, completeness=1, relevance=3, groundedness=1,
+        required_points_total=2, answer_points_addressed=1, answer_points_correct=0,
+        answer_false_claims=1, answer_unsupported_claims=0, answer_extraneous_claims=0,
+        retrieval_points_found=2, retrieved_chunks_total=1,
+        retrieved_chunks_relevant=1, retrieved_chunks_contradictory=0,
         answer_scope="exact", incorrect_type="hallucination",
-        retrieval_relevance=4, retrieval_correctness=4, retrieval_completeness=4,
         response_is_abstention=False, explanation="התשובה נשמעת סבירה אך שגויה.",
         missing_or_wrong="המספר שגוי.", retrieval_explanation="המידע הנכון נמצא במקטעים.",
     )
