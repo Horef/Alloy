@@ -10,6 +10,10 @@ chunk_chars = 12000
 chunk_overlap_chars = 800
 batch_chunks = 8
 unanswerable_ratio = 0.10
+# Share of the total set derived from canonical questions using natural user phrasing.
+user_variation_ratio = 0.30
+# Share of those variations that should require a clarifying follow-up.
+ambiguous_variation_share = 0.33
 min_topic_questions = 1
 max_topic_share = 0.35
 

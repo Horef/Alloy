@@ -7,3 +7,6 @@ dist/
 build/
 outputs/
 .vscode/
+hova/
+keva/
+config.toml

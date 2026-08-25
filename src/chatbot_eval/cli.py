@@ -16,6 +16,7 @@ from .io import read_questions, write_evaluations, write_questions
 from .llm import GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, SilverQuestion
+from .prompt_generator import SystemPromptGenerator, write_prompt_package
 from .report import write_report
 from .results_io import ResultColumns, read_premade_results
 from .topics import infer_topics
@@ -48,6 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--topic", help="Restrict generation to this requested topic")
     generate.add_argument("--topic-count", type=int, help="Maximum questions for --topic")
     generate.add_argument("--unanswerable-ratio", type=float)
+    generate.add_argument("--user-variation-ratio", type=float, help="Share of the total set reserved for realistic user phrasings")
+    generate.add_argument("--ambiguous-variation-share", type=float, help="Share of user variations that should require clarification")
+    generate.add_argument(
+        "--exclude-questions", type=Path,
+        help="Existing silver CSV/JSONL whose questions must not be generated again",
+    )
+
+    generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
+    generate_prompt.add_argument("--documents", type=Path, required=True)
+    generate_prompt.add_argument("--output", type=Path, default=Path("outputs/prompt"))
+    generate_prompt.add_argument("--assistant-name", default="העוזר הדיגיטלי")
+    generate_prompt.add_argument("--audience", default="משתמשי הארגון")
 
     evaluate = commands.add_parser("evaluate", help="Call a chatbot and judge its responses")
     evaluate.add_argument("--questions", type=Path, required=True)
@@ -59,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--header", action="append", default=[], help="HTTP header as Name=Value; repeatable")
     evaluate.add_argument("--approved-only", action="store_true")
     evaluate.add_argument("--generate-insights", action="store_true", help="Generate an optional Hebrew cross-result insights block")
+    evaluate.add_argument("--hide-correct-answer-metrics", action="store_true", help="Hide correct-answer metrics from the report summary and topic table")
 
     evaluate_file = commands.add_parser("evaluate-file", help="Judge premade chatbot questions and answers")
     evaluate_file.add_argument("--results", type=Path, required=True, help="Input .xlsx, .csv, or .jsonl file")
@@ -74,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--error-column")
     evaluate_file.add_argument("--infer-topics", action="store_true", help="Infer consistent Hebrew topics with Gemini when no topic column exists")
     evaluate_file.add_argument("--generate-insights", action="store_true", help="Generate an optional Hebrew cross-result insights block")
+    evaluate_file.add_argument("--hide-correct-answer-metrics", action="store_true", help="Hide correct-answer metrics from the report summary and topic table")
     return parser
 
 
@@ -107,6 +122,19 @@ def main(argv: list[str] | None = None) -> int:
     progress_enabled = settings.progress_enabled and not args.no_progress
     llm = GeminiStructuredLLM(settings.api_key, settings.max_retries)
     logger.info("command_started command=%s progress_enabled=%s", args.command, progress_enabled)
+    if args.command == "generate-prompt":
+        chunks = load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+        topic_generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+        topics = topic_generator.discover_topics(chunks, settings.batch_chunks)
+        package = SystemPromptGenerator(llm, settings.generation_model).generate(
+            chunks, topics, assistant_name=args.assistant_name, audience=args.audience,
+        )
+        prompt_path, package_path = write_prompt_package(package, args.output)
+        print(f"Generated a reviewable system prompt across {len(topics)} discovered topics.")
+        print(f"System prompt: {prompt_path}\nReview package: {package_path}")
+        logger.info("command_completed command=generate-prompt topic_count=%d output=%s", len(topics), args.output)
+        return 0
+
     if args.command == "generate":
         maximum = args.max_questions or settings.max_questions
         if maximum < 1:
@@ -114,11 +142,26 @@ def main(argv: list[str] | None = None) -> int:
         ratio = settings.unanswerable_ratio if args.unanswerable_ratio is None else args.unanswerable_ratio
         if not 0 <= ratio < 1:
             raise ValueError("--unanswerable-ratio must be in [0, 1)")
+        variation_ratio = settings.user_variation_ratio if args.user_variation_ratio is None else args.user_variation_ratio
+        ambiguous_share = settings.ambiguous_variation_share if args.ambiguous_variation_share is None else args.ambiguous_variation_share
+        if not 0 <= variation_ratio < 1:
+            raise ValueError("--user-variation-ratio must be in [0, 1)")
+        if not 0 <= ambiguous_share <= 1:
+            raise ValueError("--ambiguous-variation-share must be in [0, 1]")
+        if ratio + variation_ratio >= 1:
+            raise ValueError("unanswerable_ratio + user_variation_ratio must be below 1")
         chunks = load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+        excluded_questions = ()
+        if args.exclude_questions:
+            excluded_questions = tuple(q.question for q in read_questions(args.exclude_questions))
+            logger.info("generation_exclusions_loaded count=%d", len(excluded_questions))
         options = GenerationOptions(
             max_questions=maximum, batch_chunks=settings.batch_chunks,
             min_topic_questions=settings.min_topic_questions, max_topic_share=settings.max_topic_share,
-            unanswerable_ratio=ratio, requested_topic=args.topic, requested_topic_count=args.topic_count,
+            unanswerable_ratio=ratio, user_variation_ratio=variation_ratio,
+            ambiguous_variation_share=ambiguous_share,
+            requested_topic=args.topic, requested_topic_count=args.topic_count,
+            excluded_questions=excluded_questions,
         )
         questions, topics = SilverSetGenerator(llm, settings.generation_model, progress_enabled).generate(chunks, options)
         csv_path, jsonl_path = write_questions(questions, args.output)
@@ -148,7 +191,10 @@ def main(argv: list[str] | None = None) -> int:
         records = Evaluator(NeverCalledAdapter(), llm, settings.judge_model, progress_enabled).judge_results(pairs)
         insights, insights_path = _optional_insights(args, records, llm, settings.judge_model)
         details_csv, details_jsonl = write_evaluations(records, args.output)
-        summary_json, report_html = write_report(records, args.output, insights)
+        summary_json, report_html = write_report(
+            records, args.output, insights,
+            show_correct_answer_metrics=not args.hide_correct_answer_metrics,
+        )
         print(f"Evaluated {len(records)} premade results.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")
         if insights_path:
             print(f"Insights: {insights_path}")
@@ -165,7 +211,10 @@ def main(argv: list[str] | None = None) -> int:
     records = Evaluator(adapter, llm, settings.judge_model, progress_enabled).evaluate(questions)
     insights, insights_path = _optional_insights(args, records, llm, settings.judge_model)
     details_csv, details_jsonl = write_evaluations(records, args.output)
-    summary_json, report_html = write_report(records, args.output, insights)
+    summary_json, report_html = write_report(
+        records, args.output, insights,
+        show_correct_answer_metrics=not args.hide_correct_answer_metrics,
+    )
     print(f"Evaluated {len(records)} questions.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")
     if insights_path:
         print(f"Insights: {insights_path}")

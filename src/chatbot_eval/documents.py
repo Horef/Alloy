@@ -22,24 +22,21 @@ class Chunk:
     text: str
 
 
-def _read_file(path: Path) -> str:
+def _read_sections(path: Path) -> list[tuple[str, str]]:
     suffix = path.suffix.lower()
     if suffix in {".txt", ".md", ".rst"}:
-        return path.read_text(encoding="utf-8", errors="replace")
+        return [("document", path.read_text(encoding="utf-8", errors="replace"))]
     if suffix == ".csv":
         with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
-            return "\n".join(" | ".join(row) for row in csv.reader(handle))
+            return [("document", "\n".join(" | ".join(row) for row in csv.reader(handle)))]
     if suffix == ".json":
-        return json.dumps(json.loads(path.read_text(encoding="utf-8")), ensure_ascii=False, indent=2)
+        return [("document", json.dumps(json.loads(path.read_text(encoding="utf-8")), ensure_ascii=False, indent=2))]
     if suffix == ".jsonl":
-        return path.read_text(encoding="utf-8", errors="replace")
+        return [("document", path.read_text(encoding="utf-8", errors="replace"))]
     if suffix == ".pdf":
-        pages = []
-        for number, page in enumerate(PdfReader(path).pages, 1):
-            pages.append(f"[Page {number}]\n{page.extract_text() or ''}")
-        return "\n\n".join(pages)
+        return [(f"page {number}", page.extract_text() or "") for number, page in enumerate(PdfReader(path).pages, 1)]
     if suffix == ".docx":
-        return "\n".join(paragraph.text for paragraph in Document(path).paragraphs)
+        return [("document", "\n".join(paragraph.text for paragraph in Document(path).paragraphs))]
     raise ValueError(f"Unsupported file type: {path}")
 
 
@@ -51,14 +48,18 @@ def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabl
         raise ValueError(f"No supported documents found under {root}")
     chunks: list[Chunk] = []
     for path in track(files, enabled=progress_enabled, description="Reading documents", total=len(files)):
-        text = " ".join(_read_file(path).split())
         relative = str(path.relative_to(root))
         step = chunk_chars - overlap_chars
-        for index, start in enumerate(range(0, len(text), step), 1):
-            part = text[start : start + chunk_chars]
-            if len(part.strip()) < 80:
-                continue
-            chunks.append(Chunk(f"{relative}#chunk-{index}", relative, f"chars {start}-{start + len(part)}", part))
+        chunk_number = 0
+        for section_location, raw_text in _read_sections(path):
+            text = " ".join(raw_text.split())
+            for start in range(0, len(text), step):
+                part = text[start : start + chunk_chars]
+                if len(part.strip()) < 80:
+                    continue
+                chunk_number += 1
+                location = f"{section_location}, chars {start}-{start + len(part)}"
+                chunks.append(Chunk(f"{relative}#chunk-{chunk_number}", relative, location, part))
     if not chunks:
         raise ValueError("Documents contained no extractable text")
     return chunks

@@ -19,6 +19,8 @@ class Settings:
     chunk_overlap_chars: int
     batch_chunks: int
     unanswerable_ratio: float
+    user_variation_ratio: float
+    ambiguous_variation_share: float
     min_topic_questions: int
     max_topic_share: float
     request_timeout_seconds: int
@@ -53,6 +55,8 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         chunk_overlap_chars=int(_get(data, "generation", "chunk_overlap_chars", 800)),
         batch_chunks=int(_get(data, "generation", "batch_chunks", 8)),
         unanswerable_ratio=float(_get(data, "generation", "unanswerable_ratio", 0.1)),
+        user_variation_ratio=float(_get(data, "generation", "user_variation_ratio", 0.3)),
+        ambiguous_variation_share=float(_get(data, "generation", "ambiguous_variation_share", 0.33)),
         min_topic_questions=int(_get(data, "generation", "min_topic_questions", 1)),
         max_topic_share=float(_get(data, "generation", "max_topic_share", 0.35)),
         request_timeout_seconds=int(_get(data, "evaluation", "request_timeout_seconds", 60)),
@@ -61,4 +65,3 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         log_file=str(_get(data, "runtime", "log_file", "")),
         log_level=str(_get(data, "runtime", "log_level", "INFO")),
     )
-

@@ -1,5 +1,5 @@
 from chatbot_eval.evaluator import classify, looks_like_abstention
-from chatbot_eval.models import JudgeScores, Outcome, SilverQuestion
+from chatbot_eval.models import ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
 
 
 def scores(required=2, addressed=2, correct=2, abstention=False, scope="exact", incorrect_type="not_applicable", false_claims=0):
@@ -34,3 +34,13 @@ def test_abstention_detection_in_english_and_hebrew():
     assert looks_like_abstention("I don't have enough information to answer.")
     assert looks_like_abstention("אין לי מספיק מידע")
     assert not looks_like_abstention("The policy allows 30 days.")
+
+
+def test_clarification_is_a_distinct_expected_behavior():
+    item = question(True)
+    item.expected_behavior = ExpectedBehavior.CLARIFY
+    clarification = scores()
+    clarification.response_is_clarification = True
+
+    assert classify(item, clarification) == Outcome.CORRECT_CLARIFICATION
+    assert classify(item, scores()) == Outcome.MISSING_CLARIFICATION

@@ -7,9 +7,37 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class SourceRef(BaseModel):
+    source_id: str = ""
     file: str
     location: str
     excerpt: str
+
+
+class EvidenceQuote(BaseModel):
+    source_id: str
+    quote: str = Field(min_length=3)
+
+
+class QuestionType(str, Enum):
+    BASIC_KNOWLEDGE = "basic_knowledge"
+    TOPIC_INTEGRATION = "topic_integration"
+    DOCUMENT_WIDE = "document_wide"
+    CROSS_DOCUMENT = "cross_document"
+    PERSONAL_BASIC = "personal_basic"
+    PERSONAL_INTEGRATION = "personal_integration"
+    UNANSWERABLE = "unanswerable"
+
+
+class QuestionForm(str, Enum):
+    CANONICAL = "canonical"
+    NATURAL_USER = "natural_user"
+    AMBIGUOUS = "ambiguous"
+
+
+class ExpectedBehavior(str, Enum):
+    ANSWER = "answer"
+    CLARIFY = "clarify"
+    ABSTAIN = "abstain"
 
 
 class TopicCandidate(BaseModel):
@@ -30,10 +58,24 @@ class GeneratedQuestion(BaseModel):
     difficulty: str
     rationale: str
     source_ids: list[str]
+    question_type: QuestionType = QuestionType.BASIC_KNOWLEDGE
+    supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
 
 
 class QuestionBatch(BaseModel):
     questions: list[GeneratedQuestion]
+
+
+class GeneratedVariation(BaseModel):
+    source_question_id: str
+    question: str
+    question_form: Literal["natural_user", "ambiguous"]
+    required_clarification: str = ""
+    rationale: str
+
+
+class VariationBatch(BaseModel):
+    variations: list[GeneratedVariation]
 
 
 class SilverQuestion(BaseModel):
@@ -44,6 +86,11 @@ class SilverQuestion(BaseModel):
     answerable: bool = True
     difficulty: str = "medium"
     rationale: str = ""
+    question_type: QuestionType = QuestionType.BASIC_KNOWLEDGE
+    question_form: QuestionForm = QuestionForm.CANONICAL
+    expected_behavior: ExpectedBehavior = ExpectedBehavior.ANSWER
+    parent_question_id: str = ""
+    supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
     sources: list[SourceRef] = Field(default_factory=list)
     review_status: str = "pending"
     reviewer_notes: str = ""
@@ -72,6 +119,7 @@ class JudgeScores(BaseModel):
     answer_scope: Literal["exact", "too_little", "too_much"]
     incorrect_type: Literal["not_applicable", "unrelated", "hallucination"]
     response_is_abstention: bool
+    response_is_clarification: bool = False
     explanation: str
     missing_or_wrong: str
     retrieval_explanation: str
@@ -100,6 +148,8 @@ class Outcome(str, Enum):
     INCORRECT_ABSTENTION = "incorrect_abstention"
     CORRECT_ABSTENTION = "correct_abstention"
     SHOULD_HAVE_ABSTAINED = "should_have_abstained"
+    CORRECT_CLARIFICATION = "correct_clarification"
+    MISSING_CLARIFICATION = "missing_clarification"
     CHATBOT_ERROR = "chatbot_error"
     JUDGE_ERROR = "judge_error"
 
@@ -130,6 +180,15 @@ class EvaluationInsights(BaseModel):
     strengths: list[str]
     issues: list[InsightIssue]
     methodology_note: str
+
+
+class PromptPackage(BaseModel):
+    system_prompt_hebrew: str = Field(min_length=40)
+    corpus_scope_summary: list[str] = Field(min_length=1)
+    assumptions_requiring_review: list[str] = Field(min_length=1)
+    application_guardrails: list[str] = Field(min_length=1)
+    manager_review_checklist: list[str] = Field(min_length=1)
+    suggested_test_questions: list[str] = Field(min_length=1)
 
 
 class EvaluationRecord(BaseModel):

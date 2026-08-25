@@ -25,3 +25,21 @@ def test_hebrew_report_and_pipeline_statistics(tmp_path):
     assert 'lang="he" dir="rtl"' in report
     assert "הזיה מטעה" in report
     assert "המידע הנכון נמצא במקטעים" in report
+
+
+def test_report_can_hide_correct_answer_metrics(tmp_path):
+    record = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="זכויות", question="מה הסכום?", expected_answer="100"),
+        result=ChatbotResult(question_id="Q1", answer="100"),
+        outcome=Outcome.CORRECT_ANSWER,
+    )
+
+    _, report_path = write_report(
+        [record], tmp_path, show_correct_answer_metrics=False,
+    )
+    report = report_path.read_text(encoding="utf-8")
+
+    assert "שיעור תשובות נכונות" not in report
+    assert "<th>תשובות נכונות</th>" not in report
+    assert "שיעור תשובות שימושיות" in report
+    assert "<th>תשובות שימושיות</th>" in report

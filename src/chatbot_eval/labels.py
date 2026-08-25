@@ -1,6 +1,18 @@
 from __future__ import annotations
 
-from .models import Outcome
+from .models import ExpectedBehavior, Outcome, QuestionForm
+
+QUESTION_FORM_HEBREW = {
+    QuestionForm.CANONICAL: "שאלה מנוסחת היטב",
+    QuestionForm.NATURAL_USER: "ניסוח משתמש טבעי",
+    QuestionForm.AMBIGUOUS: "שאלה הדורשת הבהרה",
+}
+
+EXPECTED_BEHAVIOR_HEBREW = {
+    ExpectedBehavior.ANSWER: "לענות",
+    ExpectedBehavior.CLARIFY: "לשאול שאלת הבהרה",
+    ExpectedBehavior.ABSTAIN: "להימנע ממענה",
+}
 
 OUTCOME_HEBREW = {
     Outcome.CORRECT_ANSWER: "תשובה נכונה",
@@ -11,6 +23,8 @@ OUTCOME_HEBREW = {
     Outcome.INCORRECT_ABSTENTION: "נמנע ממענה למרות שהמידע קיים",
     Outcome.CORRECT_ABSTENTION: "נמנע ממענה בצדק",
     Outcome.SHOULD_HAVE_ABSTAINED: "ענה למרות שהיה צריך להימנע",
+    Outcome.CORRECT_CLARIFICATION: "שאלת הבהרה מתאימה",
+    Outcome.MISSING_CLARIFICATION: "נדרש בירור אך לא נשאל",
     Outcome.CHATBOT_ERROR: "שגיאת מערכת בצ׳אטבוט",
     Outcome.JUDGE_ERROR: "שגיאה בתהליך הבדיקה",
 }
@@ -24,6 +38,8 @@ OUTCOME_COLORS = {
     Outcome.INCORRECT_ABSTENTION: "#ea580c",
     Outcome.CORRECT_ABSTENTION: "#0f766e",
     Outcome.SHOULD_HAVE_ABSTAINED: "#b91c1c",
+    Outcome.CORRECT_CLARIFICATION: "#0d9488",
+    Outcome.MISSING_CLARIFICATION: "#c2410c",
     Outcome.CHATBOT_ERROR: "#475569",
     Outcome.JUDGE_ERROR: "#7c3aed",
 }

@@ -5,7 +5,7 @@ import re
 
 from .adapters import ChatbotAdapter
 from .llm import StructuredLLM
-from .models import ChatbotResult, EvaluationRecord, JudgeScores, Outcome, SilverQuestion
+from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
 from .progress import track
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,8 @@ For RETRIEVED CONTEXT:
    undelimited block, count it as one. If context is empty, use zero for all retrieval counts.
 9. retrieved_chunks_relevant: chunks containing information useful for this question.
 10. retrieved_chunks_contradictory: chunks that materially contradict the reference answer.
+11. response_is_clarification: true only when the candidate asks a focused follow-up needed to
+    disambiguate the user's situation before giving a potentially incorrect definitive answer.
 
 Counts must obey: correct <= addressed <= required; retrieved points <= required; relevant and
 contradictory chunks <= total chunks. Do not count wording variants of the same claim twice.
@@ -53,6 +55,9 @@ but generation failed to use it.
 
 QUESTION:
 {question}
+
+EXPECTED BEHAVIOR:
+{expected_behavior}
 
 REFERENCE ANSWER:
 {reference}
@@ -80,6 +85,8 @@ def looks_like_abstention(answer: str) -> bool:
 
 
 def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
+    if question.expected_behavior == ExpectedBehavior.CLARIFY:
+        return Outcome.CORRECT_CLARIFICATION if scores.response_is_clarification else Outcome.MISSING_CLARIFICATION
     abstained = scores.response_is_abstention
     if question.answerable and abstained:
         return Outcome.INCORRECT_ABSTENTION
@@ -134,6 +141,7 @@ class Evaluator:
                 evidence = "לא סופקה ראיית ייחוס נפרדת; התשובה הצפויה היא מקור האמת לבדיקה."
             prompt = JUDGE_PROMPT.format(
                 question=question.question, reference=question.expected_answer,
+                expected_behavior=question.expected_behavior.value,
                 evidence=evidence, candidate=result.answer, retrieved=result.retrieved_context,
             )
             try:
