@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 
+from .artifacts import atomic_write_text
 from .llm import StructuredLLM
 from .models import EvaluationInsights, EvaluationRecord, Outcome
 from .report import build_summary
@@ -81,5 +82,5 @@ def generate_insights(records: list[EvaluationRecord], llm: StructuredLLM, model
 def write_insights(insights: EvaluationInsights, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "evaluation_insights.json"
-    path.write_text(insights.model_dump_json(indent=2), encoding="utf-8")
+    atomic_write_text(path, insights.model_dump_json(indent=2))
     return path

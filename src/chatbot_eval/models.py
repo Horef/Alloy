@@ -59,6 +59,7 @@ class GeneratedQuestion(BaseModel):
     rationale: str
     source_ids: list[str]
     question_type: QuestionType = QuestionType.BASIC_KNOWLEDGE
+    reference_claims: list[str]
     supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
 
 
@@ -90,6 +91,7 @@ class SilverQuestion(BaseModel):
     question_form: QuestionForm = QuestionForm.CANONICAL
     expected_behavior: ExpectedBehavior = ExpectedBehavior.ANSWER
     parent_question_id: str = ""
+    reference_claims: list[str] = Field(default_factory=list)
     supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
     sources: list[SourceRef] = Field(default_factory=list)
     review_status: str = "pending"
@@ -105,7 +107,21 @@ class ChatbotResult(BaseModel):
     error: str = ""
 
 
+class ClaimAssessment(BaseModel):
+    claim_id: str
+    addressed: bool
+    correct: bool
+    explanation: str = ""
+
+    @model_validator(mode="after")
+    def correct_claim_must_be_addressed(self) -> "ClaimAssessment":
+        if self.correct and not self.addressed:
+            raise ValueError("a correct claim must also be addressed")
+        return self
+
+
 class JudgeScores(BaseModel):
+    claim_assessments: list[ClaimAssessment]
     required_points_total: int = Field(ge=0)
     answer_points_addressed: int = Field(ge=0)
     answer_points_correct: int = Field(ge=0)

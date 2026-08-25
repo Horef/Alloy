@@ -8,6 +8,7 @@ from chatbot_eval.report import write_report
 
 def test_insights_are_validated_saved_and_embedded(tmp_path):
     scores = JudgeScores(
+        claim_assessments=[],
         required_points_total=2, answer_points_addressed=1, answer_points_correct=0,
         answer_false_claims=1, answer_unsupported_claims=0, answer_extraneous_claims=0,
         retrieval_points_found=2, retrieved_chunks_total=1,

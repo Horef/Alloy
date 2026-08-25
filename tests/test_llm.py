@@ -11,6 +11,7 @@ def test_structured_calls_explicitly_disable_afc():
 
             class Response:
                 text = JudgeScores(
+                    claim_assessments=[],
                     required_points_total=2, answer_points_addressed=2, answer_points_correct=2,
                     answer_false_claims=0, answer_unsupported_claims=0, answer_extraneous_claims=0,
                     retrieval_points_found=2, retrieved_chunks_total=1,

@@ -7,19 +7,20 @@ from typing import Iterable
 
 from .labels import ANSWER_SCOPE_HEBREW, EXPECTED_BEHAVIOR_HEBREW, INCORRECT_TYPE_HEBREW, OUTCOME_HEBREW, QUESTION_FORM_HEBREW
 from .models import EvaluationRecord, EvidenceQuote, ExpectedBehavior, QuestionForm, QuestionType, SilverQuestion
+from .validation import validate_question_set
 
 
 QUESTION_COLUMNS = [
     "id", "topic", "question", "expected_answer", "answerable", "difficulty", "question_type",
     "question_form", "expected_behavior", "parent_question_id",
-    "rationale", "source_ids", "source_files", "source_locations", "source_excerpts", "supporting_quotes",
+    "rationale", "reference_claims", "source_ids", "source_files", "source_locations", "source_excerpts", "supporting_quotes",
     "review_status", "reviewer_notes",
 ]
 
 
 def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    items = list(questions)
+    items = validate_question_set(list(questions))
     csv_path, jsonl_path = output_dir / "silver_questions.csv", output_dir / "silver_questions.jsonl"
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=QUESTION_COLUMNS)
@@ -31,6 +32,7 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
                 "difficulty": q.difficulty, "question_type": q.question_type.value, "rationale": q.rationale,
                 "question_form": q.question_form.value, "expected_behavior": q.expected_behavior.value,
                 "parent_question_id": q.parent_question_id,
+                "reference_claims": json.dumps(q.reference_claims, ensure_ascii=False),
                 "source_ids": " | ".join(s.source_id for s in q.sources),
                 "source_files": " | ".join(s.file for s in q.sources),
                 "source_locations": " | ".join(s.location for s in q.sources),
@@ -47,7 +49,10 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
 
 
 def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuestion]:
-    if path.suffix.lower() == ".jsonl":
+    suffix = path.suffix.lower()
+    if suffix not in {".csv", ".jsonl"}:
+        raise ValueError("Silver question files must be .csv or .jsonl")
+    if suffix == ".jsonl":
         items = [SilverQuestion.model_validate_json(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
     else:
         with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -65,6 +70,10 @@ def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuesti
                         file=file, location=locations[index] if index < len(locations) else "",
                         excerpt=excerpts[index] if index < len(excerpts) else "",
                     ))
+                raw_claims = row.get("reference_claims", "").strip()
+                reference_claims = json.loads(raw_claims) if raw_claims else []
+                if not isinstance(reference_claims, list) or not all(isinstance(claim, str) for claim in reference_claims):
+                    raise ValueError(f"Question {row.get('id', '')!r} has invalid reference_claims JSON")
                 raw_quotes = row.get("supporting_quotes", "").strip()
                 supporting_quotes = [EvidenceQuote.model_validate(item) for item in json.loads(raw_quotes)] if raw_quotes else []
                 items.append(SilverQuestion(
@@ -79,11 +88,13 @@ def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuesti
                         or (ExpectedBehavior.ANSWER.value if row.get("answerable", "true").lower() in {"true", "1", "yes"} else ExpectedBehavior.ABSTAIN.value)
                     ),
                     parent_question_id=row.get("parent_question_id", ""),
+                    reference_claims=reference_claims,
                     rationale=row.get("rationale", ""), supporting_quotes=supporting_quotes,
                     sources=sources, review_status=row.get("review_status", "pending"),
                     reviewer_notes=row.get("reviewer_notes", ""),
                 ))
-    return [q for q in items if not approved_only or q.review_status.lower() == "approved"]
+    selected = [q for q in items if not approved_only or q.review_status.lower() == "approved"]
+    return validate_question_set(selected)
 
 
 def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tuple[Path, Path]:
@@ -95,7 +106,7 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
         "פרטים שנענו", "פרטים שנענו נכון", "טענות שגויות", "טענות לא מבוססות",
         "טענות עודפות", "היקף התשובה", "סוג שגיאה", "פרטים שנמצאו באחזור",
         "מספר מקטעים", "מקטעים רלוונטיים", "מקטעים סותרים", "הסבר הבדיקה", "מידע חסר או שגוי",
-        "הסבר האחזור", "זמן תגובה במילישניות", "שגיאת מערכת",
+        "הסבר האחזור", "זמן תגובה במילישניות", "שגיאת מערכת", "פירוט טענות הייחוס",
     ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -127,6 +138,10 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
                 "הסבר האחזור": scores.retrieval_explanation if scores else "",
                 "זמן תגובה במילישניות": record.result.latency_ms or "",
                 "שגיאת מערכת": record.result.error or record.judge_error,
+                "פירוט טענות הייחוס": json.dumps(
+                    [assessment.model_dump() for assessment in scores.claim_assessments] if scores else [],
+                    ensure_ascii=False,
+                ),
             })
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for record in records:

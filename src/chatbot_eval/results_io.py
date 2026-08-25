@@ -3,14 +3,16 @@ from __future__ import annotations
 import csv
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
 
-from .models import ChatbotResult, SilverQuestion, SourceRef
+from .models import ChatbotResult, ExpectedBehavior, SilverQuestion, SourceRef
 from .progress import track
+from .validation import validate_question_set
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,13 @@ def _normalize(value: Any) -> str:
 
 
 def _resolve(headers: list[str], overrides: ResultColumns) -> dict[str, str | None]:
+    blank_headers = [index + 1 for index, header in enumerate(headers) if not str(header).strip()]
+    if blank_headers:
+        raise ValueError(f"Blank column headers are not allowed (positions {blank_headers})")
+    normalized_values = [_normalize(header) for header in headers]
+    duplicate_headers = sorted(value for value, count in Counter(normalized_values).items() if count > 1)
+    if duplicate_headers:
+        raise ValueError(f"Duplicate column headers are not allowed: {duplicate_headers}")
     normalized = {_normalize(header): header for header in headers}
     resolved: dict[str, str | None] = {}
     for field, aliases in ALIASES.items():
@@ -53,7 +62,12 @@ def _resolve(headers: list[str], overrides: ResultColumns) -> dict[str, str | No
                 raise ValueError(f"Column {override!r} not found. Available columns: {headers}")
             resolved[field] = override
         else:
-            resolved[field] = next((normalized[_normalize(alias)] for alias in aliases if _normalize(alias) in normalized), None)
+            matches = sorted({normalized[_normalize(alias)] for alias in aliases if _normalize(alias) in normalized})
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple columns match {field!r}: {matches}. Use the explicit --{field.replace('_', '-')}-column option."
+                )
+            resolved[field] = matches[0] if matches else None
     missing = [field for field in ("question", "expected_answer", "answer") if not resolved[field]]
     if missing:
         raise ValueError(f"Could not identify required columns {missing}. Available columns: {headers}. Use explicit --*-column options.")
@@ -143,7 +157,9 @@ def read_premade_results(
         refs = [SourceRef(file=path.name, location=f"{source_name}!row {index}", excerpt=source)] if source else []
         question = SilverQuestion(
             id=question_id, topic=topic or "לא סווג", question=question_text,
-            expected_answer=expected, answerable=answerable, sources=refs,
+            expected_answer=expected, answerable=answerable,
+            expected_behavior=ExpectedBehavior.ANSWER if answerable else ExpectedBehavior.ABSTAIN,
+            reference_claims=[expected] if answerable else [], sources=refs,
             review_status="premade", reviewer_notes=f"Original ID: {external_id}" if external_id else "",
         )
         result = ChatbotResult(
@@ -153,4 +169,5 @@ def read_premade_results(
         )
         results.append((question, result))
     logger.info("premade_results_loaded usable_rows=%d skipped_rows=%d", len(results), len(rows) - len(results))
+    validate_question_set([question for question, _ in results])
     return results

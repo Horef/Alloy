@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 
+from .artifacts import atomic_write_text
 from .documents import Chunk
 from .llm import StructuredLLM
 from .models import PromptPackage, TopicCandidate
@@ -113,6 +114,6 @@ def write_prompt_package(package: PromptPackage, output_dir: Path) -> tuple[Path
     output_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = output_dir / "generated_system_prompt.md"
     package_path = output_dir / "prompt_package.json"
-    prompt_path.write_text(package.system_prompt_hebrew.strip() + "\n", encoding="utf-8")
-    package_path.write_text(package.model_dump_json(indent=2), encoding="utf-8")
+    atomic_write_text(prompt_path, package.system_prompt_hebrew.strip() + "\n")
+    atomic_write_text(package_path, package.model_dump_json(indent=2))
     return prompt_path, package_path

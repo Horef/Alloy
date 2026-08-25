@@ -20,11 +20,18 @@ def test_quota_does_not_overallocate_when_fewer_questions_than_topics():
     assert sum(allocate_quotas(topics, total=2, minimum=1, max_share=0.5).values()) == 2
 
 
+def test_quota_never_overallocates_when_minimum_exceeds_budget():
+    topics = [TopicCandidate(name=str(i), description="", importance=1, source_ids=[]) for i in range(5)]
+    quotas = allocate_quotas(topics, total=2, minimum=3, max_share=0.5)
+    assert sum(quotas.values()) == 2
+
+
 def _candidate(question_type=QuestionType.BASIC_KNOWLEDGE, source_ids=None, quotes=None):
     return GeneratedQuestion(
         question="מה המדיניות?", expected_answer="המדיניות חלה מחר", answerable=True,
         difficulty="medium", rationale="בדיקת מדיניות", question_type=question_type,
         source_ids=source_ids or ["a#1"],
+        reference_claims=["המדיניות חלה מחר"],
         supporting_quotes=quotes or [EvidenceQuote(source_id="a#1", quote="חלה מחר")],
     )
 
@@ -115,3 +122,64 @@ def test_generation_budget_includes_natural_and_ambiguous_variants():
     assert [question.question_form for question in questions] == [
         QuestionForm.CANONICAL, QuestionForm.AMBIGUOUS, QuestionForm.NATURAL_USER,
     ]
+
+
+def test_generation_refills_rejected_candidates_within_bound():
+    class FakeLLM:
+        question_calls = 0
+
+        def generate(self, prompt, schema, model):
+            if schema is TopicMap:
+                return TopicMap(topics=[TopicCandidate(name="נושא", description="", importance=5, source_ids=["a#1"])])
+            if schema is QuestionBatch:
+                self.question_calls += 1
+                if self.question_calls == 1:
+                    return QuestionBatch(questions=[_candidate(quotes=[EvidenceQuote(source_id="a#1", quote="לא קיים")])])
+                return QuestionBatch(questions=[_candidate()])
+            raise AssertionError(schema)
+
+    fake = FakeLLM()
+    questions, _ = SilverSetGenerator(fake, "test").generate(
+        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=2,
+        ),
+    )
+
+    assert len(questions) == 1
+    assert fake.question_calls == 2
+
+
+def test_requested_topic_also_scopes_boundary_questions():
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is TopicMap:
+                return TopicMap(topics=[
+                    TopicCandidate(name="נושא א", description="", importance=5, source_ids=["a#1"]),
+                    TopicCandidate(name="נושא ב", description="", importance=4, source_ids=["b#1"]),
+                ])
+            if schema is QuestionBatch and "boundary questions" in prompt:
+                assert "TOPIC: נושא א" in prompt
+                return QuestionBatch(questions=[GeneratedQuestion(
+                    question="מה לגבי מקרה שאין במסמך?", expected_answer="המידע חסר", answerable=False,
+                    difficulty="medium", rationale="גבול", source_ids=["a#1"],
+                    reference_claims=[],
+                    question_type=QuestionType.UNANSWERABLE,
+                )])
+            if schema is QuestionBatch:
+                return QuestionBatch(questions=[_candidate()])
+            raise AssertionError(schema)
+
+    questions, _ = SilverSetGenerator(FakeLLM(), "test").generate(
+        [
+            Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם"),
+            Chunk("b#1", "b.md", "document", "תוכן אחר שקיים במסמך השני ונועד רק לבדיקה"),
+        ],
+        GenerationOptions(
+            max_questions=2, batch_chunks=2, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0.5, requested_topic="נושא א", max_candidate_rounds=1,
+        ),
+    )
+
+    assert {question.topic for question in questions} == {"נושא א"}

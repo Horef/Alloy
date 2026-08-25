@@ -90,6 +90,7 @@ batch_chunks = 8
 unanswerable_ratio = 0.10
 user_variation_ratio = 0.30
 ambiguous_variation_share = 0.33
+max_candidate_rounds = 3
 min_topic_questions = 1
 max_topic_share = 0.35
 
@@ -117,6 +118,7 @@ log_level = "INFO"
 | `generation.unanswerable_ratio` | `0.10` | Fraction of the total budget reserved for realistic unanswerable questions; valid range `[0, 1)`. |
 | `generation.user_variation_ratio` | `0.30` | Fraction of the total budget reserved for natural/ambiguous variants derived from canonical questions. Set to `0` to disable variants. The sum with `unanswerable_ratio` must be below `1`. |
 | `generation.ambiguous_variation_share` | `0.33` | Fraction of the variation budget that should require clarification; valid range `[0, 1]`. The remainder is natural but answerable wording. |
+| `generation.max_candidate_rounds` | `3` | Bounded attempts to refill a quota after invalid or duplicate candidates are rejected. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
 | `evaluation.request_timeout_seconds` | `60` | Timeout for each live chatbot HTTP request. |
@@ -219,7 +221,8 @@ An answerable candidate is retained only when:
 - each quotation occurs verbatim in its declared source after whitespace normalization;
 - every cited source has a quotation;
 - document-wide/cross-document structure matches its declared type; and
-- it is not a near-duplicate of an accepted or excluded question.
+- it is not a near-duplicate of an accepted or excluded question; and
+- it contains distinct atomic `reference_claims` for stable claim-level judging.
 
 Rejection counts are written to operational logs at `INFO` level.
 
@@ -316,6 +319,8 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 | `--approved-only` | off | Evaluate only `review_status=approved` rows, case-insensitively. |
 | `--generate-insights` | off | Add one cross-result Gemini analysis in Hebrew. |
 | `--hide-correct-answer-metrics` | off | Hide two correctness indicators in HTML; underlying data is preserved. |
+| `--resume` | off | Reuse completed records from a compatible checkpoint. |
+| `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 
 ```bash
 chatbot-eval --config config.toml evaluate \
@@ -373,6 +378,8 @@ Explicit mappings are recommended for stable production jobs.
 | `--infer-topics` | off | Infer broad Hebrew topics for unclassified rows, in batches up to 250. |
 | `--generate-insights` | off | Write and embed optional cross-result insights. |
 | `--hide-correct-answer-metrics` | off | Hide correctness presentation metrics but retain data. |
+| `--resume` | off | Reuse completed rows whose imported inputs still match. |
+| `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 
 ```bash
 chatbot-eval --config config.toml evaluate-file \
@@ -449,7 +456,13 @@ chatbot.
 Gemini receives the question, reference answer, available source evidence, candidate answer, and
 retrieved context. It returns structured `JudgeScores`; automatic function calling is disabled.
 
-The judge decomposes the reference into independently checkable required details and reports:
+Every factual-answer question stores stable, independently checkable `reference_claims`. The judge
+reports one assessment per fixed claim ID; application code validates those IDs and derives the
+aggregate counts. Older silver files remain readable by treating their full expected answer as one
+coarse claim until a reviewer decomposes it. Clarification and abstention tasks have no factual
+claims and are excluded from factual-answer and retrieval denominators.
+
+The judge reports:
 
 - required, addressed, and correctly answered details;
 - false, unsupported, and unnecessary claims;
@@ -496,6 +509,8 @@ Both evaluation workflows write:
 | `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, and pipeline diagnostics. |
 | `evaluation_report.html` | Interactive Hebrew RTL report. |
 | `evaluation_insights.json` | Written only when optional insights succeed. |
+| `evaluation_checkpoint.jsonl` | Durable per-question records used by `--resume`. |
+| `run_manifest.json` | Redacted settings, input and implementation hashes, versions, timing, status, and result counts. |
 
 The HTML includes KPI cards, outcome distribution, retrieval-versus-answer diagnostics, information
 metrics, topic performance as `percentage (count/denominator)`, optional insights before per-question
@@ -534,6 +549,11 @@ reasons, and errors. They avoid complete questions/answers, API keys, and authen
 Gemini calls retry according to `evaluation.max_retries` with exponential backoff. Live chatbot
 calls are sequential but have no built-in retry or pacing. Gateway rate limits such as Spike Arrest
 should be handled in a fleet-specific adapter.
+
+Evaluation writes a checkpoint after every completed chatbot/judge result. `--resume` validates
+input fingerprints before reusing records and rejects mismatched checkpoints. Final JSON and HTML,
+prompt packages, insights, and manifests use atomic replacement. Manifests omit API keys and record
+only a hash of the live chatbot URL.
 
 ## Code map and extension points
 
@@ -606,7 +626,7 @@ classification, insights, and reporting options.
 - Question-type proportions are prompted, not deterministic configurable quotas.
 - User-variation and ambiguity budgets are configurable, but the linguistic quality of each variant
   still requires human review.
-- Document versions are not tracked by content hash; generation processes the supplied corpus anew.
+- Run manifests hash input documents and implementation files; incremental regeneration is not yet implemented.
 - Question IDs are sequential within each run, not stable across corpus versions.
 - Exclusion is file-based rather than persisted in a review database.
 - Personal types are disabled pending an allowlisted, masked, auditable data interface.
@@ -615,9 +635,8 @@ classification, insights, and reporting options.
 - Generated system prompts are starting points and are neither deployed automatically nor security
   controls by themselves.
 
-Likely next steps are a versioned generation manifest, document hashes, incremental regeneration,
-stable question IDs, configurable type distributions, a second-pass quality grader, and persistent
-review workflows.
+Likely next steps are incremental regeneration, stable question IDs, configurable type distributions,
+a second-pass quality grader, judge calibration, and persistent review workflows.
 
 ## Research basis
 

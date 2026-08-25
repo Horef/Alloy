@@ -1,9 +1,10 @@
-from chatbot_eval.models import ChatbotResult, EvaluationRecord, JudgeScores, Outcome, SilverQuestion
+from chatbot_eval.models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
 from chatbot_eval.report import build_summary, write_report
 
 
 def test_hebrew_report_and_pipeline_statistics(tmp_path):
     scores = JudgeScores(
+        claim_assessments=[],
         required_points_total=2, answer_points_addressed=1, answer_points_correct=0,
         answer_false_claims=1, answer_unsupported_claims=0, answer_extraneous_claims=0,
         retrieval_points_found=2, retrieved_chunks_total=1,
@@ -43,3 +44,25 @@ def test_report_can_hide_correct_answer_metrics(tmp_path):
     assert "<th>תשובות נכונות</th>" not in report
     assert "שיעור תשובות שימושיות" in report
     assert "<th>תשובות שימושיות</th>" in report
+
+
+def test_clarification_is_not_in_factual_answer_denominator():
+    answer = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+        result=ChatbotResult(question_id="Q1", answer="תשובה"), outcome=Outcome.CORRECT_ANSWER,
+    )
+    clarification = EvaluationRecord(
+        question=SilverQuestion(
+            id="Q2", topic="נושא", question="איזה?", expected_answer="לאיזו אוכלוסייה?",
+            question_form=QuestionForm.AMBIGUOUS, expected_behavior=ExpectedBehavior.CLARIFY,
+        ),
+        result=ChatbotResult(question_id="Q2", answer="לאיזו אוכלוסייה?"),
+        outcome=Outcome.CORRECT_CLARIFICATION,
+    )
+
+    summary = build_summary([answer, clarification])
+
+    assert summary["correct_answer_rate_on_answerable"] == 1
+    assert summary["clarification_success_rate"] == 1
+    assert summary["answer_tasks"] == 1
+    assert summary["clarification_tasks"] == 1

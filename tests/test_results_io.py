@@ -1,4 +1,5 @@
 from openpyxl import Workbook
+import pytest
 
 from chatbot_eval.results_io import ResultColumns, read_premade_results
 
@@ -29,3 +30,17 @@ def test_explicit_column_overrides_for_csv(tmp_path):
     )
     assert pairs[0][0].expected_answer == "Reference"
     assert pairs[0][1].answer == "Candidate"
+
+
+def test_ambiguous_alias_columns_require_an_explicit_mapping(tmp_path):
+    path = tmp_path / "ambiguous.csv"
+    path.write_text(
+        "question,expected_answer,answer,response\nQ,Reference,First,Second\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Multiple columns match 'answer'"):
+        read_premade_results(path)
+
+    pairs = read_premade_results(path, columns=ResultColumns(answer="response"))
+    assert pairs[0][1].answer == "Second"
