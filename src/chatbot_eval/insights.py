@@ -24,7 +24,9 @@ Important safeguards:
 - A likely cause is a hypothesis, not a proven causal claim. State uncertainty explicitly.
 - Do not infer sensitive attributes or repeat personal values from the data.
 - Use question IDs as examples; do not quote identifying personal details.
-- evidence_count must reflect supporting records, and example_question_ids must exist below.
+- example_question_ids must list every record counted as evidence (up to 8), without duplicates.
+- evidence_count must equal the number of example_question_ids. affected_topics must be derived only
+  from those records. Code will recalculate both fields and discard issues with no valid evidence.
 - Prioritize issues by user harm and frequency. Avoid generic advice.
 - Recommendations must be concrete and tied to the observed failure stage (data, retrieval,
   prompt/generation, abstention policy, or evaluation set).
@@ -72,9 +74,29 @@ def generate_insights(records: list[EvaluationRecord], llm: StructuredLLM, model
     )
     logger.info("insight_generation_started record_count=%d model=%s", len(analyzable), model)
     insights = llm.generate(prompt, EvaluationInsights, model)
-    known_ids = {record.question.id for record in records}
-    for issue in insights.issues:
-        issue.example_question_ids = [question_id for question_id in issue.example_question_ids if question_id in known_ids][:8]
+    by_id = {record.question.id: record for record in analyzable}
+    validated_issues = []
+    seen_titles: set[str] = set()
+    for issue in insights.issues[:6]:
+        title_key = " ".join(issue.title.casefold().split())
+        if not title_key or title_key in seen_titles:
+            continue
+        identifiers = list(dict.fromkeys(
+            question_id for question_id in issue.example_question_ids if question_id in by_id
+        ))[:8]
+        if not identifiers:
+            logger.warning("insight_issue_discarded title=%r reason=no_valid_evidence", issue.title)
+            continue
+        issue.example_question_ids = identifiers
+        issue.evidence_count = len(identifiers)
+        issue.affected_topics = sorted({by_id[identifier].question.topic or "לא סווג" for identifier in identifiers})
+        if issue.priority == "high" and issue.evidence_count == 1:
+            issue.priority = "medium"
+            issue.confidence = "low"
+        seen_titles.add(title_key)
+        validated_issues.append(issue)
+    insights.issues = validated_issues
+    insights.strengths = list(dict.fromkeys(item.strip() for item in insights.strengths if item.strip()))[:4]
     logger.info("insight_generation_completed issue_count=%d", len(insights.issues))
     return insights
 

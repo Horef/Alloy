@@ -22,3 +22,19 @@ def test_question_csv_round_trip(tmp_path):
     assert loaded[0].question_form == QuestionForm.AMBIGUOUS
     assert loaded[0].expected_behavior == ExpectedBehavior.CLARIFY
     assert loaded[0].parent_question_id == "Q0000"
+
+
+def test_question_csv_neutralizes_formulas_without_changing_round_trip(tmp_path):
+    original = SilverQuestion(
+        id="Q0001", topic="Policy", question="  =HYPERLINK(\"bad\")",
+        expected_answer="+SUM(1,1)",
+    )
+
+    csv_path, _ = write_questions([original], tmp_path)
+    raw = csv_path.read_text(encoding="utf-8-sig")
+    loaded = read_questions(csv_path)[0]
+
+    assert "'  =HYPERLINK" in raw
+    assert "'+SUM" in raw
+    assert loaded.question == original.question
+    assert loaded.expected_answer == original.expected_answer

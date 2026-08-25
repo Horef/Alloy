@@ -18,6 +18,23 @@ QUESTION_COLUMNS = [
 ]
 
 
+def _safe_csv_value(value):
+    """Neutralize spreadsheet formulas while leaving numeric values numeric."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _safe_csv_row(row: dict) -> dict:
+    return {key: _safe_csv_value(value) for key, value in row.items()}
+
+
+def _restore_csv_value(value: str | None) -> str:
+    if value and value.startswith("'") and value[1:].lstrip().startswith(("=", "+", "-", "@")):
+        return value[1:]
+    return value or ""
+
+
 def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     items = validate_question_set(list(questions))
@@ -26,7 +43,7 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
         writer = csv.DictWriter(handle, fieldnames=QUESTION_COLUMNS)
         writer.writeheader()
         for q in items:
-            writer.writerow({
+            writer.writerow(_safe_csv_row({
                 "id": q.id, "topic": q.topic, "question": q.question,
                 "expected_answer": q.expected_answer, "answerable": str(q.answerable).lower(),
                 "difficulty": q.difficulty, "question_type": q.question_type.value, "rationale": q.rationale,
@@ -41,7 +58,7 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
                     [quote.model_dump() for quote in q.supporting_quotes], ensure_ascii=False,
                 ),
                 "review_status": q.review_status, "reviewer_notes": q.reviewer_notes,
-            })
+            }))
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for q in items:
             handle.write(q.model_dump_json() + "\n")
@@ -58,6 +75,7 @@ def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuesti
         with path.open(encoding="utf-8-sig", newline="") as handle:
             items = []
             for row in csv.DictReader(handle):
+                row = {key: _restore_csv_value(value) for key, value in row.items()}
                 sources = []
                 source_ids = row.get("source_ids", "").split(" | ") if row.get("source_ids") else []
                 files = row.get("source_files", "").split(" | ") if row.get("source_files") else []
@@ -113,7 +131,7 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
         writer.writeheader()
         for record in records:
             scores = record.scores
-            writer.writerow({
+            writer.writerow(_safe_csv_row({
                 "מזהה שאלה": record.question.id, "מזהה שאלת מקור": record.question.parent_question_id,
                 "נושא": record.question.topic, "צורת שאלה": QUESTION_FORM_HEBREW[record.question.question_form],
                 "התנהגות מצופה": EXPECTED_BEHAVIOR_HEBREW[record.question.expected_behavior],
@@ -142,7 +160,7 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
                     [assessment.model_dump() for assessment in scores.claim_assessments] if scores else [],
                     ensure_ascii=False,
                 ),
-            })
+            }))
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(record.model_dump_json() + "\n")

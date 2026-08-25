@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -13,10 +14,63 @@ ANSWER_SUCCESS = {Outcome.CORRECT_ANSWER}
 ANSWER_USEFUL = {Outcome.CORRECT_ANSWER, Outcome.PARTIAL_TOO_LITTLE, Outcome.PARTIAL_TOO_MUCH, Outcome.CORRECT_CLARIFICATION}
 PIPELINE_SUCCESS = {Outcome.CORRECT_ANSWER, Outcome.CORRECT_ABSTENTION, Outcome.CORRECT_CLARIFICATION}
 RISKY = {Outcome.MISLEADING_HALLUCINATION, Outcome.SHOULD_HAVE_ABSTAINED, Outcome.MISSING_CLARIFICATION}
+MIN_TOPIC_SAMPLE = 10
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
+
+
+def _wilson_interval(successes: int, total: int, z: float = 1.96) -> list[float] | None:
+    if total <= 0:
+        return None
+    proportion = successes / total
+    denominator = 1 + z * z / total
+    center = (proportion + z * z / (2 * total)) / denominator
+    margin = z * math.sqrt((proportion * (1 - proportion) + z * z / (4 * total)) / total) / denominator
+    return [max(0.0, center - margin), min(1.0, center + margin)]
+
+
+def _paired_variant_metrics(records: list[EvaluationRecord]) -> dict:
+    evaluable = {
+        record.question.id: record
+        for record in records
+        if record.outcome not in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}
+    }
+    categories = Counter()
+    by_form: dict[str, Counter] = defaultdict(Counter)
+    for child in evaluable.values():
+        parent_id = child.question.parent_question_id
+        if not parent_id or parent_id not in evaluable:
+            continue
+        parent = evaluable[parent_id]
+        parent_success = parent.outcome in PIPELINE_SUCCESS
+        child_success = child.outcome in PIPELINE_SUCCESS
+        category = (
+            "both_success" if parent_success and child_success else
+            "parent_only" if parent_success else
+            "variant_only" if child_success else
+            "both_failure"
+        )
+        categories[category] += 1
+        by_form[child.question.question_form.value][category] += 1
+
+    def summarize(values: Counter) -> dict:
+        total = sum(values.values())
+        parent_success_total = values["both_success"] + values["parent_only"]
+        return {
+            "pairs": total,
+            **{key: values[key] for key in ("both_success", "parent_only", "variant_only", "both_failure")},
+            "variant_success_rate": _rate(values["both_success"] + values["variant_only"], total),
+            "robustness_when_parent_succeeds": _rate(values["both_success"], parent_success_total),
+            "degradation_rate": _rate(values["parent_only"], parent_success_total),
+            "variant_success_interval_95": _wilson_interval(values["both_success"] + values["variant_only"], total),
+        }
+
+    return {
+        **summarize(categories),
+        "by_form": {form: summarize(values) for form, values in sorted(by_form.items())},
+    }
 
 
 def _retrieval_good(record: EvaluationRecord) -> bool:
@@ -69,6 +123,11 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
             "useful_rate": _rate(topic_useful, len(topic_evaluable)),
             "risky_rate": _rate(topic_risky, len(topic_evaluable)),
             "good_retrieval_rate": _rate(topic_good_retrieval, len(topic_retrieval)),
+            "correct_interval_95": _wilson_interval(topic_correct, len(topic_answer_tasks)),
+            "useful_interval_95": _wilson_interval(topic_useful, len(topic_evaluable)),
+            "risky_interval_95": _wilson_interval(topic_risky, len(topic_evaluable)),
+            "good_retrieval_interval_95": _wilson_interval(topic_good_retrieval, len(topic_retrieval)),
+            "small_sample_warning": len(topic_evaluable) < MIN_TOPIC_SAMPLE,
             "outcomes": dict(Counter(r.outcome.value for r in topic_records)),
         }
 
@@ -94,6 +153,9 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "infrastructure_errors": len(records) - len(evaluable),
         "correct_answer_rate_on_answerable": _rate(sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks)),
         "factual_answer_success_rate": _rate(sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks)),
+        "factual_answer_success_interval_95": _wilson_interval(
+            sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks),
+        ),
         "useful_answer_rate_on_answerable": _rate(sum(r.outcome in ANSWER_USEFUL for r in answerable), len(answerable)),
         "clarification_success_rate": _rate(
             sum(r.outcome == Outcome.CORRECT_CLARIFICATION for r in clarification_tasks), len(clarification_tasks),
@@ -129,6 +191,8 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         },
         "pipeline": dict(pipeline), "by_topic": by_topic,
         "pipeline_evaluable": len(answer_tasks),
+        "minimum_topic_sample": MIN_TOPIC_SAMPLE,
+        "paired_variants": _paired_variant_metrics(records),
     }
 
 
@@ -153,6 +217,13 @@ def _metric_bar(label: str, value: float | None, detail: str, color: str) -> str
 
 def _pct_count(rate: float | None, count: int, denominator: int) -> str:
     return f"לא זמין ({count}/{denominator})" if rate is None else f"{rate:.1%} ({count}/{denominator})"
+
+
+def _pct_count_ci(rate: float | None, count: int, denominator: int, interval: list[float] | None) -> str:
+    base = _pct_count(rate, count, denominator)
+    if interval is None:
+        return base
+    return f"{base}<small>רווח סמך 95%: {interval[0]:.1%}–{interval[1]:.1%}</small>"
 
 
 def _details(record: EvaluationRecord) -> str:
@@ -237,17 +308,27 @@ def write_report(
     }
     pipeline_bars = "".join(_bar(label, summary["pipeline"].get(key, 0), summary["pipeline_evaluable"], color) for key, (label, color) in pipeline_labels.items())
     correct_topic_cell = lambda data: (
-        f'<td>{_pct_count(data["correct_rate"], data["correct"], data["answer_tasks"])}</td>'
+        f'<td>{_pct_count_ci(data["correct_rate"], data["correct"], data["answer_tasks"], data["correct_interval_95"])}</td>'
         if show_correct_answer_metrics else ""
     )
+    sample_warning = lambda data: '<small class="sample-warning">מדגם קטן</small>' if data["small_sample_warning"] else ""
     topic_rows = "".join(
-        f'<tr><td>{_esc(topic)}</td><td>{data["total"]}</td>'
+        f'<tr><td>{_esc(topic)}{sample_warning(data)}</td><td>{data["total"]}</td>'
         f'{correct_topic_cell(data)}'
-        f'<td>{_pct_count(data["useful_rate"], data["useful"], data["evaluable"])}</td>'
-        f'<td>{_pct_count(data["risky_rate"], data["risky"], data["evaluable"])}</td>'
-        f'<td>{_pct_count(data["good_retrieval_rate"], data["good_retrieval"], data["retrieval_evaluated"])}</td></tr>'
+        f'<td>{_pct_count_ci(data["useful_rate"], data["useful"], data["evaluable"], data["useful_interval_95"])}</td>'
+        f'<td>{_pct_count_ci(data["risky_rate"], data["risky"], data["evaluable"], data["risky_interval_95"])}</td>'
+        f'<td>{_pct_count_ci(data["good_retrieval_rate"], data["good_retrieval"], data["retrieval_evaluated"], data["good_retrieval_interval_95"])}</td></tr>'
         for topic, data in summary["by_topic"].items()
     )
+    paired = summary["paired_variants"]
+    form_labels = {"natural_user": "ניסוח טבעי", "ambiguous": "ניסוח הדורש הבהרה"}
+    paired_rows = "".join(
+        f'<tr><td>{form_labels.get(form, _esc(form))}</td><td>{data["pairs"]}</td>'
+        f'<td>{_pct(data["variant_success_rate"])}</td><td>{_pct(data["robustness_when_parent_succeeds"])}</td>'
+        f'<td>{_pct(data["degradation_rate"])}</td></tr>'
+        for form, data in paired["by_form"].items()
+    )
+    paired_panel = "" if not paired["pairs"] else f'''<div class="panel"><h2>עמידות לניסוחי משתמש</h2><div class="note">המדדים משווים כל וריאציה רק לשאלת המקור שלה. <b>שימור הצלחה</b> הוא שיעור הווריאציות שהצליחו כאשר שאלת המקור הצליחה; <b>הידרדרות</b> היא המקרה ההפוך.</div><div class="cards"><div class="card">זוגות שנבדקו<b>{paired["pairs"]}</b></div><div class="card">הצלחת וריאציות<b>{_pct(paired["variant_success_rate"])}</b></div><div class="card">שימור הצלחה<b>{_pct(paired["robustness_when_parent_succeeds"])}</b></div><div class="card">הידרדרות בניסוח<b>{_pct(paired["degradation_rate"])}</b></div></div><table><thead><tr><th>סוג וריאציה</th><th>זוגות</th><th>הצלחת וריאציה</th><th>שימור הצלחה</th><th>הידרדרות</th></tr></thead><tbody>{paired_rows}</tbody></table></div>'''
     details = "".join(_details(record) for record in records)
     outcome_options = "".join(f'<option value="{o.value}">{_esc(OUTCOME_HEBREW[o])}</option>' for o in Outcome if o.value in summary["outcomes"])
     topic_options = "".join(f'<option value="{_esc(topic)}">{_esc(topic)}</option>' for topic in summary["by_topic"])
@@ -263,12 +344,13 @@ def write_report(
         f'<div class="card">הימנעות נכונה<b>{_pct(summary["abstention_success_rate"])}</b><small>{summary["abstention_tasks"]} שאלות ללא מענה נתמך</small></div>' if summary["abstention_tasks"] else "",
     ))
     document = f'''<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>דוח הערכת צ׳אטבוט</title>
-<style>:root{{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px Arial,"Noto Sans Hebrew",sans-serif}}main{{max-width:1500px;margin:auto;padding:28px}}h1{{margin:0 0 4px}}h2{{margin-top:0}}.subtitle{{color:var(--muted);margin-bottom:24px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}}.card,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px #1e293b0a}}.card{{padding:18px}}.card b{{display:block;font-size:25px;margin-top:7px}}.card small,small{{color:var(--muted)}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:16px}}.panel{{padding:20px;overflow:auto}}.bar-row,.score-row{{display:grid;grid-template-columns:minmax(145px,1.3fr) 3fr 45px 48px;gap:9px;align-items:center;margin:10px 0}}.score-row{{grid-template-columns:minmax(170px,1.3fr) 3fr 68px minmax(95px,auto)}}.track{{height:12px;background:#e8edf4;border-radius:10px;overflow:hidden}}.track i{{height:100%;display:block;border-radius:10px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:right}}th{{background:#eef3f8;position:sticky;top:0}}.note{{background:#f8fafc;border-right:4px solid #2563eb;padding:12px 14px;margin:12px 0;border-radius:6px;line-height:1.55}}.insights{{margin-bottom:16px;border-top:4px solid #7c3aed}}.insights .lead{{font-size:17px}}.insight-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}}.insight{{border:1px solid var(--line);border-radius:10px;padding:15px;background:#fcfcff}}.insight h3{{margin:12px 0 6px}}.filters{{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}}input,select{{border:1px solid #bcc8d8;border-radius:8px;padding:10px;background:white;min-width:190px}}input{{flex:1}}.result{{background:white;border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}}summary{{display:grid;grid-template-columns:90px 150px 1fr auto;gap:10px;align-items:center;padding:13px;cursor:pointer}}summary:hover{{background:#f8fafc}}.id,.topic{{color:var(--muted)}}.badge{{color:white;padding:5px 9px;border-radius:999px;font-size:12px;white-space:nowrap}}.detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}}section{{padding:8px 16px}}h4{{margin:8px 0;color:#334155}}p,pre{{white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}}pre{{max-height:260px;overflow:auto;background:#f8fafc;padding:12px;border-radius:8px;font:13px Arial}}.scores{{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}}.scores span{{background:#eef4ff;padding:7px;border-radius:7px}}.warn{{color:#b91c1c}}.hidden{{display:none}}@media(max-width:700px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}summary{{grid-template-columns:1fr}}.detail-grid{{grid-template-columns:1fr}}.score-row{{grid-template-columns:1fr}}}}</style></head>
+<style>:root{{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px Arial,"Noto Sans Hebrew",sans-serif}}main{{max-width:1500px;margin:auto;padding:28px}}h1{{margin:0 0 4px}}h2{{margin-top:0}}.subtitle{{color:var(--muted);margin-bottom:24px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}}.card,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px #1e293b0a}}.card{{padding:18px}}.card b{{display:block;font-size:25px;margin-top:7px}}.card small,small{{color:var(--muted);display:block;margin-top:3px}}.sample-warning{{color:#b45309;font-weight:bold}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:16px}}.panel{{padding:20px;overflow:auto;margin-bottom:16px}}.bar-row,.score-row{{display:grid;grid-template-columns:minmax(145px,1.3fr) 3fr 45px 48px;gap:9px;align-items:center;margin:10px 0}}.score-row{{grid-template-columns:minmax(170px,1.3fr) 3fr 68px minmax(95px,auto)}}.track{{height:12px;background:#e8edf4;border-radius:10px;overflow:hidden}}.track i{{height:100%;display:block;border-radius:10px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}}th{{background:#eef3f8;position:sticky;top:0}}.note{{background:#f8fafc;border-right:4px solid #2563eb;padding:12px 14px;margin:12px 0;border-radius:6px;line-height:1.55}}.insights{{margin-bottom:16px;border-top:4px solid #7c3aed}}.insights .lead{{font-size:17px}}.insight-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}}.insight{{border:1px solid var(--line);border-radius:10px;padding:15px;background:#fcfcff}}.insight h3{{margin:12px 0 6px}}.filters{{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}}input,select{{border:1px solid #bcc8d8;border-radius:8px;padding:10px;background:white;min-width:190px}}input{{flex:1}}.result{{background:white;border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}}summary{{display:grid;grid-template-columns:90px 150px 1fr auto;gap:10px;align-items:center;padding:13px;cursor:pointer}}summary:hover{{background:#f8fafc}}.id,.topic{{color:var(--muted)}}.badge{{color:white;padding:5px 9px;border-radius:999px;font-size:12px;white-space:nowrap}}.detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}}section{{padding:8px 16px}}h4{{margin:8px 0;color:#334155}}p,pre{{white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}}pre{{max-height:260px;overflow:auto;background:#f8fafc;padding:12px;border-radius:8px;font:13px Arial}}.scores{{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}}.scores span{{background:#eef4ff;padding:7px;border-radius:7px}}.warn{{color:#b91c1c}}.hidden{{display:none}}@media(max-width:700px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}summary{{grid-template-columns:1fr}}.detail-grid{{grid-template-columns:1fr}}.score-row{{grid-template-columns:1fr}}}}</style></head>
 <body><main><h1>דוח הערכת ביצועי הצ׳אטבוט</h1><div class="subtitle">ניתוח איכות התשובות, האחזור והכשלים לאורך צינור ה-RAG</div>
 <div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מענה נכון, חלקי מועיל או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">סיכון למידע מטעה<b>{_pct(summary['risky_misinformation_rate'])}</b><small>הזיות, מענה במקום הימנעות או ללא בירור נדרש</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>{summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע נמצא אך התשובה לא הייתה נכונה</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']}</b><small>לא נכללו במדדי האיכות</small></div></div>
 <div class="grid"><div class="panel"><h2>התפלגות תוצאות</h2>{outcome_bars}<div class="note"><b>תשובה שימושית</b> היא תשובה נכונה, תשובה חלקית שיש בה מידע נכון או שאלת הבהרה מתאימה כשחסר פרט מהותי. <b>סיכון למידע מטעה</b> כולל הזיה שנשמעת סבירה, מענה לשאלה שהיה נכון להימנע ממנה או תשובה החלטית כשנדרש תחילה בירור.</div></div><div class="panel"><h2>אבחון צינור האחזור והיצירה</h2>{pipeline_bars}<div class="note"><b>אחזור טוב</b> פירושו שכל הפרטים הנדרשים נמצאו, ללא מקטע שסותר את תשובת הייחוס. <b>אחזור חלש</b> פירושו שחסר לפחות פרט נדרש אחד או שנמצא מקטע סותר. אחזור טוב עם תשובה לא תקינה מצביע על כשל בשלב יצירת התשובה.</div></div></div>
 <div class="grid"><div class="panel"><h2>מדדי מידע בתשובות</h2>{answer_scores}<div class="note"><b>כיסוי</b> הוא שיעור הפרטים הנדרשים שנענו נכון. <b>דיוק בפרטים שנענו</b> בודק כמה מהפרטים שהצ׳אטבוט ניסה לענות עליהם היו נכונים. בנוסף נמצאו בסך הכול: {answer_metrics['false_claims_total']} טענות שגויות, {answer_metrics['unsupported_claims_total']} טענות לא מבוססות ו-{answer_metrics['extraneous_claims_total']} טענות עודפות.</div></div><div class="panel"><h2>מדדי מידע באחזור</h2>{retrieval_scores}<div class="note"><b>כיסוי המידע</b> הוא מספר הפרטים הנדרשים שנמצאו במקטעים. <b>שיעור מקטעים רלוונטיים</b> מראה כמה מהמקטעים תרמו למענה. נמצאו {retrieval_metrics['irrelevant_chunks_total']} מקטעים לא רלוונטיים ו-{retrieval_metrics['contradictory_chunks_total']} מקטעים סותרים. המדדים מחושבים רק עבור שאלות שבהן סופקו מקטעים.</div></div></div>
-<div class="panel"><h2>ביצועים לפי נושא</h2><div class="note">כל מדדי הביצוע מוצגים בפורמט <b>אחוז (מונה/מכנה)</b>. מדד התשובות הנכונות כולל רק משימות שבהן נדרש מענה עובדתי; הבהרה והימנעות נמדדות בנפרד. עבור אחזור טוב, המכנה הוא רק שאלות מענה שבהן סופקו נתוני אחזור.</div><table><thead><tr><th>נושא</th><th>שאלות</th>{correct_topic_header}<th>תשובות שימושיות</th><th>סיכון למידע מטעה</th><th>אחזור טוב</th></tr></thead><tbody>{topic_rows}</tbody></table></div>
+{paired_panel}
+<div class="panel"><h2>ביצועים לפי נושא</h2><div class="note">כל מדדי הביצוע מוצגים בפורמט <b>אחוז (מונה/מכנה)</b> עם רווח סמך וילסון של 95%. נושאים עם פחות מ-{summary['minimum_topic_sample']} תוצאות מסומנים כמדגם קטן. מדד התשובות הנכונות כולל רק משימות שבהן נדרש מענה עובדתי; הבהרה והימנעות נמדדות בנפרד.</div><table><thead><tr><th>נושא</th><th>שאלות</th>{correct_topic_header}<th>תשובות שימושיות</th><th>סיכון למידע מטעה</th><th>אחזור טוב</th></tr></thead><tbody>{topic_rows}</tbody></table></div>
 {insights_html}
 <div class="panel" style="margin-top:16px"><h2>פירוט לפי שאלה</h2><div class="filters"><input id="search" placeholder="חיפוש בשאלה, בתשובה או במזהה"><select id="topic"><option value="">כל הנושאים</option>{topic_options}</select><select id="outcome"><option value="">כל התוצאות</option>{outcome_options}</select></div><div id="visibleCount"></div>{details}</div></main>
 <script>const rows=[...document.querySelectorAll('.result')],q=document.getElementById('search'),t=document.getElementById('topic'),o=document.getElementById('outcome'),c=document.getElementById('visibleCount');function f(){{const s=q.value.trim().toLocaleLowerCase('he');let n=0;rows.forEach(r=>{{const show=(!s||r.dataset.search.includes(s))&&(!t.value||r.dataset.topic===t.value)&&(!o.value||r.dataset.outcome===o.value);r.classList.toggle('hidden',!show);if(show)n++}});c.textContent='מוצגות '+n+' מתוך '+rows.length+' שאלות'}}[q,t,o].forEach(x=>x.addEventListener('input',f));f();</script></body></html>'''

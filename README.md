@@ -91,12 +91,19 @@ unanswerable_ratio = 0.10
 user_variation_ratio = 0.30
 ambiguous_variation_share = 0.33
 max_candidate_rounds = 3
+stable_question_ids = true
+question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, document_wide = 0.10, cross_document = 0.10 }
 min_topic_questions = 1
 max_topic_share = 0.35
 
 [evaluation]
 request_timeout_seconds = 60
 max_retries = 2
+chatbot_max_retries = 2
+chatbot_retry_base_seconds = 0.5
+chatbot_pacing_seconds = 0.0
+chatbot_max_response_bytes = 5000000
+chatbot_require_json_content_type = true
 
 [runtime]
 progress_enabled = true
@@ -119,10 +126,17 @@ log_level = "INFO"
 | `generation.user_variation_ratio` | `0.30` | Fraction of the total budget reserved for natural/ambiguous variants derived from canonical questions. Set to `0` to disable variants. The sum with `unanswerable_ratio` must be below `1`. |
 | `generation.ambiguous_variation_share` | `0.33` | Fraction of the variation budget that should require clarification; valid range `[0, 1]`. The remainder is natural but answerable wording. |
 | `generation.max_candidate_rounds` | `3` | Bounded attempts to refill a quota after invalid or duplicate candidates are rejected. |
+| `generation.stable_question_ids` | `true` | Derive reproducible content IDs. Use `--sequential-ids` for legacy run-local IDs. |
+| `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
 | `evaluation.request_timeout_seconds` | `60` | Timeout for each live chatbot HTTP request. |
-| `evaluation.max_retries` | `2` | Gemini retries after the initial attempt, with exponential backoff. This does not retry chatbot calls. |
+| `evaluation.max_retries` | `2` | Gemini retries after the initial attempt, with exponential backoff. |
+| `evaluation.chatbot_max_retries` | `2` | Retries for transient chatbot failures (408, 429, selected 5xx, timeouts, and connection failures). Authentication and malformed responses are not retried. |
+| `evaluation.chatbot_retry_base_seconds` | `0.5` | Initial chatbot exponential-backoff delay. A valid `Retry-After` header takes precedence. |
+| `evaluation.chatbot_pacing_seconds` | `0.0` | Minimum delay between sequential live-chatbot requests. |
+| `evaluation.chatbot_max_response_bytes` | `5000000` | Maximum accepted chatbot response size. |
+| `evaluation.chatbot_require_json_content_type` | `true` | Reject live responses whose media type is not JSON or `+json`. |
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
@@ -148,19 +162,21 @@ chatbot-eval --config config.toml --no-progress --log-level INFO \
 Generation is staged rather than performed with one unconstrained prompt:
 
 1. **Ingest documents** by recursively finding supported files and normalizing their text.
-2. **Create overlapping chunks** with stable source IDs. PDF page numbers remain in locations.
+2. **Create structure-aware overlapping chunks** with stable source IDs. Paragraph/heading boundaries,
+   PDF page numbers, and DOCX table locations remain visible in provenance.
 3. **Discover central topics** in batches while treating document content as untrusted data.
 4. **Merge topic maps** into roughly 4-12 broad, non-overlapping topics when evidence permits.
 5. **Allocate quotas** by importance, minimum topic allocation, and maximum topic share.
 6. **Select evidence** using topic-linked chunks followed by lexical topic overlap.
 7. **Generate structured candidates** containing the question, answer, difficulty, type, rationale,
    exact source IDs, and verbatim supporting quotations.
-8. **Validate provenance and type** deterministically.
+8. **Validate provenance and enforce the configured answerable question-type targets** deterministically.
 9. **Remove near-duplicates**, including matches from an optional previous silver set.
 10. **Derive realistic user variations** from accepted canonical questions. Natural variants retain
     the same expected answer; deliberately ambiguous variants expect one focused follow-up question.
 11. **Generate boundary cases** using the budget reserved for unanswerable questions.
-12. **Export for human review** with `review_status=pending`.
+12. **Assign reproducible content-derived IDs** and export for human review with
+    `review_status=pending`.
 
 The command may return fewer questions than requested. This is expected when candidates are
 duplicates, evidence cannot support the requested complexity, quotations are not verbatim, source
@@ -176,10 +192,10 @@ discriminator such as population, status, timeframe, or requested procedure.
 | Format | Behavior |
 |---|---|
 | `.txt`, `.md`, `.rst` | Read as UTF-8 with replacement for malformed characters. |
-| `.csv` | Rows become pipe-separated text. |
+| `.csv` | Rows become pipe-separated blocks so row boundaries survive chunking. |
 | `.json`, `.jsonl` | Read as structured or line-delimited text. |
 | `.pdf` | Text extracted locally with page-aware locations. Scanned pages require OCR first. |
-| `.docx` | Paragraph text extracted locally. |
+| `.docx` | Paragraphs and tables are extracted as distinct structural sections. |
 
 ### Question types
 
@@ -238,6 +254,7 @@ Rejection counts are written to operational logs at `INFO` level.
 | `--unanswerable-ratio R` | config value | Per-run boundary-question ratio in `[0, 1)`. |
 | `--user-variation-ratio R` | config value | Share of the total budget used for derived user variants; `[0, 1)`. Set to `0` for canonical-only generation. |
 | `--ambiguous-variation-share R` | config value | Share of variants expected to trigger clarification; `[0, 1]`. |
+| `--sequential-ids` | off | Use legacy `Q0001`-style run-local IDs instead of content-derived stable IDs. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
 
 Representative run:
@@ -333,10 +350,11 @@ chatbot-eval --config config.toml evaluate \
   --output ./outputs/run-001
 ```
 
-Timeouts, connection failures, and invalid JSON become `chatbot_error` records and are excluded from
-quality denominators. The generic adapter does not retry or throttle chatbot calls. Production fleet
-adapters should own authentication, pacing, retries, idempotency, sessions, and organization-specific
-formats.
+Timeouts, connection failures, invalid JSON, unexpected content types, oversized responses, and
+missing answer fields become categorized `chatbot_error` records and are excluded from quality
+denominators. The generic adapter retries only transient failures with bounded exponential backoff,
+honors `Retry-After`, and supports optional pacing. Production fleet adapters should still own
+authentication, idempotency, sessions, and organization-specific formats.
 
 ## Workflow 3: evaluate a premade Q&A file
 
@@ -378,6 +396,7 @@ Explicit mappings are recommended for stable production jobs.
 | `--infer-topics` | off | Infer broad Hebrew topics for unclassified rows, in batches up to 250. |
 | `--generate-insights` | off | Write and embed optional cross-result insights. |
 | `--hide-correct-answer-metrics` | off | Hide correctness presentation metrics but retain data. |
+| `--strict` | off | Reject the entire import if any row is invalid instead of logging and skipping invalid rows. |
 | `--resume` | off | Reuse completed rows whose imported inputs still match. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 
@@ -395,9 +414,10 @@ chatbot-eval --config config.toml evaluate-file \
   --output ./outputs/custom-evaluation
 ```
 
-Rows missing a question or reference are skipped with a warning. Empty answers, explicit errors,
+Rows missing a question or reference are skipped with a warning unless `--strict` is used. Empty answers, explicit errors,
 fault payloads, and Spike Arrest messages are infrastructure errors and are not sent to Gemini. The
-importer does not retry stored errors.
+importer does not retry stored errors. Imported fault details are categorized and bounded so raw
+gateway payloads are not propagated into reports.
 
 The expected-answer column is the judging reference. The optional source column is treated as the
 chatbot's retrieved context for diagnostics, not as a separately reviewed gold reference.
@@ -407,6 +427,11 @@ chatbot's retrieved context for diagnostics, not as a separately reviewed gold r
 This optional component helps a chatbot manager create a strong starting prompt without copying
 domain rules by hand. It reuses the document loader and topic discovery, then asks Gemini for a
 structured `PromptPackage`.
+
+The package is checked deterministically for Hebrew content, configured assistant identity,
+grounding, clarification, abstention, privacy, prompt-injection guidance, distinct non-empty lists,
+application guardrails, review checks, and test coverage. One bounded repair call is made when the
+first package fails; a still-invalid package is rejected rather than written.
 
 The prompt generator separates:
 
@@ -513,8 +538,9 @@ Both evaluation workflows write:
 | `run_manifest.json` | Redacted settings, input and implementation hashes, versions, timing, status, and result counts. |
 
 The HTML includes KPI cards, outcome distribution, retrieval-versus-answer diagnostics, information
-metrics, topic performance as `percentage (count/denominator)`, optional insights before per-question
-details, and searchable/filterable question drill-down.
+metrics, topic performance as `percentage (count/denominator)` with 95% Wilson intervals and small-
+sample warnings, parent/variant robustness metrics, optional insights before per-question details,
+and searchable/filterable question drill-down.
 
 “Good retrieval” means all required details were found and no retrieved chunk contradicted the
 reference. Missing context is missing telemetry, not bad retrieval, and is excluded from retrieval
@@ -528,8 +554,10 @@ denominators. “Good retrieval + bad answer” isolates a generation-stage fail
 `--generate-insights` performs one additional Gemini call after judging. It detects recurring
 patterns across topics, wording, answer errors, retrieval, personal-data-like questions, and
 numbers/dates. Each issue has evidence counts, example IDs, confidence, a cause hypothesis, and a
-recommendation. Correlation is not presented as proven causation, personal values are not repeated,
-and insight failure does not prevent normal report generation.
+recommendation. Application code removes unknown evidence IDs, recomputes counts and topics, drops
+unsupported issues, and reduces single-example high-priority claims. Correlation is not presented as
+proven causation, personal values are not repeated, and insight failure does not prevent normal
+report generation.
 
 ## Progress, logging, retries, and rate limits
 
@@ -547,8 +575,9 @@ Logs include command state, counts, models, IDs, outcomes, latency, retries, can
 reasons, and errors. They avoid complete questions/answers, API keys, and authentication headers.
 
 Gemini calls retry according to `evaluation.max_retries` with exponential backoff. Live chatbot
-calls are sequential but have no built-in retry or pacing. Gateway rate limits such as Spike Arrest
-should be handled in a fleet-specific adapter.
+calls remain sequential and use the separately configured transient retry and pacing policy.
+Authentication failures and malformed responses fail immediately; rate-limit responses honor
+`Retry-After` when supplied.
 
 Evaluation writes a checkpoint after every completed chatbot/judge result. `--resume` validates
 input fingerprints before reusing records and rejects mismatched checkpoints. Final JSON and HTML,
@@ -603,8 +632,9 @@ protections: documents, questions, answers, and retrieved chunks are untrusted d
 ```
 
 Tests use fake structured LLMs and do not require a Gemini key. They cover quotas, evidence
-validation, deduplication, provenance, serialization, premade imports, topic inference,
-classification, insights, and reporting options.
+validation, deduplication, provenance, serialization and CSV safety, strict premade imports, HTTP
+retry behavior, topic inference/harmonization, classification, insight validation, prompt-package
+repair, paired variant metrics, confidence intervals, and reporting options.
 
 ## Recommended production process
 
@@ -623,20 +653,17 @@ classification, insights, and reporting options.
 
 - Silver references still require human review.
 - Topic evidence selection uses mapped sources plus lexical overlap, not embeddings or a graph.
-- Question-type proportions are prompted, not deterministic configurable quotas.
 - User-variation and ambiguity budgets are configurable, but the linguistic quality of each variant
   still requires human review.
 - Run manifests hash input documents and implementation files; incremental regeneration is not yet implemented.
-- Question IDs are sequential within each run, not stable across corpus versions.
 - Exclusion is file-based rather than persisted in a review database.
 - Personal types are disabled pending an allowlisted, masked, auditable data interface.
-- The generic HTTP adapter has no automatic pacing or retry policy.
 - LLM judges can have style, verbosity, and model-family biases and require human audits.
 - Generated system prompts are starting points and are neither deployed automatically nor security
   controls by themselves.
 
-Likely next steps are incremental regeneration, stable question IDs, configurable type distributions,
-a second-pass quality grader, judge calibration, and persistent review workflows.
+Likely next steps are incremental regeneration, a second-pass quality grader, judge calibration,
+persistent review workflows, and the deferred engineering-quality baseline.
 
 ## Research basis
 

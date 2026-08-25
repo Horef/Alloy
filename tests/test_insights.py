@@ -39,8 +39,35 @@ def test_insights_are_validated_saved_and_embedded(tmp_path):
 
     insights = generate_insights([record], FakeLLM(), "fake")
     assert insights.issues[0].example_question_ids == ["Q1"]
+    assert insights.issues[0].evidence_count == 1
+    assert insights.issues[0].affected_topics == ["מידע אישי"]
+    assert insights.issues[0].priority == "medium"
+    assert insights.issues[0].confidence == "low"
     assert write_insights(insights, tmp_path).exists()
     _, report_path = write_report([record], tmp_path, insights)
     report = report_path.read_text(encoding="utf-8")
     assert "תובנות והמלצות" in report
     assert "אינם מוכיחים סיבתיות" in report
+
+
+def test_insights_without_valid_evidence_are_discarded():
+    record = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+        result=ChatbotResult(question_id="Q1", answer="שגוי"),
+        outcome=Outcome.UNRELATED_ANSWER,
+    )
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            return EvaluationInsights(
+                executive_summary="סיכום",
+                issues=[InsightIssue(
+                    title="בעיה", priority="medium", confidence="medium", evidence_count=1,
+                    affected_topics=["נושא"], observed_pattern="דפוס",
+                    likely_cause_hypothesis="השערה", recommendation="המלצה",
+                    example_question_ids=["NOT_REAL"],
+                )],
+                strengths=[], methodology_note="שיטה",
+            )
+
+    assert generate_insights([record], FakeLLM(), "fake").issues == []

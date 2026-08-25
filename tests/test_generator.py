@@ -1,5 +1,8 @@
 from chatbot_eval.documents import Chunk
-from chatbot_eval.generator import GenerationOptions, SilverSetGenerator, _is_duplicate, allocate_quotas, validate_candidate
+from chatbot_eval.generator import (
+    GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate,
+    allocate_quotas, allocate_type_targets, validate_candidate,
+)
 from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, TopicCandidate, TopicMap, VariationBatch
 
 
@@ -24,6 +27,42 @@ def test_quota_never_overallocates_when_minimum_exceeds_budget():
     topics = [TopicCandidate(name=str(i), description="", importance=1, source_ids=[]) for i in range(5)]
     quotas = allocate_quotas(topics, total=2, minimum=3, max_share=0.5)
     assert sum(quotas.values()) == 2
+
+
+def test_type_targets_redistribute_types_the_corpus_cannot_support():
+    targets = (
+        (QuestionType.BASIC_KNOWLEDGE.value, 0.5),
+        (QuestionType.DOCUMENT_WIDE.value, 0.25),
+        (QuestionType.CROSS_DOCUMENT.value, 0.25),
+    )
+    counts = allocate_type_targets(8, targets, [Chunk("a#1", "a.md", "document", "text")])
+
+    assert counts == {QuestionType.BASIC_KNOWLEDGE.value: 8}
+
+    unsupported_only = ((QuestionType.CROSS_DOCUMENT.value, 1.0),)
+    assert allocate_type_targets(3, unsupported_only, [Chunk("a#1", "a.md", "document", "text")]) == {
+        QuestionType.BASIC_KNOWLEDGE.value: 3,
+    }
+
+
+def test_stable_ids_are_deterministic_and_update_variant_parent():
+    def questions():
+        return [
+            SilverQuestion(id="Q0001", topic="נושא", question="מה המדיניות?", expected_answer="מחר"),
+            SilverQuestion(
+                id="Q0002", topic="נושא", question="אז מתי זה קורה?", expected_answer="מחר",
+                question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0001",
+            ),
+        ]
+
+    first, second = questions(), questions()
+    _assign_stable_ids(first)
+    _assign_stable_ids(second)
+
+    assert [item.id for item in first] == [item.id for item in second]
+    assert first[0].id.startswith("Q-")
+    assert first[1].id.startswith("V-")
+    assert first[1].parent_question_id == first[0].id
 
 
 def _candidate(question_type=QuestionType.BASIC_KNOWLEDGE, source_ids=None, quotes=None):

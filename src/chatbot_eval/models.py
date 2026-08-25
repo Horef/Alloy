@@ -184,17 +184,17 @@ class InsightIssue(BaseModel):
     priority: Literal["high", "medium", "low"]
     confidence: Literal["high", "medium", "low"]
     evidence_count: int = Field(ge=1)
-    affected_topics: list[str]
+    affected_topics: list[str] = Field(max_length=12)
     observed_pattern: str
     likely_cause_hypothesis: str
     recommendation: str
-    example_question_ids: list[str]
+    example_question_ids: list[str] = Field(min_length=1, max_length=8)
 
 
 class EvaluationInsights(BaseModel):
     executive_summary: str
-    strengths: list[str]
-    issues: list[InsightIssue]
+    strengths: list[str] = Field(max_length=4)
+    issues: list[InsightIssue] = Field(max_length=6)
     methodology_note: str
 
 

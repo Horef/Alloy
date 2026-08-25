@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--unanswerable-ratio", type=float)
     generate.add_argument("--user-variation-ratio", type=float, help="Share of the total set reserved for realistic user phrasings")
     generate.add_argument("--ambiguous-variation-share", type=float, help="Share of user variations that should require clarification")
+    generate.add_argument("--sequential-ids", action="store_true", help="Use legacy Q0001-style run-local IDs")
     generate.add_argument(
         "--exclude-questions", type=Path,
         help="Existing silver CSV/JSONL whose questions must not be generated again",
@@ -93,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--infer-topics", action="store_true", help="Infer consistent Hebrew topics with Gemini when no topic column exists")
     evaluate_file.add_argument("--generate-insights", action="store_true", help="Generate an optional Hebrew cross-result insights block")
     evaluate_file.add_argument("--hide-correct-answer-metrics", action="store_true", help="Hide correct-answer metrics from the report summary and topic table")
+    evaluate_file.add_argument("--strict", action="store_true", help="Fail if any imported row is invalid or skipped")
     evaluate_file.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate_file.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
     return parser
@@ -200,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
                 "max_questions": maximum, "topic": args.topic, "topic_count": args.topic_count,
                 "unanswerable_ratio": ratio, "user_variation_ratio": variation_ratio,
                 "ambiguous_variation_share": ambiguous_share,
+                "stable_question_ids": settings.stable_question_ids and not args.sequential_ids,
+                "question_type_targets": settings.question_type_targets,
             },
         ) as manifest:
             chunks = load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
@@ -213,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
                 unanswerable_ratio=ratio, user_variation_ratio=variation_ratio,
                 ambiguous_variation_share=ambiguous_share,
                 max_candidate_rounds=settings.max_candidate_rounds,
+                stable_question_ids=settings.stable_question_ids and not args.sequential_ids,
+                question_type_targets=tuple(settings.question_type_targets.items()),
                 requested_topic=args.topic, requested_topic_count=args.topic_count,
                 excluded_questions=excluded_questions,
             )
@@ -237,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         pairs = read_premade_results(
             args.results, sheet_name=args.sheet, columns=columns, progress_enabled=progress_enabled,
+            strict=args.strict,
         )
         if args.infer_topics:
             infer_topics(pairs, llm, settings.judge_model, progress_enabled=progress_enabled)
@@ -249,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output, command=args.command, settings=settings, inputs=[args.results],
             parameters={
                 "sheet": args.sheet, "infer_topics": args.infer_topics,
-                "generate_insights": args.generate_insights, "resume": args.resume,
+                "generate_insights": args.generate_insights, "resume": args.resume, "strict": args.strict,
             },
         ) as manifest:
             records, resumed_count, checkpoint_path = _checkpointed_evaluation(
@@ -280,6 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     adapter = HttpChatbotAdapter(
         args.chatbot_url, args.question_field, args.answer_field, args.context_field,
         settings.request_timeout_seconds, _headers(args.header),
+        max_retries=settings.chatbot_max_retries,
+        retry_base_seconds=settings.chatbot_retry_base_seconds,
+        pacing_seconds=settings.chatbot_pacing_seconds,
+        max_response_bytes=settings.chatbot_max_response_bytes,
+        require_json_content_type=settings.chatbot_require_json_content_type,
     )
     with RunManifest(
         args.output, command=args.command, settings=settings, inputs=[args.questions],

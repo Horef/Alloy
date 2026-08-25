@@ -22,10 +22,17 @@ class Settings:
     user_variation_ratio: float
     ambiguous_variation_share: float
     max_candidate_rounds: int
+    stable_question_ids: bool
+    question_type_targets: dict[str, float]
     min_topic_questions: int
     max_topic_share: float
     request_timeout_seconds: int
     max_retries: int
+    chatbot_max_retries: int
+    chatbot_retry_base_seconds: float
+    chatbot_pacing_seconds: float
+    chatbot_max_response_bytes: int
+    chatbot_require_json_content_type: bool
     progress_enabled: bool
     log_file: str
     log_level: str
@@ -56,10 +63,24 @@ class Settings:
             errors.append("generation.ambiguous_variation_share must be in [0, 1]")
         if self.max_candidate_rounds < 1:
             errors.append("generation.max_candidate_rounds must be positive")
+        allowed_types = {"basic_knowledge", "topic_integration", "document_wide", "cross_document"}
+        unknown_types = sorted(set(self.question_type_targets) - allowed_types)
+        if unknown_types:
+            errors.append(f"generation.question_type_targets has unsupported types: {unknown_types}")
+        if any(value < 0 for value in self.question_type_targets.values()):
+            errors.append("generation.question_type_targets values must be non-negative")
+        if self.question_type_targets and abs(sum(self.question_type_targets.values()) - 1.0) > 0.001:
+            errors.append("generation.question_type_targets values must sum to 1")
         if self.request_timeout_seconds <= 0:
             errors.append("evaluation.request_timeout_seconds must be positive")
         if self.max_retries < 0:
             errors.append("evaluation.max_retries must be non-negative")
+        if self.chatbot_max_retries < 0:
+            errors.append("evaluation.chatbot_max_retries must be non-negative")
+        if self.chatbot_retry_base_seconds < 0 or self.chatbot_pacing_seconds < 0:
+            errors.append("chatbot retry and pacing durations must be non-negative")
+        if self.chatbot_max_response_bytes < 1024:
+            errors.append("evaluation.chatbot_max_response_bytes must be at least 1024")
         if self.log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
             errors.append("runtime.log_level must be DEBUG, INFO, WARNING, or ERROR")
         if errors:
@@ -104,10 +125,26 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         user_variation_ratio=float(_get(data, "generation", "user_variation_ratio", 0.3)),
         ambiguous_variation_share=float(_get(data, "generation", "ambiguous_variation_share", 0.33)),
         max_candidate_rounds=int(_get(data, "generation", "max_candidate_rounds", 3)),
+        stable_question_ids=_as_bool(
+            _get(data, "generation", "stable_question_ids", True),
+            "generation.stable_question_ids",
+        ),
+        question_type_targets={
+            str(key): float(value)
+            for key, value in dict(_get(data, "generation", "question_type_targets", {})).items()
+        },
         min_topic_questions=int(_get(data, "generation", "min_topic_questions", 1)),
         max_topic_share=float(_get(data, "generation", "max_topic_share", 0.35)),
         request_timeout_seconds=int(_get(data, "evaluation", "request_timeout_seconds", 60)),
         max_retries=int(_get(data, "evaluation", "max_retries", 2)),
+        chatbot_max_retries=int(_get(data, "evaluation", "chatbot_max_retries", 2)),
+        chatbot_retry_base_seconds=float(_get(data, "evaluation", "chatbot_retry_base_seconds", 0.5)),
+        chatbot_pacing_seconds=float(_get(data, "evaluation", "chatbot_pacing_seconds", 0.0)),
+        chatbot_max_response_bytes=int(_get(data, "evaluation", "chatbot_max_response_bytes", 5_000_000)),
+        chatbot_require_json_content_type=_as_bool(
+            _get(data, "evaluation", "chatbot_require_json_content_type", True),
+            "evaluation.chatbot_require_json_content_type",
+        ),
         progress_enabled=_as_bool(_get(data, "runtime", "progress_enabled", True), "runtime.progress_enabled"),
         log_file=str(_get(data, "runtime", "log_file", "")),
         log_level=str(_get(data, "runtime", "log_level", "INFO")),

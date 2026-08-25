@@ -66,3 +66,39 @@ def test_clarification_is_not_in_factual_answer_denominator():
     assert summary["clarification_success_rate"] == 1
     assert summary["answer_tasks"] == 1
     assert summary["clarification_tasks"] == 1
+
+
+def test_report_includes_paired_variant_robustness_and_sample_uncertainty(tmp_path):
+    parent = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+        result=ChatbotResult(question_id="Q1", answer="תשובה"), outcome=Outcome.CORRECT_ANSWER,
+    )
+    failed_variant = EvaluationRecord(
+        question=SilverQuestion(
+            id="V1", topic="נושא", question="איך זה עובד?", expected_answer="תשובה",
+            question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1",
+        ),
+        result=ChatbotResult(question_id="V1", answer="לא יודע"), outcome=Outcome.UNRELATED_ANSWER,
+    )
+    successful_variant = EvaluationRecord(
+        question=SilverQuestion(
+            id="V2", topic="נושא", question="ומה התשובה?", expected_answer="תשובה",
+            question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1",
+        ),
+        result=ChatbotResult(question_id="V2", answer="תשובה"), outcome=Outcome.CORRECT_ANSWER,
+    )
+
+    summary = build_summary([parent, failed_variant, successful_variant])
+    paired = summary["paired_variants"]
+    assert paired["pairs"] == 2
+    assert paired["both_success"] == 1
+    assert paired["parent_only"] == 1
+    assert paired["robustness_when_parent_succeeds"] == 0.5
+    assert paired["variant_success_interval_95"] is not None
+    assert summary["by_topic"]["נושא"]["small_sample_warning"] is True
+
+    _, report_path = write_report([parent, failed_variant, successful_variant], tmp_path)
+    rendered = report_path.read_text(encoding="utf-8")
+    assert "עמידות לניסוחי משתמש" in rendered
+    assert "מדגם קטן" in rendered
+    assert "רווח סמך 95%" in rendered

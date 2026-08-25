@@ -91,7 +91,14 @@ def _xlsx_rows(path: Path, sheet_name: str | None) -> tuple[str, list[dict[str, 
 
 def _tabular_rows(path: Path) -> tuple[str, list[dict[str, Any]]]:
     if path.suffix.lower() == ".jsonl":
-        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows = []
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSONL at line {line_number}: {exc.msg}") from exc
         if not all(isinstance(row, dict) for row in rows):
             raise ValueError("Every JSONL line must contain an object")
         return "jsonl", rows
@@ -99,14 +106,25 @@ def _tabular_rows(path: Path) -> tuple[str, list[dict[str, Any]]]:
         return "csv", list(csv.DictReader(handle))
 
 
+def _safe_error(value: str, category: str = "stored_error") -> str:
+    compact = " ".join(value.split())
+    if not compact:
+        return ""
+    return f"{category}: {compact[:240]}" + ("…" if len(compact) > 240 else "")
+
+
 def _looks_like_error(answer: str, explicit_error: str) -> str:
     if explicit_error.strip():
-        return explicit_error.strip()
+        return _safe_error(explicit_error)
     if not answer.strip():
         return "Premade result contains an empty chatbot answer"
     normalized = answer.casefold()
-    if (normalized.lstrip().startswith(("{", "[")) and any(token in normalized for token in ("'fault'", '"fault"', "errorcode", "faultstring"))) or "spike arrest violation" in normalized:
-        return answer
+    if "spike arrest violation" in normalized:
+        return "throttled: detected Spike Arrest violation in stored response"
+    if normalized.lstrip().startswith(("{", "[")) and any(
+        token in normalized for token in ("'fault'", '"fault"', "errorcode", "faultstring")
+    ):
+        return "api_fault: detected structured fault payload in stored response"
     return ""
 
 
@@ -127,6 +145,7 @@ def read_premade_results(
     sheet_name: str | None = None,
     columns: ResultColumns | None = None,
     progress_enabled: bool = False,
+    strict: bool = False,
 ) -> list[tuple[SilverQuestion, ChatbotResult]]:
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
@@ -141,18 +160,26 @@ def read_premade_results(
     mapping = _resolve(headers, columns or ResultColumns())
     logger.info("premade_results_loading path=%s source=%s row_count=%d columns=%r", path, source_name, len(rows), mapping)
     results = []
+    skipped: list[str] = []
     for index, row in enumerate(track(rows, enabled=progress_enabled, description="Reading premade results", total=len(rows)), 2):
-        question_text = str(row.get(mapping["question"], "") or "").strip()
-        expected = str(row.get(mapping["expected_answer"], "") or "").strip()
-        answer = str(row.get(mapping["answer"], "") or "").strip()
-        if not question_text or not expected:
-            logger.warning("premade_row_skipped row=%d reason=missing_question_or_reference", index)
+        try:
+            if None in row and any(value not in (None, "") for value in (row.get(None) or [])):
+                raise ValueError("row has more values than headers")
+            question_text = str(row.get(mapping["question"], "") or "").strip()
+            expected = str(row.get(mapping["expected_answer"], "") or "").strip()
+            answer = str(row.get(mapping["answer"], "") or "").strip()
+            if not question_text or not expected:
+                raise ValueError("missing question or reference answer")
+            external_id = str(row.get(mapping["id"], "") or "").strip() if mapping["id"] else ""
+            source = str(row.get(mapping["source"], "") or "").strip() if mapping["source"] else ""
+            explicit_error = str(row.get(mapping["error"], "") or "").strip() if mapping["error"] else ""
+            topic = str(row.get(mapping["topic"], "") or "לא סווג").strip() if mapping["topic"] else "לא סווג"
+            answerable = _as_bool(row.get(mapping["answerable"])) if mapping["answerable"] else True
+        except ValueError as exc:
+            reason = f"row {index}: {exc}"
+            skipped.append(reason)
+            logger.warning("premade_row_skipped row=%d reason=%s", index, exc)
             continue
-        external_id = str(row.get(mapping["id"], "") or "").strip() if mapping["id"] else ""
-        source = str(row.get(mapping["source"], "") or "").strip() if mapping["source"] else ""
-        explicit_error = str(row.get(mapping["error"], "") or "").strip() if mapping["error"] else ""
-        topic = str(row.get(mapping["topic"], "") or "לא סווג").strip() if mapping["topic"] else "לא סווג"
-        answerable = _as_bool(row.get(mapping["answerable"])) if mapping["answerable"] else True
         question_id = f"ROW{index:05d}"
         refs = [SourceRef(file=path.name, location=f"{source_name}!row {index}", excerpt=source)] if source else []
         question = SilverQuestion(
@@ -168,6 +195,12 @@ def read_premade_results(
             error=_looks_like_error(answer, explicit_error),
         )
         results.append((question, result))
+    if strict and skipped:
+        preview = "; ".join(skipped[:10])
+        raise ValueError(
+            f"Strict import rejected {len(skipped)} invalid row(s): {preview}"
+            + (f"; and {len(skipped) - 10} more" if len(skipped) > 10 else "")
+        )
     logger.info("premade_results_loaded usable_rows=%d skipped_rows=%d", len(results), len(rows) - len(results))
     validate_question_set([question for question, _ in results])
     return results

@@ -54,6 +54,20 @@ DOCUMENT EXCERPTS:
 {excerpts}
 """
 
+PROMPT_REPAIR_PROMPT = """Repair the structured prompt package below so it satisfies every listed
+deterministic validation failure. Preserve grounded scope and do not invent domain rules, tools,
+permissions, contacts, or authority. Return a complete PromptPackage in Hebrew.
+
+VALIDATION FAILURES:
+{failures}
+
+CHATBOT NAME:
+{assistant_name}
+
+PREVIOUS PACKAGE:
+{package}
+"""
+
 
 def _prompt_context(chunks: list[Chunk], topics: list[TopicCandidate], max_chars: int = 100_000) -> str:
     by_id = {chunk.id: chunk for chunk in chunks}
@@ -95,19 +109,71 @@ class SystemPromptGenerator:
             "system_prompt_generation_started model=%s topic_count=%d chunk_count=%d",
             self.model, len(topics), len(chunks),
         )
-        package = self.llm.generate(
-            PROMPT_GENERATION_PROMPT.format(
+        generation_prompt = PROMPT_GENERATION_PROMPT.format(
                 configuration=configuration,
                 topics=topic_data,
                 excerpts=_prompt_context(chunks, topics),
-            ),
-            PromptPackage,
-            self.model,
-        )
-        if not any("\u0590" <= character <= "\u05ff" for character in package.system_prompt_hebrew):
-            raise ValueError("Generated system prompt does not contain Hebrew text")
+            )
+        package = self.llm.generate(generation_prompt, PromptPackage, self.model)
+        failures = validate_prompt_package(package, assistant_name)
+        if failures:
+            logger.warning("system_prompt_validation_repair failures=%s", failures)
+            package = self.llm.generate(
+                PROMPT_REPAIR_PROMPT.format(
+                    failures=json.dumps(failures, ensure_ascii=False),
+                    assistant_name=assistant_name,
+                    package=package.model_dump_json(indent=2),
+                ),
+                PromptPackage,
+                self.model,
+            )
+            failures = validate_prompt_package(package, assistant_name)
+        if failures:
+            raise ValueError("Generated prompt package failed deterministic validation: " + "; ".join(failures))
         logger.info("system_prompt_generation_completed")
         return package
+
+
+def validate_prompt_package(package: PromptPackage, assistant_name: str) -> list[str]:
+    failures: list[str] = []
+    prompt = package.system_prompt_hebrew
+    hebrew_count = sum("\u0590" <= character <= "\u05ff" for character in prompt)
+    if hebrew_count < 80 or hebrew_count / max(1, len(prompt)) < 0.25:
+        failures.append("system prompt must be substantially Hebrew")
+    if assistant_name.strip() and assistant_name.strip() not in prompt:
+        failures.append("system prompt must name the configured assistant")
+
+    required_concepts = {
+        "grounding": ("מידע שאוחזר", "מקור", "הקשר"),
+        "clarification": ("הבהר", "הבהרה", "פרט חסר"),
+        "abstention": ("אין מספיק מידע", "לא ניתן לענות", "הימנע"),
+        "privacy": ("פרטיות", "מידע אישי", "מזהים"),
+        "prompt injection": ("הוראות", "עקיפה", "פרומפט", "הנחיות מערכת"),
+    }
+    for concept, terms in required_concepts.items():
+        if not any(term in prompt for term in terms):
+            failures.append(f"system prompt is missing {concept} guidance")
+
+    list_fields = {
+        "corpus_scope_summary": package.corpus_scope_summary,
+        "assumptions_requiring_review": package.assumptions_requiring_review,
+        "application_guardrails": package.application_guardrails,
+        "manager_review_checklist": package.manager_review_checklist,
+        "suggested_test_questions": package.suggested_test_questions,
+    }
+    for name, values in list_fields.items():
+        normalized = [" ".join(value.casefold().split()) for value in values if value.strip()]
+        if len(normalized) != len(values) or len(normalized) != len(set(normalized)):
+            failures.append(f"{name} must contain distinct non-empty items")
+    if len(package.application_guardrails) < 4:
+        failures.append("application_guardrails must cover at least four application controls")
+    if len(package.manager_review_checklist) < 4:
+        failures.append("manager_review_checklist must contain at least four checks")
+    if len(package.suggested_test_questions) < 7:
+        failures.append("suggested_test_questions must cover at least seven test categories")
+    if any(not any("\u0590" <= character <= "\u05ff" for character in question) for question in package.suggested_test_questions):
+        failures.append("suggested test questions must be written in Hebrew")
+    return failures
 
 
 def write_prompt_package(package: PromptPackage, output_dir: Path) -> tuple[Path, Path]:
