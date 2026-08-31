@@ -1,12 +1,13 @@
 # Chatbot Evaluation Module
 
 This standalone Python module builds and runs evaluation sets for internal knowledge chatbots and
-helps managers bootstrap chatbot instructions. It supports four workflows:
+helps managers bootstrap chatbot instructions. It supports five workflows:
 
 1. `generate`: create a representative, evidence-backed silver question set from local documents.
 2. `evaluate`: send reviewed questions to a JSON-over-HTTP chatbot and judge its answers.
 3. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
 4. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
+5. `report`: regenerate a report from completed results, optionally compared with a previous run.
 
 Gemini provides structured question generation, answer judging, optional topic inference, and
 optional cross-result insights. The module does not require the existing chatbot fleet; integration
@@ -33,10 +34,11 @@ local documents -> chunks -> topic map -> balanced quotas
                          v
           details CSV/JSONL + summary JSON + Hebrew HTML
                          |
-                         +-> optional topic inference and insights
+                         +-> optional topic inference, insights, and previous-run comparison
 
 local documents -> chunks -> topic map -> prompt blueprint
-                -> Hebrew system prompt + structured manager review package
+                + current prompt + prior evaluation evidence
+                -> revised Hebrew system prompt + structured manager review package
 ```
 
 The components are independent: generation needs documents and Gemini but no chatbot; evaluation
@@ -338,6 +340,7 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 | `--hide-correct-answer-metrics` | off | Hide two correctness indicators in HTML; underlying data is preserved. |
 | `--resume` | off | Reuse completed records from a compatible checkpoint. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
+| `--compare-with PATH` | unset | Previous Alloy output directory or `evaluation_details.jsonl`; adds aggregate and matched-question comparison to the report. |
 
 ```bash
 chatbot-eval --config config.toml evaluate \
@@ -348,6 +351,18 @@ chatbot-eval --config config.toml evaluate \
   --context-field data.retrieved_context \
   --header 'Authorization=Bearer $CHATBOT_TOKEN' \
   --output ./outputs/run-001
+```
+
+To continue an interrupted run, repeat the same command with `--resume` and the same output
+directory (or the same explicit `--checkpoint` path):
+
+```bash
+chatbot-eval --config config.toml evaluate \
+  --questions ./outputs/questions/silver_questions.csv \
+  --approved-only \
+  --chatbot-url http://localhost:8080/ask \
+  --output ./outputs/run-001 \
+  --resume
 ```
 
 Timeouts, connection failures, invalid JSON, unexpected content types, oversized responses, and
@@ -399,6 +414,7 @@ Explicit mappings are recommended for stable production jobs.
 | `--strict` | off | Reject the entire import if any row is invalid instead of logging and skipping invalid rows. |
 | `--resume` | off | Reuse completed rows whose imported inputs still match. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
+| `--compare-with PATH` | unset | Previous Alloy output directory or `evaluation_details.jsonl`; adds comparison to the report. |
 
 ```bash
 chatbot-eval --config config.toml evaluate-file \
@@ -415,7 +431,8 @@ chatbot-eval --config config.toml evaluate-file \
 ```
 
 Rows missing a question or reference are skipped with a warning unless `--strict` is used. Empty answers, explicit errors,
-fault payloads, and Spike Arrest messages are infrastructure errors and are not sent to Gemini. The
+fault payloads, Spike Arrest messages, and the known answer-generation placeholder (`לא הצלחנו ליצור סיכום
+לשאילתת החיפוש שלך, אבל כן מצאנו כמה תוצאות.`) are infrastructure errors and are not sent to Gemini. The
 importer does not retry stored errors. Imported fault details are categorized and bounded so raw
 gateway payloads are not propagated into reports.
 
@@ -455,6 +472,9 @@ facts that the corpus does not support.
 | `--output DIR` | `outputs/prompt` | Destination directory. |
 | `--assistant-name TEXT` | `העוזר הדיגיטלי` | Manager-provided chatbot name. |
 | `--audience TEXT` | `משתמשי הארגון` | Intended users; this is explicit configuration rather than an inferred fact. |
+| `--previous-run PATH` | unset | Previous Alloy output directory or evaluation JSONL. Standard results and insights are auto-discovered in a directory. |
+| `--insights PATH` | unset | Explicit `evaluation_insights.json`; overrides insights discovered through `--previous-run`. |
+| `--current-prompt PATH` | unset | Current Markdown/text prompt, `prompt_package.json`, or prompt output directory to revise conservatively. |
 
 ```bash
 chatbot-eval --config config.toml generate-prompt \
@@ -464,17 +484,54 @@ chatbot-eval --config config.toml generate-prompt \
   --output ./outputs/tomi-prompt
 ```
 
+For an evidence-guided revision, keep the current prompt explicit and point to a completed run:
+
+```bash
+chatbot-eval --config config.toml generate-prompt \
+  --documents ./knowledge_base \
+  --assistant-name "תומי" \
+  --audience "סגלי משאבי אנוש ותנאי שירות" \
+  --previous-run ./outputs/run-002 \
+  --current-prompt ./outputs/tomi-prompt \
+  --output ./outputs/tomi-prompt-v2
+```
+
+All records contribute to aggregate diagnostics. Detailed model context is bounded and prioritizes
+failed, evaluable questions; it excludes raw answers and expected answers. The generator is told to
+change only prompt-addressable behavior and to route retrieval, corpus, infrastructure, permission,
+and application-security problems to guardrails or manager review instead of hiding them in wording.
+
 Outputs:
 
 | File | Contents |
 |---|---|
 | `generated_system_prompt.md` | Ready-to-review Hebrew system prompt. |
-| `prompt_package.json` | Corpus scope, assumptions requiring approval, application guardrails, manager checklist, and suggested tests. |
+| `prompt_package.json` | Corpus scope, assumptions, guardrails, manager checklist, suggested tests, revision summary, and evidence question IDs. |
 
 Managers must review both files before deployment. In particular, verify every described scope,
 remove unsupported rules, decide approved fallback/escalation behavior, and implement the listed
 application guardrails outside the model. The prompt generator itself does not deploy or modify a
 chatbot.
+
+## Workflow 5: regenerate and compare reports
+
+The `report` command creates JSON/HTML from completed Alloy evaluation JSONL without contacting the
+chatbot or Gemini. It accepts either an output directory or its `evaluation_details.jsonl` file and
+can also load older pre-claim-assessment artifacts through a read-time compatibility migration.
+
+```bash
+chatbot-eval --config config.toml report \
+  --results ./outputs/run-002 \
+  --compare-with ./outputs/run-001 \
+  --insights ./outputs/run-002 \
+  --output ./outputs/run-002-comparison
+```
+
+The comparison presents whole-run KPI deltas and a stricter like-for-like view. Questions are
+matched only when ID, normalized wording, and expected behavior agree; changed sequential-ID rows
+are flagged rather than compared. Matched outcomes show improvements, regressions, persistent
+successes/failures, and topic-level movement. Aggregate deltas are labeled as potentially affected
+by changes in test-set composition.
 
 ## Judging logic and outcomes
 
@@ -539,8 +596,8 @@ Both evaluation workflows write:
 
 The HTML includes KPI cards, outcome distribution, retrieval-versus-answer diagnostics, information
 metrics, topic performance as `percentage (count/denominator)` with 95% Wilson intervals and small-
-sample warnings, parent/variant robustness metrics, optional insights before per-question details,
-and searchable/filterable question drill-down.
+sample warnings, parent/variant robustness metrics, optional previous-run comparison, optional
+insights before per-question details, and searchable/filterable question drill-down.
 
 “Good retrieval” means all required details were found and no retrieved chunk contradicted the
 reference. Missing context is missing telemetry, not bad retrieval, and is excluded from retrieval
@@ -592,6 +649,7 @@ only a hash of the live chatbot URL.
 | `config.py` | TOML and `.env` loading. |
 | `documents.py` | File discovery, extraction, chunking, provenance. |
 | `generator.py` | Topics, quotas, generation, validation, deduplication. |
+| `history.py` | Compatible loading of previous evaluations, insights, and current prompts. |
 | `prompt_generator.py` | Document-grounded system-prompt package generation and export. |
 | `models.py` | Pydantic contracts. |
 | `io.py` | Silver/evaluation CSV and JSONL serialization. |
@@ -634,7 +692,8 @@ protections: documents, questions, answers, and retrieved chunks are untrusted d
 Tests use fake structured LLMs and do not require a Gemini key. They cover quotas, evidence
 validation, deduplication, provenance, serialization and CSV safety, strict premade imports, HTTP
 retry behavior, topic inference/harmonization, classification, insight validation, prompt-package
-repair, paired variant metrics, confidence intervals, and reporting options.
+repair/revision, historical artifact compatibility, paired variant metrics, run comparisons,
+confidence intervals, and reporting options.
 
 ## Recommended production process
 

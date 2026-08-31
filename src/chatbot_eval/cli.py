@@ -13,6 +13,10 @@ from .config import load_settings
 from .documents import load_chunks
 from .evaluator import Evaluator
 from .generator import GenerationOptions, SilverSetGenerator
+from .history import (
+    discover_previous_run, read_current_prompt, read_evaluation_insights,
+    read_evaluation_records,
+)
 from .insights import generate_insights, write_insights
 from .io import read_questions, write_evaluations, write_questions
 from .llm import GeminiStructuredLLM
@@ -64,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     generate_prompt.add_argument("--output", type=Path, default=Path("outputs/prompt"))
     generate_prompt.add_argument("--assistant-name", default="העוזר הדיגיטלי")
     generate_prompt.add_argument("--audience", default="משתמשי הארגון")
+    generate_prompt.add_argument("--previous-run", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl used as improvement evidence")
+    generate_prompt.add_argument("--insights", type=Path, help="Optional evaluation_insights.json; overrides insights discovered in --previous-run")
+    generate_prompt.add_argument("--current-prompt", type=Path, help="Current prompt file, prompt_package.json, or prompt output directory")
 
     evaluate = commands.add_parser("evaluate", help="Call a chatbot and judge its responses")
     evaluate.add_argument("--questions", type=Path, required=True)
@@ -78,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--hide-correct-answer-metrics", action="store_true", help="Hide correct-answer metrics from the report summary and topic table")
     evaluate.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
+    evaluate.add_argument("--compare-with", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl to compare in the report")
 
     evaluate_file = commands.add_parser("evaluate-file", help="Judge premade chatbot questions and answers")
     evaluate_file.add_argument("--results", type=Path, required=True, help="Input .xlsx, .csv, or .jsonl file")
@@ -97,6 +105,14 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--strict", action="store_true", help="Fail if any imported row is invalid or skipped")
     evaluate_file.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate_file.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
+    evaluate_file.add_argument("--compare-with", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl to compare in the report")
+
+    report = commands.add_parser("report", help="Regenerate a report from completed Alloy evaluation JSONL")
+    report.add_argument("--results", type=Path, required=True, help="Current output directory or evaluation_details.jsonl")
+    report.add_argument("--output", type=Path, default=Path("outputs/report"))
+    report.add_argument("--compare-with", type=Path, help="Previous output directory or evaluation_details.jsonl")
+    report.add_argument("--insights", type=Path, help="Optional evaluation_insights.json or its output directory")
+    report.add_argument("--hide-correct-answer-metrics", action="store_true")
     return parser
 
 
@@ -151,22 +167,61 @@ def _checkpointed_evaluation(args, items, evaluator: Evaluator, *, premade: bool
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _ensure_config(args.config)
-    settings = load_settings(args.config)
+    settings = load_settings(args.config, require_api_key=args.command != "report")
     log_path = args.log_file or (Path(settings.log_file) if settings.log_file else None)
     configure_logging(log_path, args.log_level or settings.log_level)
     progress_enabled = settings.progress_enabled and not args.no_progress
-    llm = GeminiStructuredLLM(settings.api_key, settings.max_retries)
     logger.info("command_started command=%s progress_enabled=%s", args.command, progress_enabled)
-    if args.command == "generate-prompt":
+    if args.command == "report":
+        records = read_evaluation_records(args.results)
+        previous_records = read_evaluation_records(args.compare_with) if args.compare_with else None
+        insights = read_evaluation_insights(args.insights) if args.insights else None
+        inputs = [args.results] + ([args.compare_with] if args.compare_with else []) + ([args.insights] if args.insights else [])
         with RunManifest(
-            args.output, command=args.command, settings=settings, inputs=[args.documents],
-            parameters={"assistant_name": args.assistant_name, "audience": args.audience},
+            args.output, command=args.command, settings=settings, inputs=inputs,
+            parameters={
+                "compare_with": bool(args.compare_with),
+                "show_correct_answer_metrics": not args.hide_correct_answer_metrics,
+            },
+        ) as manifest:
+            summary_json, report_html = write_report(
+                records, args.output, insights,
+                show_correct_answer_metrics=not args.hide_correct_answer_metrics,
+                previous_records=previous_records,
+            )
+            manifest.complete(record_count=len(records), outputs=input_inventory([summary_json, report_html]))
+        print(f"Generated report from {len(records)} completed records.\nSummary: {summary_json}\nReport: {report_html}")
+        if previous_records:
+            print(f"Compared with {len(previous_records)} previous records.")
+        return 0
+
+    llm = GeminiStructuredLLM(settings.api_key, settings.max_retries)
+    if args.command == "generate-prompt":
+        previous_records = None
+        previous_insights = None
+        if args.previous_run:
+            previous_records, previous_insights = discover_previous_run(args.previous_run)
+        if args.insights:
+            previous_insights = read_evaluation_insights(args.insights)
+        current_prompt = read_current_prompt(args.current_prompt) if args.current_prompt else ""
+        prompt_inputs = [args.documents]
+        prompt_inputs.extend(path for path in (args.previous_run, args.insights, args.current_prompt) if path)
+        with RunManifest(
+            args.output, command=args.command, settings=settings, inputs=prompt_inputs,
+            parameters={
+                "assistant_name": args.assistant_name, "audience": args.audience,
+                "uses_previous_results": bool(previous_records),
+                "uses_previous_insights": bool(previous_insights),
+                "uses_current_prompt": bool(current_prompt),
+            },
         ) as manifest:
             chunks = load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
             topic_generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
             topics = topic_generator.discover_topics(chunks, settings.batch_chunks)
             package = SystemPromptGenerator(llm, settings.generation_model).generate(
                 chunks, topics, assistant_name=args.assistant_name, audience=args.audience,
+                previous_records=previous_records, previous_insights=previous_insights,
+                current_prompt=current_prompt,
             )
             prompt_path, package_path = write_prompt_package(package, args.output)
             manifest.complete(
@@ -236,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "evaluate-file":
+        previous_records = read_evaluation_records(args.compare_with) if args.compare_with else None
         columns = ResultColumns(
             question=args.question_column, expected_answer=args.expected_answer_column,
             answer=args.answer_column, source=args.source_column, id=args.id_column,
@@ -253,10 +309,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("Premade evaluation must not invoke a chatbot")
 
         with RunManifest(
-            args.output, command=args.command, settings=settings, inputs=[args.results],
+            args.output, command=args.command, settings=settings,
+            inputs=[args.results] + ([args.compare_with] if args.compare_with else []),
             parameters={
                 "sheet": args.sheet, "infer_topics": args.infer_topics,
                 "generate_insights": args.generate_insights, "resume": args.resume, "strict": args.strict,
+                "compare_with": bool(args.compare_with),
             },
         ) as manifest:
             records, resumed_count, checkpoint_path = _checkpointed_evaluation(
@@ -267,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             summary_json, report_html = write_report(
                 records, args.output, insights,
                 show_correct_answer_metrics=not args.hide_correct_answer_metrics,
+                previous_records=previous_records,
             )
             output_paths = [details_csv, details_jsonl, summary_json, report_html, checkpoint_path]
             if insights_path:
@@ -281,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("command_completed command=evaluate-file record_count=%d output=%s", len(records), args.output)
         return 0
 
+    previous_records = read_evaluation_records(args.compare_with) if args.compare_with else None
     questions = read_questions(args.questions, approved_only=args.approved_only)
     if not questions:
         raise ValueError("No questions selected for evaluation")
@@ -294,12 +354,14 @@ def main(argv: list[str] | None = None) -> int:
         require_json_content_type=settings.chatbot_require_json_content_type,
     )
     with RunManifest(
-        args.output, command=args.command, settings=settings, inputs=[args.questions],
+        args.output, command=args.command, settings=settings,
+        inputs=[args.questions] + ([args.compare_with] if args.compare_with else []),
         parameters={
             "chatbot_url_sha256": hashlib.sha256(args.chatbot_url.encode()).hexdigest(),
             "question_field": args.question_field, "answer_field": args.answer_field,
             "context_field": args.context_field, "approved_only": args.approved_only,
             "generate_insights": args.generate_insights, "resume": args.resume,
+            "compare_with": bool(args.compare_with),
         },
     ) as manifest:
         items = [(question, ChatbotResult(question_id=question.id, answer="")) for question in questions]
@@ -311,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         summary_json, report_html = write_report(
             records, args.output, insights,
             show_correct_answer_metrics=not args.hide_correct_answer_metrics,
+            previous_records=previous_records,
         )
         output_paths = [details_csv, details_jsonl, summary_json, report_html, checkpoint_path]
         if insights_path:

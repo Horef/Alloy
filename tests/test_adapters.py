@@ -75,3 +75,18 @@ def test_http_adapter_rejects_non_json_and_oversized_responses(monkeypatch):
 
     assert wrong_type.metadata["error_category"] == "malformed_response"
     assert too_large.metadata["error_category"] == "response_too_large"
+
+
+def test_http_adapter_marks_summary_generation_placeholder_as_error(monkeypatch):
+    body = '{"answer":"לא הצלחנו ליצור סיכום לשאילתת החיפוש שלך, אבל כן מצאנו כמה תוצאות.","retrieved_context":"source"}'
+    monkeypatch.setattr(
+        "chatbot_eval.adapters.urllib.request.urlopen",
+        lambda request, timeout: _Response(body.encode("utf-8")),
+    )
+    question = SilverQuestion(id="Q1", topic="Topic", question="Question", expected_answer="Answer")
+
+    result = HttpChatbotAdapter("https://example.invalid").ask(question)
+
+    assert result.error.startswith("answer_generation_failed:")
+    assert result.metadata["error_category"] == "answer_generation_failed"
+    assert result.retrieved_context == "source"

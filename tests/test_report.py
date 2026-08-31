@@ -1,5 +1,5 @@
 from chatbot_eval.models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
-from chatbot_eval.report import build_summary, write_report
+from chatbot_eval.report import build_comparison, build_summary, write_report
 
 
 def test_hebrew_report_and_pipeline_statistics(tmp_path):
@@ -44,6 +44,28 @@ def test_report_can_hide_correct_answer_metrics(tmp_path):
     assert "<th>תשובות נכונות</th>" not in report
     assert "שיעור תשובות שימושיות" in report
     assert "<th>תשובות שימושיות</th>" in report
+
+
+def test_report_shows_infrastructure_error_count_and_percentage(tmp_path):
+    records = [
+        EvaluationRecord(
+            question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+            result=ChatbotResult(question_id="Q1", answer="תשובה"),
+            outcome=Outcome.CORRECT_ANSWER,
+        ),
+        EvaluationRecord(
+            question=SilverQuestion(id="Q2", topic="נושא", question="שאלה", expected_answer="תשובה"),
+            result=ChatbotResult(question_id="Q2", answer="", error="answer_generation_failed: placeholder"),
+            outcome=Outcome.CHATBOT_ERROR,
+        ),
+    ]
+
+    summary = build_summary(records)
+    _, report_path = write_report(records, tmp_path)
+
+    assert summary["infrastructure_errors"] == 1
+    assert summary["infrastructure_error_rate"] == 0.5
+    assert "1 (50.0%)" in report_path.read_text(encoding="utf-8")
 
 
 def test_clarification_is_not_in_factual_answer_denominator():
@@ -102,3 +124,38 @@ def test_report_includes_paired_variant_robustness_and_sample_uncertainty(tmp_pa
     assert "עמידות לניסוחי משתמש" in rendered
     assert "מדגם קטן" in rendered
     assert "רווח סמך 95%" in rendered
+
+
+def test_report_compares_aggregate_and_matched_question_results(tmp_path):
+    def record(identifier, question, outcome):
+        return EvaluationRecord(
+            question=SilverQuestion(id=identifier, topic="נושא", question=question, expected_answer="תשובה"),
+            result=ChatbotResult(question_id=identifier, answer="תשובה"), outcome=outcome,
+        )
+
+    previous = [
+        record("Q1", "שאלה אחת", Outcome.UNRELATED_ANSWER),
+        record("Q2", "שאלה שתיים", Outcome.CORRECT_ANSWER),
+        record("Q3", "נוסח קודם", Outcome.CORRECT_ANSWER),
+    ]
+    current = [
+        record("Q1", "שאלה אחת", Outcome.CORRECT_ANSWER),
+        record("Q2", "שאלה שתיים", Outcome.UNRELATED_ANSWER),
+        record("Q3", "נוסח חדש", Outcome.CORRECT_ANSWER),
+        record("Q4", "שאלה חדשה", Outcome.CORRECT_ANSWER),
+    ]
+
+    comparison = build_comparison(current, previous)
+    assert comparison["matched_questions"] == 2
+    assert comparison["matched_outcomes"]["improved"] == 1
+    assert comparison["matched_outcomes"]["regressed"] == 1
+    assert comparison["id_conflicts"] == ["Q3"]
+    assert comparison["current_only"] == 1
+
+    summary_path, report_path = write_report(current, tmp_path, previous_records=previous)
+    summary = __import__("json").loads(summary_path.read_text(encoding="utf-8"))
+    rendered = report_path.read_text(encoding="utf-8")
+    assert summary["comparison"]["matched_questions"] == 2
+    assert "השוואה לריצה הקודמת" in rendered
+    assert "שאלות מותאמות" in rendered
+    assert "מזהים הופיעו בשני הדוחות" in rendered

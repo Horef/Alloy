@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 
 from .models import ChatbotResult, ExpectedBehavior, SilverQuestion, SourceRef
 from .progress import track
+from .response_errors import placeholder_error
 from .validation import validate_question_set
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,8 @@ def _looks_like_error(answer: str, explicit_error: str) -> str:
         return _safe_error(explicit_error)
     if not answer.strip():
         return "Premade result contains an empty chatbot answer"
+    if error := placeholder_error(answer):
+        return error
     normalized = answer.casefold()
     if "spike arrest violation" in normalized:
         return "throttled: detected Spike Arrest violation in stored response"

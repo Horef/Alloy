@@ -1,7 +1,7 @@
 import json
 
 from chatbot_eval.documents import Chunk
-from chatbot_eval.models import PromptPackage, TopicCandidate
+from chatbot_eval.models import ChatbotResult, EvaluationRecord, Outcome, PromptPackage, SilverQuestion, TopicCandidate
 from chatbot_eval.prompt_generator import SystemPromptGenerator, validate_prompt_package, write_prompt_package
 
 
@@ -84,3 +84,41 @@ def test_invalid_prompt_package_gets_one_repair_attempt():
 
     assert llm.calls == 2
     assert validate_prompt_package(package, "תומי") == []
+
+
+def test_prompt_revision_uses_bounded_evidence_and_requires_traceability():
+    previous = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+        result=ChatbotResult(question_id="Q1", answer="מענה שגוי"), outcome=Outcome.UNRELATED_ANSWER,
+    )
+
+    class RevisionLLM(FakeLLM):
+        def generate(self, prompt, schema, model):
+            package = super().generate(prompt, schema, model)
+            package.revision_summary = ["חודדה החובה להסתמך על מקור"]
+            package.revision_evidence_question_ids = ["Q1"]
+            return package
+
+    llm = RevisionLLM()
+    package = SystemPromptGenerator(llm, "model").generate(
+        [Chunk("a#1", "a.md", "document", "תוכן מסמך מפורט מספיק לצורך הבדיקה")],
+        [TopicCandidate(name="תנאי שירות", description="", importance=1, source_ids=["a#1"])],
+        assistant_name="תומי", audience="עובדים", previous_records=[previous],
+        current_prompt="תומי עונה לפי המקורות.",
+    )
+
+    assert "PRIOR EVALUATION EVIDENCE" in llm.prompt
+    assert '"question_id": "Q1"' in llm.prompt
+    assert "תומי עונה לפי המקורות" in llm.prompt
+    assert package.revision_evidence_question_ids == ["Q1"]
+    assert validate_prompt_package(
+        package, "תומי", improvement_mode=True, valid_evidence_ids={"Q1"},
+    ) == []
+
+    package.revision_evidence_question_ids = ["UNKNOWN"]
+    assert any(
+        "unknown IDs" in failure
+        for failure in validate_prompt_package(
+            package, "תומי", improvement_mode=True, valid_evidence_ids={"Q1"},
+        )
+    )

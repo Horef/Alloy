@@ -143,6 +143,7 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
     chunks_total = sum(r.scores.retrieved_chunks_total for r in retrieval_scored)
     chunks_relevant = sum(r.scores.retrieved_chunks_relevant for r in retrieval_scored)
     chunks_contradictory = sum(r.scores.retrieved_chunks_contradictory for r in retrieval_scored)
+    infrastructure_errors = len(records) - len(evaluable)
     return {
         "total": len(records), "evaluable": len(evaluable),
         "answerable_questions": len(answerable),
@@ -150,7 +151,8 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "clarification_tasks": len(clarification_tasks),
         "abstention_tasks": len(abstention_tasks),
         "unanswerable_questions": sum(not r.question.answerable for r in evaluable),
-        "infrastructure_errors": len(records) - len(evaluable),
+        "infrastructure_errors": infrastructure_errors,
+        "infrastructure_error_rate": _rate(infrastructure_errors, len(records)),
         "correct_answer_rate_on_answerable": _rate(sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks)),
         "factual_answer_success_rate": _rate(sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks)),
         "factual_answer_success_interval_95": _wilson_interval(
@@ -196,6 +198,102 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
     }
 
 
+def build_comparison(
+    current_records: list[EvaluationRecord],
+    previous_records: list[EvaluationRecord],
+) -> dict:
+    """Compare whole-run KPIs and like-for-like question outcomes."""
+    current_summary = build_summary(current_records)
+    previous_summary = build_summary(previous_records)
+    metric_definitions = {
+        "factual_answer_success_rate": ("תשובות עובדתיות נכונות", False),
+        "useful_answer_rate_on_answerable": ("תשובות שימושיות", False),
+        "clarification_success_rate": ("הבהרות מתאימות", False),
+        "abstention_success_rate": ("הימנעות נכונה", False),
+        "good_retrieval_rate": ("אחזור איכותי", False),
+        "risky_misinformation_rate": ("סיכון למידע מטעה", True),
+        "infrastructure_error_rate": ("שגיאות תשתית", True),
+    }
+    metrics = {}
+    for key, (label, lower_is_better) in metric_definitions.items():
+        current = current_summary.get(key)
+        previous = previous_summary.get(key)
+        delta = current - previous if current is not None and previous is not None else None
+        favorable = None
+        if delta:
+            favorable = delta < 0 if lower_is_better else delta > 0
+        metrics[key] = {
+            "label": label,
+            "current": current,
+            "previous": previous,
+            "delta": delta,
+            "lower_is_better": lower_is_better,
+            "favorable": favorable,
+        }
+
+    current_by_id = {record.question.id: record for record in current_records}
+    previous_by_id = {record.question.id: record for record in previous_records}
+    common_ids = sorted(set(current_by_id) & set(previous_by_id))
+    transitions = Counter()
+    states = Counter()
+    by_topic: dict[str, Counter] = defaultdict(Counter)
+    id_conflicts: list[str] = []
+    matched = 0
+    for question_id in common_ids:
+        current = current_by_id[question_id]
+        previous = previous_by_id[question_id]
+        current_identity = (" ".join(current.question.question.casefold().split()), current.question.expected_behavior)
+        previous_identity = (" ".join(previous.question.question.casefold().split()), previous.question.expected_behavior)
+        if current_identity != previous_identity:
+            id_conflicts.append(question_id)
+            continue
+        matched += 1
+        transitions[f"{previous.outcome.value}->{current.outcome.value}"] += 1
+        topic = current.question.topic or "לא סווג"
+        if current.outcome in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR} or previous.outcome in {
+            Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR,
+        }:
+            state = "not_comparable"
+        else:
+            previous_success = previous.outcome in PIPELINE_SUCCESS
+            current_success = current.outcome in PIPELINE_SUCCESS
+            state = (
+                "improved" if current_success and not previous_success else
+                "regressed" if previous_success and not current_success else
+                "unchanged_success" if current_success else "unchanged_failure"
+            )
+        states[state] += 1
+        by_topic[topic][state] += 1
+
+    comparable = matched - states["not_comparable"]
+    return {
+        "current_total": len(current_records),
+        "previous_total": len(previous_records),
+        "matched_questions": matched,
+        "comparable_questions": comparable,
+        "current_only": len(set(current_by_id) - set(previous_by_id)),
+        "previous_only": len(set(previous_by_id) - set(current_by_id)),
+        "id_conflicts": id_conflicts,
+        "metrics": metrics,
+        "matched_outcomes": {
+            **{key: states[key] for key in (
+                "improved", "regressed", "unchanged_success", "unchanged_failure", "not_comparable",
+            )},
+            "net_improvement": states["improved"] - states["regressed"],
+        },
+        "outcome_transitions": dict(sorted(transitions.items())),
+        "by_topic": {
+            topic: {
+                **{key: values[key] for key in (
+                    "improved", "regressed", "unchanged_success", "unchanged_failure", "not_comparable",
+                )},
+                "total": sum(values.values()),
+            }
+            for topic, values in sorted(by_topic.items())
+        },
+    }
+
+
 def _pct(value: float | None) -> str:
     return "לא זמין" if value is None else f"{value:.1%}"
 
@@ -224,6 +322,40 @@ def _pct_count_ci(rate: float | None, count: int, denominator: int, interval: li
     if interval is None:
         return base
     return f"{base}<small>רווח סמך 95%: {interval[0]:.1%}–{interval[1]:.1%}</small>"
+
+
+def _comparison_block(comparison: dict | None) -> str:
+    if not comparison:
+        return ""
+    metric_rows = []
+    for metric in comparison["metrics"].values():
+        delta = metric["delta"]
+        delta_text = "לא זמין" if delta is None else f"{delta:+.1%}"
+        delta_class = "neutral" if metric["favorable"] is None else ("good" if metric["favorable"] else "bad")
+        metric_rows.append(
+            f'<tr><td>{_esc(metric["label"])}</td><td>{_pct(metric["previous"])}</td>'
+            f'<td>{_pct(metric["current"])}</td><td class="delta {delta_class}">{delta_text}</td></tr>'
+        )
+    matched = comparison["matched_outcomes"]
+    topic_rows = "".join(
+        f'<tr><td>{_esc(topic)}</td><td>{data["total"]}</td><td>{data["improved"]}</td>'
+        f'<td>{data["regressed"]}</td><td>{data["unchanged_success"]}</td>'
+        f'<td>{data["unchanged_failure"]}</td></tr>'
+        for topic, data in comparison["by_topic"].items()
+    )
+    conflict_note = "" if not comparison["id_conflicts"] else (
+        f'<div class="note warn">{len(comparison["id_conflicts"])} מזהים הופיעו בשני הדוחות אך השאלה או ההתנהגות '
+        'המצופה השתנו, ולכן הם לא נכללו בהשוואה הישירה.</div>'
+    )
+    no_match_note = "" if comparison["matched_questions"] else (
+        '<div class="note warn">לא נמצאו שאלות זהות להשוואה ישירה. השוואת המדדים הכוללת עדיין מוצגת, אך ייתכן שהרכב מערך הבדיקה השתנה.</div>'
+    )
+    return f'''<div class="panel comparison"><h2>השוואה לריצה הקודמת</h2>
+<div class="note">השינוי במדדים הכוללים עשוי לשקף גם שינוי בהרכב השאלות. השוואת השאלות המותאמות משתמשת רק באותו מזהה, אותו נוסח ואותה התנהגות מצופה. הצלחה ישירה פירושה תשובה נכונה, הימנעות נכונה או הבהרה נכונה בהתאם למשימה.</div>
+<div class="cards"><div class="card">שאלות מותאמות<b>{comparison["matched_questions"]}</b><small>{comparison["comparable_questions"]} ניתנות להשוואת הצלחה</small></div><div class="card">השתפרו<b>{matched["improved"]}</b></div><div class="card">נסוגו<b>{matched["regressed"]}</b></div><div class="card">שיפור נטו<b>{matched["net_improvement"]:+d}</b><small>השתפרו פחות נסוגו</small></div><div class="card">חדשות / הוסרו<b>{comparison["current_only"]} / {comparison["previous_only"]}</b></div></div>
+{conflict_note}{no_match_note}
+<h3>שינוי במדדים הכוללים</h3><table><thead><tr><th>מדד</th><th>קודם</th><th>עכשיו</th><th>שינוי</th></tr></thead><tbody>{''.join(metric_rows)}</tbody></table>
+{('<h3>שינוי בשאלות מותאמות לפי נושא</h3><table><thead><tr><th>נושא</th><th>מותאמות</th><th>השתפרו</th><th>נסוגו</th><th>הצלחה נשמרה</th><th>כשל נשאר</th></tr></thead><tbody>' + topic_rows + '</tbody></table>') if topic_rows else ''}</div>'''
 
 
 def _details(record: EvaluationRecord) -> str:
@@ -282,9 +414,13 @@ def write_report(
     insights: EvaluationInsights | None = None,
     *,
     show_correct_answer_metrics: bool = True,
+    previous_records: list[EvaluationRecord] | None = None,
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = build_summary(records)
+    comparison = build_comparison(records, previous_records) if previous_records else None
+    if comparison:
+        summary["comparison"] = comparison
     json_path = output_dir / "evaluation_summary.json"
     atomic_write_text(json_path, json.dumps(summary, ensure_ascii=False, indent=2))
     outcome_bars = "".join(_bar(OUTCOME_HEBREW[o], summary["outcomes"].get(o.value, 0), summary["total"], OUTCOME_COLORS[o]) for o in Outcome if summary["outcomes"].get(o.value, 0))
@@ -333,6 +469,7 @@ def write_report(
     outcome_options = "".join(f'<option value="{o.value}">{_esc(OUTCOME_HEBREW[o])}</option>' for o in Outcome if o.value in summary["outcomes"])
     topic_options = "".join(f'<option value="{_esc(topic)}">{_esc(topic)}</option>' for topic in summary["by_topic"])
     insights_html = _insights_block(insights)
+    comparison_html = _comparison_block(comparison)
     correct_answer_card = (
         f'<div class="card">שיעור תשובות נכונות<b>{_pct(summary["correct_answer_rate_on_answerable"])}</b>'
         '<small>מתוך שאלות שניתנות למענה</small></div>'
@@ -344,9 +481,10 @@ def write_report(
         f'<div class="card">הימנעות נכונה<b>{_pct(summary["abstention_success_rate"])}</b><small>{summary["abstention_tasks"]} שאלות ללא מענה נתמך</small></div>' if summary["abstention_tasks"] else "",
     ))
     document = f'''<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>דוח הערכת צ׳אטבוט</title>
-<style>:root{{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px Arial,"Noto Sans Hebrew",sans-serif}}main{{max-width:1500px;margin:auto;padding:28px}}h1{{margin:0 0 4px}}h2{{margin-top:0}}.subtitle{{color:var(--muted);margin-bottom:24px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}}.card,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px #1e293b0a}}.card{{padding:18px}}.card b{{display:block;font-size:25px;margin-top:7px}}.card small,small{{color:var(--muted);display:block;margin-top:3px}}.sample-warning{{color:#b45309;font-weight:bold}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:16px}}.panel{{padding:20px;overflow:auto;margin-bottom:16px}}.bar-row,.score-row{{display:grid;grid-template-columns:minmax(145px,1.3fr) 3fr 45px 48px;gap:9px;align-items:center;margin:10px 0}}.score-row{{grid-template-columns:minmax(170px,1.3fr) 3fr 68px minmax(95px,auto)}}.track{{height:12px;background:#e8edf4;border-radius:10px;overflow:hidden}}.track i{{height:100%;display:block;border-radius:10px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}}th{{background:#eef3f8;position:sticky;top:0}}.note{{background:#f8fafc;border-right:4px solid #2563eb;padding:12px 14px;margin:12px 0;border-radius:6px;line-height:1.55}}.insights{{margin-bottom:16px;border-top:4px solid #7c3aed}}.insights .lead{{font-size:17px}}.insight-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}}.insight{{border:1px solid var(--line);border-radius:10px;padding:15px;background:#fcfcff}}.insight h3{{margin:12px 0 6px}}.filters{{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}}input,select{{border:1px solid #bcc8d8;border-radius:8px;padding:10px;background:white;min-width:190px}}input{{flex:1}}.result{{background:white;border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}}summary{{display:grid;grid-template-columns:90px 150px 1fr auto;gap:10px;align-items:center;padding:13px;cursor:pointer}}summary:hover{{background:#f8fafc}}.id,.topic{{color:var(--muted)}}.badge{{color:white;padding:5px 9px;border-radius:999px;font-size:12px;white-space:nowrap}}.detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}}section{{padding:8px 16px}}h4{{margin:8px 0;color:#334155}}p,pre{{white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}}pre{{max-height:260px;overflow:auto;background:#f8fafc;padding:12px;border-radius:8px;font:13px Arial}}.scores{{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}}.scores span{{background:#eef4ff;padding:7px;border-radius:7px}}.warn{{color:#b91c1c}}.hidden{{display:none}}@media(max-width:700px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}summary{{grid-template-columns:1fr}}.detail-grid{{grid-template-columns:1fr}}.score-row{{grid-template-columns:1fr}}}}</style></head>
+<style>:root{{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px Arial,"Noto Sans Hebrew",sans-serif}}main{{max-width:1500px;margin:auto;padding:28px}}h1{{margin:0 0 4px}}h2{{margin-top:0}}.subtitle{{color:var(--muted);margin-bottom:24px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}}.card,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px #1e293b0a}}.card{{padding:18px}}.card b{{display:block;font-size:25px;margin-top:7px}}.card small,small{{color:var(--muted);display:block;margin-top:3px}}.sample-warning{{color:#b45309;font-weight:bold}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:16px}}.panel{{padding:20px;overflow:auto;margin-bottom:16px}}.comparison{{border-top:4px solid #2563eb}}.delta{{font-weight:bold;direction:ltr;text-align:right}}.delta.good{{color:#15803d}}.delta.bad{{color:#b91c1c}}.delta.neutral{{color:var(--muted)}}.bar-row,.score-row{{display:grid;grid-template-columns:minmax(145px,1.3fr) 3fr 45px 48px;gap:9px;align-items:center;margin:10px 0}}.score-row{{grid-template-columns:minmax(170px,1.3fr) 3fr 68px minmax(95px,auto)}}.track{{height:12px;background:#e8edf4;border-radius:10px;overflow:hidden}}.track i{{height:100%;display:block;border-radius:10px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}}th{{background:#eef3f8;position:sticky;top:0}}.note{{background:#f8fafc;border-right:4px solid #2563eb;padding:12px 14px;margin:12px 0;border-radius:6px;line-height:1.55}}.insights{{margin-bottom:16px;border-top:4px solid #7c3aed}}.insights .lead{{font-size:17px}}.insight-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}}.insight{{border:1px solid var(--line);border-radius:10px;padding:15px;background:#fcfcff}}.insight h3{{margin:12px 0 6px}}.filters{{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}}input,select{{border:1px solid #bcc8d8;border-radius:8px;padding:10px;background:white;min-width:190px}}input{{flex:1}}.result{{background:white;border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}}summary{{display:grid;grid-template-columns:90px 150px 1fr auto;gap:10px;align-items:center;padding:13px;cursor:pointer}}summary:hover{{background:#f8fafc}}.id,.topic{{color:var(--muted)}}.badge{{color:white;padding:5px 9px;border-radius:999px;font-size:12px;white-space:nowrap}}.detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}}section{{padding:8px 16px}}h4{{margin:8px 0;color:#334155}}p,pre{{white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}}pre{{max-height:260px;overflow:auto;background:#f8fafc;padding:12px;border-radius:8px;font:13px Arial}}.scores{{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}}.scores span{{background:#eef4ff;padding:7px;border-radius:7px}}.warn{{color:#b91c1c}}.hidden{{display:none}}@media(max-width:700px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}summary{{grid-template-columns:1fr}}.detail-grid{{grid-template-columns:1fr}}.score-row{{grid-template-columns:1fr}}}}</style></head>
 <body><main><h1>דוח הערכת ביצועי הצ׳אטבוט</h1><div class="subtitle">ניתוח איכות התשובות, האחזור והכשלים לאורך צינור ה-RAG</div>
-<div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מענה נכון, חלקי מועיל או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">סיכון למידע מטעה<b>{_pct(summary['risky_misinformation_rate'])}</b><small>הזיות, מענה במקום הימנעות או ללא בירור נדרש</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>{summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע נמצא אך התשובה לא הייתה נכונה</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']}</b><small>לא נכללו במדדי האיכות</small></div></div>
+<div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מענה נכון, חלקי מועיל או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">סיכון למידע מטעה<b>{_pct(summary['risky_misinformation_rate'])}</b><small>הזיות, מענה במקום הימנעות או ללא בירור נדרש</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>{summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע נמצא אך התשובה לא הייתה נכונה</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']} ({_pct(summary['infrastructure_error_rate'])})</b><small>מתוך כלל השאלות; לא נכללו במדדי האיכות</small></div></div>
+{comparison_html}
 <div class="grid"><div class="panel"><h2>התפלגות תוצאות</h2>{outcome_bars}<div class="note"><b>תשובה שימושית</b> היא תשובה נכונה, תשובה חלקית שיש בה מידע נכון או שאלת הבהרה מתאימה כשחסר פרט מהותי. <b>סיכון למידע מטעה</b> כולל הזיה שנשמעת סבירה, מענה לשאלה שהיה נכון להימנע ממנה או תשובה החלטית כשנדרש תחילה בירור.</div></div><div class="panel"><h2>אבחון צינור האחזור והיצירה</h2>{pipeline_bars}<div class="note"><b>אחזור טוב</b> פירושו שכל הפרטים הנדרשים נמצאו, ללא מקטע שסותר את תשובת הייחוס. <b>אחזור חלש</b> פירושו שחסר לפחות פרט נדרש אחד או שנמצא מקטע סותר. אחזור טוב עם תשובה לא תקינה מצביע על כשל בשלב יצירת התשובה.</div></div></div>
 <div class="grid"><div class="panel"><h2>מדדי מידע בתשובות</h2>{answer_scores}<div class="note"><b>כיסוי</b> הוא שיעור הפרטים הנדרשים שנענו נכון. <b>דיוק בפרטים שנענו</b> בודק כמה מהפרטים שהצ׳אטבוט ניסה לענות עליהם היו נכונים. בנוסף נמצאו בסך הכול: {answer_metrics['false_claims_total']} טענות שגויות, {answer_metrics['unsupported_claims_total']} טענות לא מבוססות ו-{answer_metrics['extraneous_claims_total']} טענות עודפות.</div></div><div class="panel"><h2>מדדי מידע באחזור</h2>{retrieval_scores}<div class="note"><b>כיסוי המידע</b> הוא מספר הפרטים הנדרשים שנמצאו במקטעים. <b>שיעור מקטעים רלוונטיים</b> מראה כמה מהמקטעים תרמו למענה. נמצאו {retrieval_metrics['irrelevant_chunks_total']} מקטעים לא רלוונטיים ו-{retrieval_metrics['contradictory_chunks_total']} מקטעים סותרים. המדדים מחושבים רק עבור שאלות שבהן סופקו מקטעים.</div></div></div>
 {paired_panel}

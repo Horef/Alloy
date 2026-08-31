@@ -70,3 +70,16 @@ def test_explicit_errors_are_bounded_and_normalized(tmp_path):
     error = read_premade_results(path)[0][1].error
     assert error.startswith("stored_error:")
     assert len(error) <= 316
+
+
+def test_summary_generation_placeholder_is_an_infrastructure_error(tmp_path):
+    path = tmp_path / "placeholder.csv"
+    path.write_text(
+        "question,expected_answer,answer\n"
+        'Q,Reference,"לא הצלחנו ליצור סיכום לשאילתת החיפוש שלך, אבל כן מצאנו כמה תוצאות."\n',
+        encoding="utf-8",
+    )
+
+    result = read_premade_results(path)[0][1]
+
+    assert result.error.startswith("answer_generation_failed:")

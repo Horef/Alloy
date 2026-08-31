@@ -205,6 +205,8 @@ class PromptPackage(BaseModel):
     application_guardrails: list[str] = Field(min_length=1)
     manager_review_checklist: list[str] = Field(min_length=1)
     suggested_test_questions: list[str] = Field(min_length=1)
+    revision_summary: list[str] = Field(default_factory=list)
+    revision_evidence_question_ids: list[str] = Field(default_factory=list)
 
 
 class EvaluationRecord(BaseModel):

@@ -11,6 +11,7 @@ from email.utils import parsedate_to_datetime
 from typing import Protocol
 
 from .models import ChatbotResult, SilverQuestion
+from .response_errors import placeholder_error
 
 
 class ChatbotAdapter(Protocol):
@@ -153,10 +154,24 @@ class HttpChatbotAdapter:
                             message=f"missing answer field {self.answer_field!r}",
                             attempts=attempt + 1, status=response.status,
                         )
+                    retrieved_context = self._field(payload, self.context_field, "")
+                    if error := placeholder_error(answer):
+                        return ChatbotResult(
+                            question_id=question.id,
+                            answer=answer,
+                            retrieved_context=retrieved_context,
+                            latency_ms=(time.perf_counter() - started) * 1000,
+                            metadata={
+                                "http_status": response.status,
+                                "attempts": attempt + 1,
+                                "error_category": "answer_generation_failed",
+                            },
+                            error=error,
+                        )
                     return ChatbotResult(
                         question_id=question.id,
                         answer=answer,
-                        retrieved_context=self._field(payload, self.context_field, ""),
+                        retrieved_context=retrieved_context,
                         latency_ms=(time.perf_counter() - started) * 1000,
                         metadata={"http_status": response.status, "attempts": attempt + 1},
                     )
