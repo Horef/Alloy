@@ -17,9 +17,52 @@ class StructuredLLM(Protocol):
 
 
 class GeminiStructuredLLM:
-    def __init__(self, api_key: str, max_retries: int = 2):
-        self._client = genai.Client(api_key=api_key)
+    def __init__(
+        self,
+        api_key: str,
+        max_retries: int = 2,
+        *,
+        transport: str = "direct",
+        apigee_api_key: str = "",
+        apigee_base_url: str = "",
+    ):
+        if transport == "direct":
+            self._client = genai.Client(api_key=api_key)
+        elif transport == "apigee":
+            if not apigee_api_key or not apigee_base_url:
+                raise ValueError("Apigee transport requires an API key and base URL")
+            self._client = genai.Client(
+                api_key="apigee-placeholder",
+                vertexai=True,
+                project="",
+                location="",
+                http_options=types.HttpOptions(
+                    api_version="v1",
+                    base_url=apigee_base_url.rstrip("/"),
+                    headers={"x-apikey": apigee_api_key},
+                ),
+            )
+        else:
+            raise ValueError(f"Unsupported Gemini transport: {transport!r}")
+        self._transport = transport
         self._max_retries = max_retries
+
+    @staticmethod
+    def _log_quota(response, model: str) -> None:
+        http_response = getattr(response, "sdk_http_response", None)
+        headers = getattr(http_response, "headers", None)
+        if not headers:
+            return
+        metric = headers.get("x-selected-metric")
+        if not metric:
+            return
+        request_used = headers.get(f"x-request-{metric}-used")
+        daily_used = headers.get(f"x-quota-{metric}-used")
+        logger.info(
+            "gemini_quota model=%s metric=%s request_used=%s daily_limit=%s daily_used=%s remaining=%s",
+            model, metric, request_used, headers.get("x-quota-limit"), daily_used,
+            headers.get(f"x-quota-{metric}-remaining"),
+        )
 
     def generate(self, prompt: str, schema: type[T], model: str) -> T:
         last_error: Exception | None = None
@@ -39,6 +82,7 @@ class GeminiStructuredLLM:
                 )
                 if not response.text:
                     raise RuntimeError("Gemini returned an empty structured response")
+                self._log_quota(response, model)
                 return schema.model_validate_json(response.text)
             except Exception as exc:
                 last_error = exc

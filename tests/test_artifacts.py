@@ -52,4 +52,32 @@ def test_manifest_records_failure_without_api_key(tmp_path, monkeypatch):
     assert manifest["status"] == "failed"
     assert manifest["inputs"][0]["sha256"]
     assert "api_key" not in manifest["settings"]
+    assert "apigee_api_key" not in manifest["settings"]
     assert "secret-value" not in json.dumps(manifest)
+
+
+def test_manifest_redacts_apigee_api_key(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+[gemini]
+transport = "apigee"
+apigee_api_key_env = "TEST_APIGEE_KEY"
+apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_APIGEE_KEY", "apigee-secret-value")
+    settings = load_settings(config)
+    input_path = tmp_path / "input.txt"
+    input_path.write_text("input", encoding="utf-8")
+
+    with RunManifest(
+        tmp_path / "output", command="test", settings=settings,
+        inputs=[input_path], parameters={},
+    ):
+        pass
+
+    manifest_text = (tmp_path / "output" / "run_manifest.json").read_text(encoding="utf-8")
+    assert "apigee_api_key" not in manifest_text
+    assert "apigee-secret-value" not in manifest_text

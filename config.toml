@@ -1,6 +1,10 @@
 [gemini]
+# Use "direct" for Google Gemini or "apigee" for the internal AI Gateway.
+transport = "direct"
 # The secret itself belongs in .env; this file only names the environment variable.
 api_key_env = "GEMINI_API_KEY"
+apigee_api_key_env = "APIGEE_API_KEY"
+apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
 generation_model = "gemini-3.7-flash"
 judge_model = "gemini-3.7-flash"
 

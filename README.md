@@ -54,14 +54,14 @@ cp config.example.toml config.toml
 cp .env.example .env
 ```
 
-Set the Gemini API key in `.env`:
+For direct Gemini access, set the Gemini API key in `.env`:
 
 ```dotenv
 GEMINI_API_KEY=replace-me
 ```
 
-Do not put the secret in `config.toml` or commit `.env`. The environment-variable name is controlled
-by `gemini.api_key_env`.
+For the internal Apigee AI Gateway, set `APIGEE_API_KEY` instead and select the `apigee` transport
+as described below. Do not put either secret in `config.toml` or commit `.env`.
 
 Use either the installed command or the module entry point:
 
@@ -80,7 +80,10 @@ Global CLI options must appear **before** `generate`, `evaluate`, or `evaluate-f
 
 ```toml
 [gemini]
+transport = "direct"
 api_key_env = "GEMINI_API_KEY"
+apigee_api_key_env = "APIGEE_API_KEY"
+apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
 generation_model = "gemini-3.7-flash"
 judge_model = "gemini-3.7-flash"
 
@@ -117,7 +120,10 @@ log_level = "INFO"
 
 | Parameter | Code default | Meaning |
 |---|---:|---|
+| `gemini.transport` | `direct` | `direct` uses Google Gemini; `apigee` routes every structured Gemini call through the internal AI Gateway. |
 | `gemini.api_key_env` | `GEMINI_API_KEY` | Environment variable containing the Gemini key. |
+| `gemini.apigee_api_key_env` | `APIGEE_API_KEY` | Environment variable containing the Apigee API key. The key itself is never written to manifests. |
+| `gemini.apigee_base_url` | preprod `/ai_gateway/v1/hr` | HTTPS client-specific AI Gateway base URL. Change the environment/client segment only according to registered access. |
 | `gemini.generation_model` | `gemini-2.5-flash` | Topic-discovery and question-generation model. The example config explicitly selects another model. |
 | `gemini.judge_model` | `gemini-2.5-flash` | Answer-judging, topic-inference, and insights model. |
 | `generation.max_questions` | `30` | Maximum requested questions. This is a ceiling, not a guaranteed count. |
@@ -142,6 +148,30 @@ log_level = "INFO"
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
+
+### Apigee AI Gateway transport
+
+To route question generation, judging, topic inference, insights, and prompt generation through the
+proprietary endpoint, change the transport and provide the key through `.env`:
+
+```toml
+[gemini]
+transport = "apigee"
+apigee_api_key_env = "APIGEE_API_KEY"
+apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+generation_model = "gemini-3.7-flash"
+judge_model = "gemini-3.7-flash"
+```
+
+```dotenv
+APIGEE_API_KEY=replace-me
+```
+
+Alloy configures the Google GenAI SDK in Vertex-compatible mode with an SDK placeholder key and
+sends the real credential only in the `x-apikey` header. The base URL must use HTTPS and include the
+AI Gateway client path. Unified quota response headers are recorded at `INFO` level as metric,
+request usage, daily usage, limit, and remaining allowance; no API key or response content is logged.
+The offline `report` command does not initialize either Gemini transport.
 
 ### Global CLI parameters
 
@@ -631,8 +661,10 @@ chatbot-eval --config config.toml \
 Logs include command state, counts, models, IDs, outcomes, latency, retries, candidate rejection
 reasons, and errors. They avoid complete questions/answers, API keys, and authentication headers.
 
-Gemini calls retry according to `evaluation.max_retries` with exponential backoff. Live chatbot
-calls remain sequential and use the separately configured transient retry and pacing policy.
+Gemini calls—direct or through Apigee—retry according to `evaluation.max_retries` with exponential
+backoff. When Apigee returns unified quota headers, Alloy logs the selected metric, request usage,
+daily limit/usage, and remaining allowance without logging credentials. Live chatbot calls remain
+sequential and use the separately configured transient retry and pacing policy.
 Authentication failures and malformed responses fail immediately; rate-limit responses honor
 `Retry-After` when supplied.
 

@@ -161,6 +161,7 @@ class RunManifest:
     ):
         safe_settings = asdict(settings)
         safe_settings.pop("api_key", None)
+        safe_settings.pop("apigee_api_key", None)
         self.path = output_dir / "run_manifest.json"
         self.data: dict[str, Any] = {
             "schema_version": 1,

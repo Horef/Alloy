@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class Settings:
     api_key: str
+    gemini_transport: str
+    apigee_api_key: str
+    apigee_base_url: str
     generation_model: str
     judge_model: str
     max_questions: int
@@ -39,6 +42,12 @@ class Settings:
 
     def validate(self) -> "Settings":
         errors: list[str] = []
+        if self.gemini_transport not in {"direct", "apigee"}:
+            errors.append("gemini.transport must be direct or apigee")
+        if self.gemini_transport == "apigee" and not (
+            self.apigee_base_url.startswith("https://") and "/ai_gateway/" in self.apigee_base_url
+        ):
+            errors.append("gemini.apigee_base_url must be an HTTPS AI Gateway client URL")
         if not self.generation_model.strip() or not self.judge_model.strip():
             errors.append("Gemini model names must not be empty")
         if self.max_questions < 1:
@@ -106,15 +115,26 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)
     load_dotenv(config_path.parent / ".env")
+    transport = str(_get(data, "gemini", "transport", "direct")).strip().lower()
     key_name = str(_get(data, "gemini", "api_key_env", "GEMINI_API_KEY"))
+    apigee_key_name = str(_get(data, "gemini", "apigee_api_key_env", "APIGEE_API_KEY"))
     api_key = os.getenv(key_name, "")
-    if require_api_key and not api_key:
+    apigee_api_key = os.getenv(apigee_key_name, "")
+    selected_key_name = apigee_key_name if transport == "apigee" else key_name
+    selected_key = apigee_api_key if transport == "apigee" else api_key
+    if require_api_key and not selected_key:
         raise ValueError(
-            f"Missing {key_name}. Copy .env.example to {config_path.parent / '.env'} "
+            f"Missing {selected_key_name}. Copy .env.example to {config_path.parent / '.env'} "
             "and set the key there."
         )
     return Settings(
         api_key=api_key,
+        gemini_transport=transport,
+        apigee_api_key=apigee_api_key,
+        apigee_base_url=str(_get(
+            data, "gemini", "apigee_base_url",
+            "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr",
+        )).strip().rstrip("/"),
         generation_model=str(_get(data, "gemini", "generation_model", "gemini-2.5-flash")),
         judge_model=str(_get(data, "gemini", "judge_model", "gemini-2.5-flash")),
         max_questions=int(_get(data, "generation", "max_questions", 30)),

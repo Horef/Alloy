@@ -195,7 +195,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Compared with {len(previous_records)} previous records.")
         return 0
 
-    llm = GeminiStructuredLLM(settings.api_key, settings.max_retries)
+    llm = GeminiStructuredLLM(
+        settings.api_key,
+        settings.max_retries,
+        transport=settings.gemini_transport,
+        apigee_api_key=settings.apigee_api_key,
+        apigee_base_url=settings.apigee_base_url,
+    )
     if args.command == "generate-prompt":
         previous_records = None
         previous_insights = None
