@@ -54,3 +54,21 @@ apigee_base_url = "http://example.test/not-the-gateway"
 
     with pytest.raises(ValueError, match="HTTPS AI Gateway"):
         load_settings(path, require_api_key=False)
+
+
+def test_cache_defaults_are_enabled_and_local(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("", encoding="utf-8")
+
+    settings = load_settings(path, require_api_key=False)
+
+    assert settings.cache_enabled is True
+    assert settings.cache_directory == ".chatbot_eval_cache"
+
+
+def test_configuration_rejects_empty_cache_directory(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[cache]\ndirectory = "  "\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cache.directory"):
+        load_settings(path, require_api_key=False)

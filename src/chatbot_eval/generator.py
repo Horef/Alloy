@@ -7,6 +7,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
 from .documents import Chunk
 from .llm import StructuredLLM
@@ -25,6 +26,11 @@ from .models import (
 from .progress import track
 
 logger = logging.getLogger(__name__)
+
+
+def topic_discovery_fingerprint() -> str:
+    """Invalidate persisted topic maps whenever their implementation module changes."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 TOPIC_PROMPT = """You are mapping the main user-relevant topics in an internal knowledge base.
 Identify broad, operationally important topics represented in the excerpts. Avoid tiny details,
@@ -322,8 +328,14 @@ class SilverSetGenerator:
         combined = "\n".join(topic.model_dump_json() for topic_map in maps for topic in topic_map.topics)
         return _unique_topics(self.llm.generate(MERGE_PROMPT.format(candidates=combined), TopicMap, self.model).topics)
 
-    def generate(self, chunks: list[Chunk], options: GenerationOptions) -> tuple[list[SilverQuestion], list[TopicCandidate]]:
-        topics = self.discover_topics(chunks, options.batch_chunks)
+    def generate(
+        self,
+        chunks: list[Chunk],
+        options: GenerationOptions,
+        *,
+        topics: list[TopicCandidate] | None = None,
+    ) -> tuple[list[SilverQuestion], list[TopicCandidate]]:
+        topics = list(topics) if topics is not None else self.discover_topics(chunks, options.batch_chunks)
         unanswerable_budget = min(round(options.max_questions * options.unanswerable_ratio), max(0, options.max_questions - 1))
         variation_budget = min(
             round(options.max_questions * options.user_variation_ratio),

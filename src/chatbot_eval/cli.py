@@ -9,10 +9,10 @@ from pathlib import Path
 
 from .adapters import HttpChatbotAdapter
 from .artifacts import EvaluationCheckpoint, RunManifest, evaluation_fingerprint, input_inventory
+from .cache import CorpusAnalysisCache
 from .config import load_settings
-from .documents import load_chunks
 from .evaluator import Evaluator
-from .generator import GenerationOptions, SilverSetGenerator
+from .generator import GenerationOptions, SilverSetGenerator, topic_discovery_fingerprint
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
     read_evaluation_records,
@@ -62,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude-questions", type=Path,
         help="Existing silver CSV/JSONL whose questions must not be generated again",
     )
+    _add_cache_arguments(generate)
 
     generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
     generate_prompt.add_argument("--documents", type=Path, required=True)
@@ -71,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_prompt.add_argument("--previous-run", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl used as improvement evidence")
     generate_prompt.add_argument("--insights", type=Path, help="Optional evaluation_insights.json; overrides insights discovered in --previous-run")
     generate_prompt.add_argument("--current-prompt", type=Path, help="Current prompt file, prompt_package.json, or prompt output directory")
+    _add_cache_arguments(generate_prompt)
 
     evaluate = commands.add_parser("evaluate", help="Call a chatbot and judge its responses")
     evaluate.add_argument("--questions", type=Path, required=True)
@@ -114,6 +116,29 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--insights", type=Path, help="Optional evaluation_insights.json or its output directory")
     report.add_argument("--hide-correct-answer-metrics", action="store_true")
     return parser
+
+
+def _add_cache_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--cache-dir", type=Path, help="Override the shared local corpus-analysis cache directory")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--refresh-cache", action="store_true", help="Recompute and replace matching chunk/topic cache entries")
+    group.add_argument("--no-cache", action="store_true", help="Do not read or write the corpus-analysis cache")
+
+
+def _analysis_cache(args, settings) -> CorpusAnalysisCache:
+    if args.cache_dir is not None:
+        directory = args.cache_dir
+    else:
+        configured = Path(settings.cache_directory)
+        directory = configured if configured.is_absolute() else args.config.resolve().parent / configured
+    enabled = settings.cache_enabled and not args.no_cache
+    if enabled and directory.resolve().is_relative_to(args.documents.resolve()):
+        raise ValueError("The cache directory must be outside --documents so cache files cannot become corpus inputs")
+    return CorpusAnalysisCache(
+        directory,
+        enabled=enabled,
+        refresh=args.refresh_cache,
+    )
 
 
 def _headers(values: list[str]) -> dict[str, str]:
@@ -210,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.insights:
             previous_insights = read_evaluation_insights(args.insights)
         current_prompt = read_current_prompt(args.current_prompt) if args.current_prompt else ""
+        cache = _analysis_cache(args, settings)
         prompt_inputs = [args.documents]
         prompt_inputs.extend(path for path in (args.previous_run, args.insights, args.current_prompt) if path)
         with RunManifest(
@@ -219,11 +245,18 @@ def main(argv: list[str] | None = None) -> int:
                 "uses_previous_results": bool(previous_records),
                 "uses_previous_insights": bool(previous_insights),
                 "uses_current_prompt": bool(current_prompt),
+                "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
             },
         ) as manifest:
-            chunks = load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+            chunks, chunk_key = cache.load_chunks(
+                args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled,
+            )
             topic_generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
-            topics = topic_generator.discover_topics(chunks, settings.batch_chunks)
+            topics = cache.load_topics(
+                chunks, chunk_key, model=settings.generation_model, transport=settings.gemini_transport,
+                batch_chunks=settings.batch_chunks, implementation_sha256=topic_discovery_fingerprint(),
+                discover=lambda: topic_generator.discover_topics(chunks, settings.batch_chunks),
+            )
             package = SystemPromptGenerator(llm, settings.generation_model).generate(
                 chunks, topics, assistant_name=args.assistant_name, audience=args.audience,
                 previous_records=previous_records, previous_insights=previous_insights,
@@ -232,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_path, package_path = write_prompt_package(package, args.output)
             manifest.complete(
                 topic_count=len(topics), chunk_count=len(chunks),
+                cache=cache.summary(),
                 outputs=input_inventory([prompt_path, package_path]),
             )
         print(f"Generated a reviewable system prompt across {len(topics)} discovered topics.")
@@ -257,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.topic_count is not None and args.topic_count < 1:
             raise ValueError("--topic-count must be positive")
         manifest_inputs = [args.documents] + ([args.exclude_questions] if args.exclude_questions else [])
+        cache = _analysis_cache(args, settings)
         with RunManifest(
             args.output, command=args.command, settings=settings, inputs=manifest_inputs,
             parameters={
@@ -265,9 +300,12 @@ def main(argv: list[str] | None = None) -> int:
                 "ambiguous_variation_share": ambiguous_share,
                 "stable_question_ids": settings.stable_question_ids and not args.sequential_ids,
                 "question_type_targets": settings.question_type_targets,
+                "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
             },
         ) as manifest:
-            chunks = load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+            chunks, chunk_key = cache.load_chunks(
+                args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled,
+            )
             excluded_questions = ()
             if args.exclude_questions:
                 excluded_questions = tuple(q.question for q in read_questions(args.exclude_questions))
@@ -283,10 +321,17 @@ def main(argv: list[str] | None = None) -> int:
                 requested_topic=args.topic, requested_topic_count=args.topic_count,
                 excluded_questions=excluded_questions,
             )
-            questions, topics = SilverSetGenerator(llm, settings.generation_model, progress_enabled).generate(chunks, options)
+            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+            topics = cache.load_topics(
+                chunks, chunk_key, model=settings.generation_model, transport=settings.gemini_transport,
+                batch_chunks=settings.batch_chunks, implementation_sha256=topic_discovery_fingerprint(),
+                discover=lambda: generator.discover_topics(chunks, settings.batch_chunks),
+            )
+            questions, topics = generator.generate(chunks, options, topics=topics)
             csv_path, jsonl_path = write_questions(questions, args.output)
             manifest.complete(
                 question_count=len(questions), topic_count=len(topics), chunk_count=len(chunks),
+                cache=cache.summary(),
                 outputs=input_inventory([csv_path, jsonl_path]),
             )
         print(f"Generated {len(questions)} questions across {len(topics)} discovered topics.")

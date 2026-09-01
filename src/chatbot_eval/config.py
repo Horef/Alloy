@@ -29,6 +29,8 @@ class Settings:
     question_type_targets: dict[str, float]
     min_topic_questions: int
     max_topic_share: float
+    cache_enabled: bool
+    cache_directory: str
     request_timeout_seconds: int
     max_retries: int
     chatbot_max_retries: int
@@ -62,6 +64,8 @@ class Settings:
             errors.append("generation.min_topic_questions must be non-negative")
         if not 0 < self.max_topic_share <= 1:
             errors.append("generation.max_topic_share must be in (0, 1]")
+        if not self.cache_directory.strip():
+            errors.append("cache.directory must not be empty")
         if not 0 <= self.unanswerable_ratio < 1:
             errors.append("generation.unanswerable_ratio must be in [0, 1)")
         if not 0 <= self.user_variation_ratio < 1:
@@ -155,6 +159,8 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         },
         min_topic_questions=int(_get(data, "generation", "min_topic_questions", 1)),
         max_topic_share=float(_get(data, "generation", "max_topic_share", 0.35)),
+        cache_enabled=_as_bool(_get(data, "cache", "enabled", True), "cache.enabled"),
+        cache_directory=str(_get(data, "cache", "directory", ".chatbot_eval_cache")),
         request_timeout_seconds=int(_get(data, "evaluation", "request_timeout_seconds", 60)),
         max_retries=int(_get(data, "evaluation", "max_retries", 2)),
         chatbot_max_retries=int(_get(data, "evaluation", "chatbot_max_retries", 2)),

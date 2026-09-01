@@ -25,6 +25,12 @@ question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, docu
 min_topic_questions = 1
 max_topic_share = 0.35
 
+[cache]
+# Reuse locally extracted chunks and Gemini-discovered topic maps when document content and
+# relevant generation settings are unchanged.
+enabled = true
+directory = ".chatbot_eval_cache"
+
 [evaluation]
 request_timeout_seconds = 60
 max_retries = 2

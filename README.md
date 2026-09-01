@@ -101,6 +101,10 @@ question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, docu
 min_topic_questions = 1
 max_topic_share = 0.35
 
+[cache]
+enabled = true
+directory = ".chatbot_eval_cache"
+
 [evaluation]
 request_timeout_seconds = 60
 max_retries = 2
@@ -138,6 +142,8 @@ log_level = "INFO"
 | `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
+| `cache.enabled` | `true` | Reuse content-addressed document chunks and discovered topic maps for `generate` and `generate-prompt`. |
+| `cache.directory` | `.chatbot_eval_cache` | Shared local cache directory. Relative paths are resolved next to the selected config file. |
 | `evaluation.request_timeout_seconds` | `60` | Timeout for each live chatbot HTTP request. |
 | `evaluation.max_retries` | `2` | Gemini retries after the initial attempt, with exponential backoff. |
 | `evaluation.chatbot_max_retries` | `2` | Retries for transient chatbot failures (408, 429, selected 5xx, timeouts, and connection failures). Authentication and malformed responses are not retried. |
@@ -219,6 +225,29 @@ questions. Variants are children of canonical questions and never replace their 
 generator does not create ambiguity by adding random spelling mistakes: it removes a meaningful
 discriminator such as population, status, timeframe, or requested procedure.
 
+### Corpus-analysis cache
+
+`generate` and `generate-prompt` share a persistent, content-addressed cache for the two reusable
+stages: local document extraction/chunking and Gemini topic discovery. A normal repeated run skips
+both stages when all relevant inputs match. Question generation and final prompt generation are
+intentionally not cached, so a new run still produces a fresh requested artifact.
+
+Cache invalidation is based on supported document relative paths and SHA-256 content hashes,
+chunk size/overlap, topic batch size, Gemini model and transport, cache schema, and the relevant
+implementation code. File modification timestamps are not trusted. Changing any keyed input creates
+a new entry automatically; unchanged inputs reuse the prior result.
+
+Use `--refresh-cache` to ignore and atomically replace the matching chunk and topic entries, for
+example after deciding an upstream model alias should be sampled again. Use `--no-cache` for a run
+that must neither read nor write cache data. `--cache-dir` overrides the configured shared location.
+The two switches are mutually exclusive.
+
+The cache is local and may contain extracted document text. Protect it like the source knowledge
+base, do not commit it, and choose a suitably protected directory in production. The cache directory
+must be outside `--documents`, preventing cache JSON from becoming corpus input. Corrupt or
+schema-incompatible entries are logged and recomputed. Old content-addressed entries are retained;
+there is no automatic deletion policy.
+
 ### Supported inputs
 
 | Format | Behavior |
@@ -288,6 +317,9 @@ Rejection counts are written to operational logs at `INFO` level.
 | `--ambiguous-variation-share R` | config value | Share of variants expected to trigger clarification; `[0, 1]`. |
 | `--sequential-ids` | off | Use legacy `Q0001`-style run-local IDs instead of content-derived stable IDs. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
+| `--cache-dir DIR` | config value | Override the shared local corpus-analysis cache directory. |
+| `--refresh-cache` | off | Recompute and atomically replace matching chunk/topic entries. |
+| `--no-cache` | off | Disable cache reads and writes for this run. |
 
 Representative run:
 
@@ -505,6 +537,9 @@ facts that the corpus does not support.
 | `--previous-run PATH` | unset | Previous Alloy output directory or evaluation JSONL. Standard results and insights are auto-discovered in a directory. |
 | `--insights PATH` | unset | Explicit `evaluation_insights.json`; overrides insights discovered through `--previous-run`. |
 | `--current-prompt PATH` | unset | Current Markdown/text prompt, `prompt_package.json`, or prompt output directory to revise conservatively. |
+| `--cache-dir DIR` | config value | Override the shared local corpus-analysis cache directory. |
+| `--refresh-cache` | off | Recompute and atomically replace matching chunk/topic entries. |
+| `--no-cache` | off | Disable cache reads and writes for this run. |
 
 ```bash
 chatbot-eval --config config.toml generate-prompt \
@@ -679,6 +714,7 @@ only a hash of the live chatbot URL.
 |---|---|
 | `cli.py` | CLI parsing, configuration wiring, workflow orchestration. |
 | `config.py` | TOML and `.env` loading. |
+| `cache.py` | Content-addressed chunk/topic caching, invalidation, and atomic replacement. |
 | `documents.py` | File discovery, extraction, chunking, provenance. |
 | `generator.py` | Topics, quotas, generation, validation, deduplication. |
 | `history.py` | Compatible loading of previous evaluations, insights, and current prompts. |
@@ -746,7 +782,7 @@ confidence intervals, and reporting options.
 - Topic evidence selection uses mapped sources plus lexical overlap, not embeddings or a graph.
 - User-variation and ambiguity budgets are configurable, but the linguistic quality of each variant
   still requires human review.
-- Run manifests hash input documents and implementation files; incremental regeneration is not yet implemented.
+- Corpus analysis is cached as whole content-addressed snapshots; per-file incremental extraction within a changed corpus is not yet implemented.
 - Exclusion is file-based rather than persisted in a review database.
 - Personal types are disabled pending an allowlisted, masked, auditable data interface.
 - LLM judges can have style, verbosity, and model-family biases and require human audits.
