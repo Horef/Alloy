@@ -2,9 +2,11 @@ import json
 
 import pytest
 
-from chatbot_eval.artifacts import EvaluationCheckpoint, RunManifest, evaluation_fingerprint
+from chatbot_eval.artifacts import (
+    EvaluationCheckpoint, RunManifest, StructuredCallCheckpoint, evaluation_fingerprint,
+)
 from chatbot_eval.config import load_settings
-from chatbot_eval.models import ChatbotResult, EvaluationRecord, Outcome, SilverQuestion
+from chatbot_eval.models import ChatbotResult, EvaluationRecord, Outcome, SilverQuestion, TopicCandidate, TopicMap
 
 
 def _record(answer="תשובה"):
@@ -31,6 +33,42 @@ def test_checkpoint_round_trip_and_input_mismatch_detection(tmp_path):
 
     with pytest.raises(ValueError, match="input mismatch"):
         EvaluationCheckpoint(path, {"Q1": "different"}, resume=True).load()
+
+
+def test_checkpoint_rejects_changed_evaluation_contract(tmp_path):
+    record = _record()
+    fingerprint = evaluation_fingerprint(record.question, contract={"judge": "v1"})
+    path = tmp_path / "checkpoint.jsonl"
+    checkpoint = EvaluationCheckpoint(
+        path, {"Q1": fingerprint}, resume=False, run_signature="contract-v1",
+    )
+    checkpoint.append(record)
+
+    with pytest.raises(ValueError, match="contract mismatch"):
+        EvaluationCheckpoint(
+            path, {"Q1": fingerprint}, resume=True, run_signature="contract-v2",
+        ).load()
+
+
+def test_structured_call_checkpoint_replays_without_calling_llm(tmp_path):
+    response = TopicMap(topics=[TopicCandidate(
+        name="נושא", description="תיאור", importance=5, source_ids=[],
+    )])
+
+    class LLM:
+        calls = 0
+
+        def generate(self, prompt, schema, model):
+            self.calls += 1
+            return response
+
+    llm = LLM()
+    path = tmp_path / "generation.jsonl"
+    first = StructuredCallCheckpoint(path, llm, signature="same", resume=False)
+    assert first.generate("prompt", TopicMap, "model") == response
+    resumed = StructuredCallCheckpoint(path, llm, signature="same", resume=True)
+    assert resumed.generate("prompt", TopicMap, "model") == response
+    assert llm.calls == 1
 
 
 def test_manifest_records_failure_without_api_key(tmp_path, monkeypatch):

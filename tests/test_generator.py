@@ -190,6 +190,34 @@ def test_generation_refills_rejected_candidates_within_bound():
     assert fake.question_calls == 2
 
 
+def test_generation_retry_prompt_explains_prior_rejection():
+    prompts = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is TopicMap:
+                return TopicMap(topics=[TopicCandidate(
+                    name="נושא", description="", importance=5, source_ids=["a#1"],
+                )])
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return QuestionBatch(questions=[_candidate(
+                    quotes=[EvidenceQuote(source_id="a#1", quote="לא קיים")],
+                )])
+            assert "quote_not_verbatim" in prompt
+            return QuestionBatch(questions=[_candidate()])
+
+    SilverSetGenerator(FakeLLM(), "test").generate(
+        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=2,
+        ),
+    )
+
+    assert len(prompts) == 2
+
+
 def test_requested_topic_also_scopes_boundary_questions():
     class FakeLLM:
         def generate(self, prompt, schema, model):

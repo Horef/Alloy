@@ -72,3 +72,33 @@ def test_configuration_rejects_empty_cache_directory(tmp_path):
 
     with pytest.raises(ValueError, match="cache.directory"):
         load_settings(path, require_api_key=False)
+
+
+def test_evaluation_safety_limits_have_conservative_defaults(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("", encoding="utf-8")
+
+    settings = load_settings(path, require_api_key=False)
+
+    assert settings.judge_max_answer_chars == 20_000
+    assert settings.judge_max_context_chars == 60_000
+    assert settings.insights_max_prompt_chars == 80_000
+    assert settings.gemini_request_timeout_seconds == 120
+    assert settings.max_concurrency == 1
+
+
+def test_configuration_rejects_invalid_evaluation_safety_limits(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[evaluation]
+judge_max_answer_chars = 10
+insights_max_prompt_chars = 10
+gemini_request_timeout_seconds = 0
+max_concurrency = 0
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="character limits.*insights.*timeout.*concurrency"):
+        load_settings(path, require_api_key=False)

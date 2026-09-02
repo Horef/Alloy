@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from pathlib import Path
 
 from .artifacts import atomic_write_text
@@ -10,6 +11,10 @@ from .models import EvaluationInsights, EvaluationRecord, Outcome
 from .report import build_summary
 
 logger = logging.getLogger(__name__)
+
+
+def insights_fingerprint() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 INSIGHTS_PROMPT = """Analyze a completed internal chatbot evaluation and produce actionable,
 evidence-based insights in clear Hebrew. Look for recurring patterns that explain failures across
@@ -63,16 +68,38 @@ def _compact_record(record: EvaluationRecord) -> dict:
     }
 
 
-def generate_insights(records: list[EvaluationRecord], llm: StructuredLLM, model: str) -> EvaluationInsights:
+def generate_insights(
+    records: list[EvaluationRecord], llm: StructuredLLM, model: str, *, max_prompt_chars: int = 80_000,
+) -> EvaluationInsights:
     analyzable = [record for record in records if record.outcome not in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}]
     if not analyzable:
         raise ValueError("No successfully judged records are available for insight generation")
-    compact = [_compact_record(record) for record in analyzable]
+    priority = {
+        Outcome.MISLEADING_HALLUCINATION: 0, Outcome.SHOULD_HAVE_ABSTAINED: 0,
+        Outcome.MISSING_CLARIFICATION: 0, Outcome.PARTIAL_TOO_LITTLE: 1,
+        Outcome.PARTIAL_TOO_MUCH: 1, Outcome.UNRELATED_ANSWER: 1,
+        Outcome.INCORRECT_ABSTENTION: 1,
+    }
+    ordered = sorted(analyzable, key=lambda record: (
+        priority.get(record.outcome, 2), record.question.topic, record.question.id,
+    ))
+    compact: list[dict] = []
+    used = len(json.dumps(build_summary(records), ensure_ascii=False)) + len(INSIGHTS_PROMPT)
+    for record in ordered:
+        item = _compact_record(record)
+        size = len(json.dumps(item, ensure_ascii=False))
+        if compact and used + size > max_prompt_chars:
+            continue
+        compact.append(item)
+        used += size
     prompt = INSIGHTS_PROMPT.format(
         summary=json.dumps(build_summary(records), ensure_ascii=False),
         records=json.dumps(compact, ensure_ascii=False),
     )
-    logger.info("insight_generation_started record_count=%d model=%s", len(analyzable), model)
+    logger.info(
+        "insight_generation_started record_count=%d included_count=%d model=%s",
+        len(analyzable), len(compact), model,
+    )
     insights = llm.generate(prompt, EvaluationInsights, model)
     by_id = {record.question.id: record for record in analyzable}
     validated_issues = []

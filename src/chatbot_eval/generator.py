@@ -76,6 +76,7 @@ Write the question, expected answer, and rationale in clear Hebrew.
 TOPIC: {topic}
 EVIDENCE:
 {evidence}
+{retry_feedback}
 """
 
 UNANSWERABLE_PROMPT = """Create at most {count} realistic boundary questions related to TOPIC but
@@ -90,6 +91,7 @@ Write the question, expected answer, and rationale in clear Hebrew.
 TOPIC: {topic}
 EVIDENCE:
 {evidence}
+{retry_feedback}
 """
 
 VARIATION_PROMPT = """Create at most {count} realistic Hebrew user phrasings derived from the
@@ -372,6 +374,7 @@ class SilverSetGenerator:
             wanted = min(wanted, answerable_budget - produced_answerable)
             relevant = _relevant_chunks(topic, chunks)
             topic_produced = 0
+            retry_feedback: list[str] = []
             for _round in range(options.max_candidate_rounds):
                 missing = wanted - topic_produced
                 if missing <= 0:
@@ -380,6 +383,10 @@ class SilverSetGenerator:
                     QUESTION_PROMPT.format(
                         count=missing, topic=topic.name, evidence=_render_chunks(relevant),
                         type_targets=json.dumps(dict(type_remaining), ensure_ascii=False) if type_remaining else "best effort",
+                        retry_feedback=(
+                            "RETRY FEEDBACK (avoid repeating these rejected candidates):\n"
+                            + "\n".join(retry_feedback[-12:]) if retry_feedback else ""
+                        ),
                     ),
                     QuestionBatch,
                     self.model,
@@ -387,13 +394,16 @@ class SilverSetGenerator:
                 for candidate in batch.questions[:missing]:
                     if not candidate.answerable or _is_duplicate(candidate.question, accepted, options.excluded_questions):
                         rejected["wrong_answerability_or_duplicate"] += 1
+                        retry_feedback.append(f"wrong_answerability_or_duplicate: {candidate.question[:180]}")
                         continue
                     if type_remaining and type_remaining[candidate.question_type.value] <= 0:
                         rejected["question_type_over_target"] += 1
+                        retry_feedback.append(f"question_type_over_target: {candidate.question[:180]}")
                         continue
                     valid, reason = validate_candidate(candidate, chunk_by_id)
                     if reason:
                         rejected[reason] += 1
+                        retry_feedback.append(f"{reason}: {candidate.question[:180]}")
                         continue
                     accepted.append(self._to_silver(candidate, topic.name, valid, len(accepted) + 1))
                     topic_produced += 1
@@ -466,22 +476,31 @@ class SilverSetGenerator:
                 relevant = _relevant_chunks(topic, chunks)
                 wanted = min(per_topic, unanswerable_budget)
                 topic_produced = 0
+                retry_feedback = []
                 for _round in range(options.max_candidate_rounds):
                     missing = min(wanted - topic_produced, unanswerable_budget)
                     if missing <= 0:
                         break
                     batch = self.llm.generate(
-                        UNANSWERABLE_PROMPT.format(count=missing, topic=topic.name, evidence=_render_chunks(relevant)),
+                        UNANSWERABLE_PROMPT.format(
+                            count=missing, topic=topic.name, evidence=_render_chunks(relevant),
+                            retry_feedback=(
+                                "RETRY FEEDBACK (avoid repeating these rejected candidates):\n"
+                                + "\n".join(retry_feedback[-12:]) if retry_feedback else ""
+                            ),
+                        ),
                         QuestionBatch,
                         self.model,
                     )
                     for candidate in batch.questions[:missing]:
                         if candidate.answerable or _is_duplicate(candidate.question, accepted, options.excluded_questions):
                             rejected["wrong_answerability_or_duplicate"] += 1
+                            retry_feedback.append(f"wrong_answerability_or_duplicate: {candidate.question[:180]}")
                             continue
                         valid, reason = validate_candidate(candidate, chunk_by_id)
                         if reason:
                             rejected[reason] += 1
+                            retry_feedback.append(f"{reason}: {candidate.question[:180]}")
                             continue
                         accepted.append(self._to_silver(candidate, topic.name, valid, len(accepted) + 1))
                         topic_produced += 1

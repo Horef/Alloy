@@ -39,6 +39,12 @@ chatbot_retry_base_seconds = 0.5
 chatbot_pacing_seconds = 0.0
 chatbot_max_response_bytes = 5000000
 chatbot_require_json_content_type = true
+judge_max_answer_chars = 20000
+judge_max_context_chars = 60000
+insights_max_prompt_chars = 80000
+gemini_request_timeout_seconds = 120
+# Keep 1 for session-sensitive chatbots. Increase only for stateless endpoints and available quota.
+max_concurrency = 1
 
 [runtime]
 # Set to false in production/non-interactive jobs.

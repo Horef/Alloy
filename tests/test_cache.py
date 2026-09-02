@@ -1,5 +1,7 @@
 from chatbot_eval.cache import CorpusAnalysisCache
-from chatbot_eval.models import TopicCandidate
+from chatbot_eval.models import (
+    ChatbotResult, EvaluationInsights, EvaluationRecord, Outcome, SilverQuestion, TopicCandidate,
+)
 
 
 def _topic() -> TopicCandidate:
@@ -105,3 +107,56 @@ def test_invalid_cache_entry_is_recomputed(tmp_path):
     assert chunks
     assert recovered_key == key
     assert recovered.summary()["chunks"] == "miss"
+
+
+def test_question_topic_assignments_are_reused(tmp_path):
+    questions = [SilverQuestion(id="Q1", topic="לא סווג", question="מה הנוהל?", expected_answer="תשובה")]
+    calls = 0
+
+    def discover():
+        nonlocal calls
+        calls += 1
+        return {"Q1": "נהלים"}
+
+    first = CorpusAnalysisCache(tmp_path / "cache")
+    assert first.load_question_topics(
+        questions, model="model", transport="direct", batch_size=250,
+        implementation_sha256="v1", discover=discover,
+    ) == {"Q1": "נהלים"}
+    second = CorpusAnalysisCache(tmp_path / "cache")
+    assert second.load_question_topics(
+        questions, model="model", transport="direct", batch_size=250,
+        implementation_sha256="v1", discover=discover,
+    ) == {"Q1": "נהלים"}
+    assert calls == 1
+    assert second.summary()["question_topics"] == "hit"
+
+
+def test_insights_are_reused_for_identical_evaluation_records(tmp_path):
+    record = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+        result=ChatbotResult(question_id="Q1", answer="תשובה"), outcome=Outcome.CORRECT_ANSWER,
+    )
+    expected = EvaluationInsights(
+        executive_summary="סיכום", strengths=[], issues=[], methodology_note="שיטה",
+    )
+    calls = 0
+
+    def discover():
+        nonlocal calls
+        calls += 1
+        return expected
+
+    first = CorpusAnalysisCache(tmp_path / "cache")
+    first.load_insights(
+        [record], model="model", transport="direct", max_prompt_chars=80_000,
+        implementation_sha256="v1", discover=discover,
+    )
+    second = CorpusAnalysisCache(tmp_path / "cache")
+    actual = second.load_insights(
+        [record], model="model", transport="direct", max_prompt_chars=80_000,
+        implementation_sha256="v1", discover=discover,
+    )
+    assert actual == expected
+    assert calls == 1
+    assert second.summary()["insights"] == "hit"

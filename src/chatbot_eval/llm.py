@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Protocol, TypeVar
 
 from google import genai
-from google.genai import types
-from pydantic import BaseModel
+from google.genai import errors, types
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -25,9 +28,11 @@ class GeminiStructuredLLM:
         transport: str = "direct",
         apigee_api_key: str = "",
         apigee_base_url: str = "",
+        request_timeout_seconds: int = 120,
     ):
+        http_options = types.HttpOptions(timeout=request_timeout_seconds * 1000)
         if transport == "direct":
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(api_key=api_key, http_options=http_options)
         elif transport == "apigee":
             if not apigee_api_key or not apigee_base_url:
                 raise ValueError("Apigee transport requires an API key and base URL")
@@ -40,12 +45,45 @@ class GeminiStructuredLLM:
                     api_version="v1",
                     base_url=apigee_base_url.rstrip("/"),
                     headers={"x-apikey": apigee_api_key},
+                    timeout=request_timeout_seconds * 1000,
                 ),
             )
         else:
             raise ValueError(f"Unsupported Gemini transport: {transport!r}")
         self._transport = transport
         self._max_retries = max_retries
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        if isinstance(exc, ValidationError):
+            return False
+        if isinstance(exc, errors.APIError):
+            return exc.code in {408, 409, 429, 500, 502, 503, 504}
+        network_errors = (
+            TimeoutError, ConnectionError,
+            errors.httpx.TimeoutException, errors.httpx.TransportError,
+            errors.requests.Timeout, errors.requests.ConnectionError,
+        )
+        return isinstance(exc, network_errors)
+
+    @staticmethod
+    def _retry_delay(exc: Exception, attempt: int) -> float:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        retry_after = headers.get("Retry-After") if headers else None
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except (TypeError, ValueError):
+                try:
+                    value = parsedate_to_datetime(retry_after)
+                    if value.tzinfo is None:
+                        value = value.replace(tzinfo=timezone.utc)
+                    return max(0.0, (value - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError):
+                    pass
+        base = 2**attempt
+        return base + random.uniform(0, base * 0.25)
 
     @staticmethod
     def _log_quota(response, model: str) -> None:
@@ -86,13 +124,18 @@ class GeminiStructuredLLM:
                 return schema.model_validate_json(response.text)
             except Exception as exc:
                 last_error = exc
-                if attempt < self._max_retries:
+                retryable = self._is_retryable(exc)
+                if attempt < self._max_retries and retryable:
                     logger.warning(
                         "gemini_call_retry model=%s attempt=%d max_attempts=%d error=%r",
                         model, attempt + 1, self._max_retries + 1, exc,
                     )
-                    time.sleep(2**attempt)
+                    time.sleep(self._retry_delay(exc, attempt))
                 else:
-                    logger.error("gemini_call_failed model=%s attempts=%d error=%r", model, attempt + 1, exc)
+                    logger.error(
+                        "gemini_call_failed model=%s attempts=%d retryable=%s error=%r",
+                        model, attempt + 1, retryable, exc,
+                    )
+                    break
         assert last_error is not None
         raise last_error

@@ -113,6 +113,11 @@ chatbot_retry_base_seconds = 0.5
 chatbot_pacing_seconds = 0.0
 chatbot_max_response_bytes = 5000000
 chatbot_require_json_content_type = true
+judge_max_answer_chars = 20000
+judge_max_context_chars = 60000
+insights_max_prompt_chars = 80000
+gemini_request_timeout_seconds = 120
+max_concurrency = 1
 
 [runtime]
 progress_enabled = true
@@ -142,7 +147,7 @@ log_level = "INFO"
 | `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
-| `cache.enabled` | `true` | Reuse content-addressed document chunks and discovered topic maps for `generate` and `generate-prompt`. |
+| `cache.enabled` | `true` | Reuse content-addressed chunks, document topics, premade-question topics, and optional evaluation insights. |
 | `cache.directory` | `.chatbot_eval_cache` | Shared local cache directory. Relative paths are resolved next to the selected config file. |
 | `evaluation.request_timeout_seconds` | `60` | Timeout for each live chatbot HTTP request. |
 | `evaluation.max_retries` | `2` | Gemini retries after the initial attempt, with exponential backoff. |
@@ -151,6 +156,11 @@ log_level = "INFO"
 | `evaluation.chatbot_pacing_seconds` | `0.0` | Minimum delay between sequential live-chatbot requests. |
 | `evaluation.chatbot_max_response_bytes` | `5000000` | Maximum accepted chatbot response size. |
 | `evaluation.chatbot_require_json_content_type` | `true` | Reject live responses whose media type is not JSON or `+json`. |
+| `evaluation.judge_max_answer_chars` | `20000` | Maximum chatbot-answer characters placed in one judge prompt. Longer values retain the beginning and end and record the omitted count. |
+| `evaluation.judge_max_context_chars` | `60000` | Maximum retrieved-context characters placed in one judge prompt, with the same bounded truncation metadata. |
+| `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
+| `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for direct and Apigee Gemini SDK requests. |
+| `evaluation.max_concurrency` | `1` | Chatbot/judge workers. Keep `1` for session-sensitive endpoints; values above `1` are opt-in. |
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
@@ -227,10 +237,12 @@ discriminator such as population, status, timeframe, or requested procedure.
 
 ### Corpus-analysis cache
 
-`generate` and `generate-prompt` share a persistent, content-addressed cache for the two reusable
-stages: local document extraction/chunking and Gemini topic discovery. A normal repeated run skips
-both stages when all relevant inputs match. Question generation and final prompt generation are
-intentionally not cached, so a new run still produces a fresh requested artifact.
+All Gemini-backed workflows share a persistent, content-addressed cache. `generate` and
+`generate-prompt` cache local document extraction/chunking and document topic discovery;
+`evaluate-file` can cache inferred question topics; both evaluation workflows can cache optional
+insights. A normal repeated run skips matching reusable stages. Question generation, judging, and
+final prompt generation are not ordinary cache entries: generation has an explicit interruption
+checkpoint, judging has its existing explicit `--resume` checkpoint, and prompts remain fresh.
 
 Cache invalidation is based on supported document relative paths and SHA-256 content hashes,
 chunk size/overlap, topic batch size, Gemini model and transport, cache schema, and the relevant
@@ -317,6 +329,8 @@ Rejection counts are written to operational logs at `INFO` level.
 | `--ambiguous-variation-share R` | config value | Share of variants expected to trigger clarification; `[0, 1]`. |
 | `--sequential-ids` | off | Use legacy `Q0001`-style run-local IDs instead of content-derived stable IDs. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
+| `--resume` | off | Replay successful structured calls from a compatible generation checkpoint, then continue after the interrupted call. |
+| `--checkpoint PATH` | `<output>/generation_checkpoint.jsonl` | Durable structured-call journal used by generation resume. |
 | `--cache-dir DIR` | config value | Override the shared local corpus-analysis cache directory. |
 | `--refresh-cache` | off | Recompute and atomically replace matching chunk/topic entries. |
 | `--no-cache` | off | Disable cache reads and writes for this run. |
@@ -352,6 +366,14 @@ chatbot-eval --config config.toml generate \
   --max-questions 40 \
   --output ./outputs/questions-v2
 ```
+
+To continue an interrupted generation without paying again for successful structured calls, repeat
+the same command and add `--resume`. Alloy verifies document content, generation options, model,
+transport, and implementation before replaying responses. Without `--resume`, the checkpoint is
+replaced and the run remains fresh. Retry rounds now receive bounded rejection reasons so they can
+avoid repeating candidates with invalid quotations, sources, types, or duplicates. Generation
+`--resume` and `--refresh-cache` are mutually exclusive because refreshed topics could change every
+downstream prompt.
 
 ### Silver-set outputs and review
 
@@ -403,6 +425,11 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 | `--resume` | off | Reuse completed records from a compatible checkpoint. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 | `--compare-with PATH` | unset | Previous Alloy output directory or `evaluation_details.jsonl`; adds aggregate and matched-question comparison to the report. |
+| `--retry-errors` | off | With `--resume`, retry prior `chatbot_error` and `judge_error` rows while preserving successful rows. |
+| `--max-concurrency N` | config value (`1`) | Opt-in concurrent chatbot/judge workers; output order remains the question-file order. |
+| `--cache-dir DIR` | config value | Cache location used for optional insights. |
+| `--refresh-cache` | off | Recompute matching cached insights. |
+| `--no-cache` | off | Do not read or write cached insights. |
 
 ```bash
 chatbot-eval --config config.toml evaluate \
@@ -426,6 +453,15 @@ chatbot-eval --config config.toml evaluate \
   --output ./outputs/run-001 \
   --resume
 ```
+
+Resume compatibility includes the judge model and implementation, transport, judge input limits,
+endpoint hash, response-field mapping, header names, chatbot retry/size settings, and concurrency.
+Changed contracts are rejected rather than silently mixing results. Authentication header values
+are never written to checkpoints or manifests. `--retry-errors` deliberately reprocesses only prior
+infrastructure/judge failures; ordinary completed results remain unchanged.
+`--retry-errors` is rejected unless `--resume` is also present.
+Evaluation checkpoints created before version 0.7 do not contain a contract signature and therefore
+cannot be resumed under 0.7; start one fresh run to create the strengthened format.
 
 Timeouts, connection failures, invalid JSON, unexpected content types, oversized responses, and
 missing answer fields become categorized `chatbot_error` records and are excluded from quality
@@ -470,13 +506,18 @@ Explicit mappings are recommended for stable production jobs.
 | `--topic-column NAME` | optional/auto | Topic; missing values become `לא סווג`. |
 | `--answerable-column NAME` | optional/auto | true/false, 1/0, or yes/no; defaults to true. |
 | `--error-column NAME` | optional/auto | Stored error; such rows bypass judging. |
-| `--infer-topics` | off | Infer broad Hebrew topics for unclassified rows, in batches up to 250. |
+| `--infer-topics` | off | Infer broad Hebrew topics for unclassified rows, bounded by both 250 rows and 60,000 rendered characters per batch. |
 | `--generate-insights` | off | Write and embed optional cross-result insights. |
 | `--hide-correct-answer-metrics` | off | Hide correctness presentation metrics but retain data. |
 | `--strict` | off | Reject the entire import if any row is invalid instead of logging and skipping invalid rows. |
 | `--resume` | off | Reuse completed rows whose imported inputs still match. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 | `--compare-with PATH` | unset | Previous Alloy output directory or `evaluation_details.jsonl`; adds comparison to the report. |
+| `--retry-errors` | off | With `--resume`, retry prior judge errors while preserving imported chatbot errors and successful rows. |
+| `--max-concurrency N` | config value (`1`) | Opt-in concurrent judge workers; final row order remains stable. |
+| `--cache-dir DIR` | config value | Shared cache for inferred topics and optional insights. |
+| `--refresh-cache` | off | Replace matching topic-inference and insight cache entries. |
+| `--no-cache` | off | Disable those cache reads and writes. |
 
 ```bash
 chatbot-eval --config config.toml evaluate-file \
@@ -681,6 +722,12 @@ unsupported issues, and reduces single-example high-priority claims. Correlation
 proven causation, personal values are not repeated, and insight failure does not prevent normal
 report generation.
 
+Insight evidence is globally bounded by `evaluation.insights_max_prompt_chars`; risky and failed
+outcomes are considered before successes. Identical completed records reuse a content-addressed
+insight result unless `--refresh-cache` or `--no-cache` is selected. Likewise,
+`evaluate-file --infer-topics` caches assignments by question ID/text, model, transport, batching,
+and implementation.
+
 ## Progress, logging, retries, and rate limits
 
 Terminal progress and status text are in English. Disable progress globally with
@@ -696,15 +743,18 @@ chatbot-eval --config config.toml \
 Logs include command state, counts, models, IDs, outcomes, latency, retries, candidate rejection
 reasons, and errors. They avoid complete questions/answers, API keys, and authentication headers.
 
-Gemini calls—direct or through Apigee—retry according to `evaluation.max_retries` with exponential
-backoff. When Apigee returns unified quota headers, Alloy logs the selected metric, request usage,
+Gemini calls—direct or through Apigee—retry only transient timeouts, connection problems, throttling,
+and selected server errors according to `evaluation.max_retries`, with jittered exponential backoff
+and `Retry-After` support. Authentication, configuration, and schema-validation errors fail
+immediately. Every call uses `evaluation.gemini_request_timeout_seconds`. When Apigee returns unified quota headers, Alloy logs the selected metric, request usage,
 daily limit/usage, and remaining allowance without logging credentials. Live chatbot calls remain
 sequential and use the separately configured transient retry and pacing policy.
 Authentication failures and malformed responses fail immediately; rate-limit responses honor
 `Retry-After` when supplied.
 
 Evaluation writes a checkpoint after every completed chatbot/judge result. `--resume` validates
-input fingerprints before reusing records and rejects mismatched checkpoints. Final JSON and HTML,
+input and evaluation-contract fingerprints before reusing records and rejects mismatched checkpoints.
+One torn final checkpoint line is discarded safely; earlier corruption remains a hard failure. Final JSON and HTML,
 prompt packages, insights, and manifests use atomic replacement. Manifests omit API keys and record
 only a hash of the live chatbot URL.
 
@@ -783,6 +833,8 @@ confidence intervals, and reporting options.
 - User-variation and ambiguity budgets are configurable, but the linguistic quality of each variant
   still requires human review.
 - Corpus analysis is cached as whole content-addressed snapshots; per-file incremental extraction within a changed corpus is not yet implemented.
+- Generation resume replays successful structured responses; it does not attempt to continue from a partially returned model response.
+- Concurrent evaluation is intended only for stateless endpoints and available Gemini/chatbot quota; session-sensitive chatbots should keep the default of one worker.
 - Exclusion is file-based rather than persisted in a review database.
 - Personal types are disabled pending an allowlisted, masked, auditable data interface.
 - LLM judges can have style, verbosity, and model-family biases and require human audits.

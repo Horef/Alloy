@@ -2,30 +2,33 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import logging
 import os
 import shutil
 from pathlib import Path
 
 from .adapters import HttpChatbotAdapter
-from .artifacts import EvaluationCheckpoint, RunManifest, evaluation_fingerprint, input_inventory
+from .artifacts import (
+    EvaluationCheckpoint, RunManifest, StructuredCallCheckpoint, evaluation_fingerprint, input_inventory,
+)
 from .cache import CorpusAnalysisCache
 from .config import load_settings
-from .evaluator import Evaluator
+from .evaluator import Evaluator, judge_contract_fingerprint
 from .generator import GenerationOptions, SilverSetGenerator, topic_discovery_fingerprint
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
     read_evaluation_records,
 )
-from .insights import generate_insights, write_insights
+from .insights import generate_insights, insights_fingerprint, write_insights
 from .io import read_questions, write_evaluations, write_questions
 from .llm import GeminiStructuredLLM
 from .logging_utils import configure_logging
-from .models import ChatbotResult, SilverQuestion
+from .models import ChatbotResult, Outcome, SilverQuestion
 from .prompt_generator import SystemPromptGenerator, write_prompt_package
 from .report import write_report
 from .results_io import ResultColumns, read_premade_results
-from .topics import infer_topics
+from .topics import infer_topics, topic_inference_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude-questions", type=Path,
         help="Existing silver CSV/JSONL whose questions must not be generated again",
     )
+    generate.add_argument("--resume", action="store_true", help="Resume successful structured generation calls")
+    generate.add_argument("--checkpoint", type=Path, help="Generation-call checkpoint; defaults inside output")
     _add_cache_arguments(generate)
 
     generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
@@ -88,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
     evaluate.add_argument("--compare-with", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl to compare in the report")
+    evaluate.add_argument("--retry-errors", action="store_true", help="Retry checkpointed chatbot/judge errors while preserving successes")
+    evaluate.add_argument("--max-concurrency", type=int, help="Concurrent chatbot/judge workers; default is config value 1")
+    _add_cache_arguments(evaluate)
 
     evaluate_file = commands.add_parser("evaluate-file", help="Judge premade chatbot questions and answers")
     evaluate_file.add_argument("--results", type=Path, required=True, help="Input .xlsx, .csv, or .jsonl file")
@@ -108,6 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate_file.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
     evaluate_file.add_argument("--compare-with", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl to compare in the report")
+    evaluate_file.add_argument("--retry-errors", action="store_true", help="Retry checkpointed judge errors while preserving other rows")
+    evaluate_file.add_argument("--max-concurrency", type=int, help="Concurrent judge workers; default is config value 1")
+    _add_cache_arguments(evaluate_file)
 
     report = commands.add_parser("report", help="Regenerate a report from completed Alloy evaluation JSONL")
     report.add_argument("--results", type=Path, required=True, help="Current output directory or evaluation_details.jsonl")
@@ -119,26 +130,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_cache_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--cache-dir", type=Path, help="Override the shared local corpus-analysis cache directory")
+    parser.add_argument("--cache-dir", type=Path, help="Override the shared local workflow cache directory")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--refresh-cache", action="store_true", help="Recompute and replace matching chunk/topic cache entries")
-    group.add_argument("--no-cache", action="store_true", help="Do not read or write the corpus-analysis cache")
+    group.add_argument("--refresh-cache", action="store_true", help="Recompute and replace matching workflow cache entries")
+    group.add_argument("--no-cache", action="store_true", help="Do not read or write the workflow cache")
 
 
-def _analysis_cache(args, settings) -> CorpusAnalysisCache:
+def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAnalysisCache:
     if args.cache_dir is not None:
         directory = args.cache_dir
     else:
         configured = Path(settings.cache_directory)
         directory = configured if configured.is_absolute() else args.config.resolve().parent / configured
     enabled = settings.cache_enabled and not args.no_cache
-    if enabled and directory.resolve().is_relative_to(args.documents.resolve()):
+    if enabled and corpus_root is not None and directory.resolve().is_relative_to(corpus_root.resolve()):
         raise ValueError("The cache directory must be outside --documents so cache files cannot become corpus inputs")
     return CorpusAnalysisCache(
         directory,
         enabled=enabled,
         refresh=args.refresh_cache,
     )
+
+
+def _analysis_cache(args, settings) -> CorpusAnalysisCache:
+    return _workflow_cache(args, settings, args.documents)
 
 
 def _headers(values: list[str]) -> dict[str, str]:
@@ -151,28 +166,50 @@ def _headers(values: list[str]) -> dict[str, str]:
     return result
 
 
-def _optional_insights(args, records, llm, model):
+def _optional_insights(args, records, llm, model, *, cache, settings):
     if not args.generate_insights:
         return None, None
     try:
-        insights = generate_insights(records, llm, model)
+        insights = cache.load_insights(
+            records, model=model, transport=settings.gemini_transport,
+            max_prompt_chars=settings.insights_max_prompt_chars,
+            implementation_sha256=insights_fingerprint(),
+            discover=lambda: generate_insights(
+                records, llm, model, max_prompt_chars=settings.insights_max_prompt_chars,
+            ),
+        )
         return insights, write_insights(insights, args.output)
     except Exception:
         logger.exception("insight_generation_failed; continuing without insights")
         return None, None
 
 
-def _checkpointed_evaluation(args, items, evaluator: Evaluator, *, premade: bool):
+def _checkpointed_evaluation(
+    args, items, evaluator: Evaluator, *, premade: bool, contract: dict,
+):
+    run_signature = hashlib.sha256(
+        json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     fingerprints = {
-        question.id: evaluation_fingerprint(question, result if premade else None)
+        question.id: evaluation_fingerprint(question, result if premade else None, contract=contract)
         for question, result in items
     }
     checkpoint = EvaluationCheckpoint(
         args.checkpoint or args.output / "evaluation_checkpoint.jsonl",
         fingerprints,
         resume=args.resume,
+        run_signature=run_signature,
     )
     completed = checkpoint.load() if args.resume else {}
+    if args.retry_errors:
+        retry_ids = {
+            identifier for identifier, record in completed.items()
+            if record.outcome == Outcome.JUDGE_ERROR
+            or (not premade and record.outcome == Outcome.CHATBOT_ERROR)
+        }
+        for identifier in retry_ids:
+            completed.pop(identifier)
+        logger.info("evaluation_retry_errors selected_count=%d", len(retry_ids))
     pending = [(question, result) for question, result in items if question.id not in completed]
     logger.info(
         "evaluation_resume_state completed=%d pending=%d checkpoint=%s",
@@ -191,6 +228,10 @@ def _checkpointed_evaluation(args, items, evaluator: Evaluator, *, premade: bool
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "retry_errors", False) and not args.resume:
+        raise ValueError("--retry-errors requires --resume")
+    if args.command == "generate" and args.resume and args.refresh_cache:
+        raise ValueError("generate --resume cannot be combined with --refresh-cache; start a fresh run instead")
     _ensure_config(args.config)
     settings = load_settings(args.config, require_api_key=args.command != "report")
     log_path = args.log_file or (Path(settings.log_file) if settings.log_file else None)
@@ -226,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         transport=settings.gemini_transport,
         apigee_api_key=settings.apigee_api_key,
         apigee_base_url=settings.apigee_base_url,
+        request_timeout_seconds=settings.gemini_request_timeout_seconds,
     )
     if args.command == "generate-prompt":
         previous_records = None
@@ -301,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
                 "stable_question_ids": settings.stable_question_ids and not args.sequential_ids,
                 "question_type_targets": settings.question_type_targets,
                 "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
+                "resume": args.resume,
             },
         ) as manifest:
             chunks, chunk_key = cache.load_chunks(
@@ -321,7 +364,18 @@ def main(argv: list[str] | None = None) -> int:
                 requested_topic=args.topic, requested_topic_count=args.topic_count,
                 excluded_questions=excluded_questions,
             )
-            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+            generation_signature = hashlib.sha256(json.dumps({
+                "chunk_key": chunk_key,
+                "options": options.__dict__,
+                "model": settings.generation_model,
+                "transport": settings.gemini_transport,
+                "implementation": topic_discovery_fingerprint(),
+            }, ensure_ascii=False, sort_keys=True, default=list).encode("utf-8")).hexdigest()
+            generation_checkpoint = args.checkpoint or args.output / "generation_checkpoint.jsonl"
+            generation_llm = StructuredCallCheckpoint(
+                generation_checkpoint, llm, signature=generation_signature, resume=args.resume,
+            )
+            generator = SilverSetGenerator(generation_llm, settings.generation_model, progress_enabled)
             topics = cache.load_topics(
                 chunks, chunk_key, model=settings.generation_model, transport=settings.gemini_transport,
                 batch_chunks=settings.batch_chunks, implementation_sha256=topic_discovery_fingerprint(),
@@ -332,7 +386,8 @@ def main(argv: list[str] | None = None) -> int:
             manifest.complete(
                 question_count=len(questions), topic_count=len(topics), chunk_count=len(chunks),
                 cache=cache.summary(),
-                outputs=input_inventory([csv_path, jsonl_path]),
+                resumed_generation=args.resume,
+                outputs=input_inventory([csv_path, jsonl_path, generation_checkpoint]),
             )
         print(f"Generated {len(questions)} questions across {len(topics)} discovered topics.")
         print(f"Review CSV: {csv_path}\nProvenance JSONL: {jsonl_path}")
@@ -352,8 +407,10 @@ def main(argv: list[str] | None = None) -> int:
             args.results, sheet_name=args.sheet, columns=columns, progress_enabled=progress_enabled,
             strict=args.strict,
         )
-        if args.infer_topics:
-            infer_topics(pairs, llm, settings.judge_model, progress_enabled=progress_enabled)
+        concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
+        if concurrency < 1:
+            raise ValueError("--max-concurrency must be positive")
+        cache = _workflow_cache(args, settings)
 
         class NeverCalledAdapter:
             def ask(self, question: SilverQuestion) -> ChatbotResult:
@@ -365,13 +422,40 @@ def main(argv: list[str] | None = None) -> int:
             parameters={
                 "sheet": args.sheet, "infer_topics": args.infer_topics,
                 "generate_insights": args.generate_insights, "resume": args.resume, "strict": args.strict,
-                "compare_with": bool(args.compare_with),
+                "compare_with": bool(args.compare_with), "retry_errors": args.retry_errors,
+                "max_concurrency": concurrency,
             },
         ) as manifest:
+            if args.infer_topics:
+                candidates = [q for q, _ in pairs if q.topic in {"", "premade", "לא סווג"}]
+                assignments = cache.load_question_topics(
+                    candidates, model=settings.judge_model, transport=settings.gemini_transport,
+                    batch_size=250, implementation_sha256=topic_inference_fingerprint(),
+                    discover=lambda: infer_topics(
+                        pairs, llm, settings.judge_model, progress_enabled=progress_enabled,
+                    ),
+                )
+                for question in candidates:
+                    question.topic = assignments.get(question.id, "לא סווג")
+            contract = {
+                "kind": "premade", "judge_model": settings.judge_model,
+                "transport": settings.gemini_transport,
+                "judge_implementation": judge_contract_fingerprint(),
+                "max_answer_chars": settings.judge_max_answer_chars,
+                "max_context_chars": settings.judge_max_context_chars,
+                "max_concurrency": concurrency,
+            }
             records, resumed_count, checkpoint_path = _checkpointed_evaluation(
-                args, pairs, Evaluator(NeverCalledAdapter(), llm, settings.judge_model, progress_enabled), premade=True,
+                args, pairs, Evaluator(
+                    NeverCalledAdapter(), llm, settings.judge_model, progress_enabled,
+                    max_answer_chars=settings.judge_max_answer_chars,
+                    max_context_chars=settings.judge_max_context_chars,
+                    max_concurrency=concurrency,
+                ), premade=True, contract=contract,
             )
-            insights, insights_path = _optional_insights(args, records, llm, settings.judge_model)
+            insights, insights_path = _optional_insights(
+                args, records, llm, settings.judge_model, cache=cache, settings=settings,
+            )
             details_csv, details_jsonl = write_evaluations(records, args.output)
             summary_json, report_html = write_report(
                 records, args.output, insights,
@@ -383,6 +467,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_paths.append(insights_path)
             manifest.complete(
                 record_count=len(records), resumed_count=resumed_count,
+                cache=cache.summary(),
                 outputs=input_inventory(output_paths),
             )
         print(f"Evaluated {len(records)} premade results.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")
@@ -395,9 +480,14 @@ def main(argv: list[str] | None = None) -> int:
     questions = read_questions(args.questions, approved_only=args.approved_only)
     if not questions:
         raise ValueError("No questions selected for evaluation")
+    concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
+    if concurrency < 1:
+        raise ValueError("--max-concurrency must be positive")
+    request_headers = _headers(args.header)
+    cache = _workflow_cache(args, settings)
     adapter = HttpChatbotAdapter(
         args.chatbot_url, args.question_field, args.answer_field, args.context_field,
-        settings.request_timeout_seconds, _headers(args.header),
+        settings.request_timeout_seconds, request_headers,
         max_retries=settings.chatbot_max_retries,
         retry_base_seconds=settings.chatbot_retry_base_seconds,
         pacing_seconds=settings.chatbot_pacing_seconds,
@@ -412,14 +502,40 @@ def main(argv: list[str] | None = None) -> int:
             "question_field": args.question_field, "answer_field": args.answer_field,
             "context_field": args.context_field, "approved_only": args.approved_only,
             "generate_insights": args.generate_insights, "resume": args.resume,
-            "compare_with": bool(args.compare_with),
+            "compare_with": bool(args.compare_with), "retry_errors": args.retry_errors,
+            "max_concurrency": concurrency,
         },
     ) as manifest:
         items = [(question, ChatbotResult(question_id=question.id, answer="")) for question in questions]
+        contract = {
+            "kind": "live", "judge_model": settings.judge_model,
+            "transport": settings.gemini_transport,
+            "judge_implementation": judge_contract_fingerprint(),
+            "max_answer_chars": settings.judge_max_answer_chars,
+            "max_context_chars": settings.judge_max_context_chars,
+            "chatbot_url_sha256": hashlib.sha256(args.chatbot_url.encode()).hexdigest(),
+            "question_field": args.question_field, "answer_field": args.answer_field,
+            "context_field": args.context_field,
+            "header_names": sorted(request_headers),
+            "request_timeout_seconds": settings.request_timeout_seconds,
+            "chatbot_max_retries": settings.chatbot_max_retries,
+            "chatbot_pacing_seconds": settings.chatbot_pacing_seconds,
+            "chatbot_retry_base_seconds": settings.chatbot_retry_base_seconds,
+            "chatbot_max_response_bytes": settings.chatbot_max_response_bytes,
+            "chatbot_require_json_content_type": settings.chatbot_require_json_content_type,
+            "max_concurrency": concurrency,
+        }
         records, resumed_count, checkpoint_path = _checkpointed_evaluation(
-            args, items, Evaluator(adapter, llm, settings.judge_model, progress_enabled), premade=False,
+            args, items, Evaluator(
+                adapter, llm, settings.judge_model, progress_enabled,
+                max_answer_chars=settings.judge_max_answer_chars,
+                max_context_chars=settings.judge_max_context_chars,
+                max_concurrency=concurrency,
+            ), premade=False, contract=contract,
         )
-        insights, insights_path = _optional_insights(args, records, llm, settings.judge_model)
+        insights, insights_path = _optional_insights(
+            args, records, llm, settings.judge_model, cache=cache, settings=settings,
+        )
         details_csv, details_jsonl = write_evaluations(records, args.output)
         summary_json, report_html = write_report(
             records, args.output, insights,
@@ -431,6 +547,7 @@ def main(argv: list[str] | None = None) -> int:
             output_paths.append(insights_path)
         manifest.complete(
             record_count=len(records), resumed_count=resumed_count,
+            cache=cache.summary(),
             outputs=input_inventory(output_paths),
         )
     print(f"Evaluated {len(records)} questions.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")

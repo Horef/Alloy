@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+from pathlib import Path
 
 from .llm import StructuredLLM
 from .models import ChatbotResult, SilverQuestion, TopicAssignments
 from .progress import track
 
 logger = logging.getLogger(__name__)
+
+
+def topic_inference_fingerprint() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 TOPIC_INFERENCE_PROMPT = """Cluster the following chatbot evaluation questions into broad,
 user-meaningful subjects. Return one assignment for every question_id. Topic names MUST be concise
@@ -35,10 +41,22 @@ def infer_topics(
     *,
     progress_enabled: bool = False,
     batch_size: int = 250,
-) -> None:
+    max_batch_chars: int = 60_000,
+) -> dict[str, str]:
     """Assign Hebrew topic labels in place; intended for premade files lacking topic metadata."""
     candidates = [(question, result) for question, result in pairs if question.topic in {"", "premade", "לא סווג"}]
-    batches = [candidates[start : start + batch_size] for start in range(0, len(candidates), batch_size)]
+    batches: list[list[tuple[SilverQuestion, ChatbotResult]]] = []
+    current: list[tuple[SilverQuestion, ChatbotResult]] = []
+    used = 0
+    for pair in candidates:
+        size = len(pair[0].question[:600]) + len(pair[0].id) + 4
+        if current and (len(current) >= batch_size or used + size > max_batch_chars):
+            batches.append(current)
+            current, used = [], 0
+        current.append(pair)
+        used += size
+    if current:
+        batches.append(current)
     logger.info("topic_inference_started question_count=%d batch_count=%d", len(candidates), len(batches))
     for batch in track(batches, enabled=progress_enabled, description="Inferring topics", total=len(batches)):
         rendered = "\n".join(f"[{question.id}] {question.question[:600]}" for question, _ in batch)
@@ -65,3 +83,4 @@ def infer_topics(
             len(distinct_labels), len({question.topic for question, _ in candidates}),
         )
     logger.info("topic_inference_completed assigned_count=%d", sum(q.topic != "לא סווג" for q, _ in candidates))
+    return {question.id: question.topic for question, _ in candidates}

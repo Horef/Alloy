@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from pathlib import Path
 
 from .adapters import ChatbotAdapter
 from .llm import StructuredLLM
@@ -11,6 +14,20 @@ from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScor
 from .progress import track
 
 logger = logging.getLogger(__name__)
+
+
+def judge_contract_fingerprint() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _bounded_text(value: str, maximum: int) -> tuple[str, int]:
+    if len(value) <= maximum:
+        return value, 0
+    marker = "\n\n[... content omitted by Alloy input limit ...]\n\n"
+    available = max(0, maximum - len(marker))
+    beginning = (available * 2) // 3
+    bounded = value[:beginning] + marker + value[-(available - beginning):]
+    return bounded, len(value) - len(bounded)
 
 
 JUDGE_PROMPT = """Act as a strict, impartial evaluator of an internal knowledge chatbot.
@@ -149,72 +166,102 @@ def apply_fixed_claims(question: SilverQuestion, scores: JudgeScores) -> JudgeSc
 
 
 class Evaluator:
-    def __init__(self, chatbot: ChatbotAdapter, judge: StructuredLLM, judge_model: str, progress_enabled: bool = False):
+    def __init__(
+        self, chatbot: ChatbotAdapter, judge: StructuredLLM, judge_model: str,
+        progress_enabled: bool = False, *, max_answer_chars: int = 20_000,
+        max_context_chars: int = 60_000, max_concurrency: int = 1,
+    ):
         self.chatbot, self.judge, self.judge_model = chatbot, judge, judge_model
         self.progress_enabled = progress_enabled
+        self.max_answer_chars, self.max_context_chars = max_answer_chars, max_context_chars
+        self.max_concurrency = max_concurrency
 
     def evaluate(
         self,
         questions: list[SilverQuestion],
         on_record: Callable[[EvaluationRecord], None] | None = None,
     ) -> list[EvaluationRecord]:
-        records = []
         logger.info("evaluation_started question_count=%d judge_model=%s", len(questions), self.judge_model)
-        for question in track(questions, enabled=self.progress_enabled, description="Evaluating answers", total=len(questions)):
-            result = self.chatbot.ask(question)
-            if result.error:
-                if result.metadata.get("source_file"):
-                    logger.info(
-                        "premade_chatbot_error question_id=%s source_file=%s source_row=%s error=%r",
-                        question.id, result.metadata.get("source_file"), result.metadata.get("source_row"), result.error,
-                    )
-                else:
-                    logger.warning("chatbot_error question_id=%s error=%r", question.id, result.error)
-                record = EvaluationRecord(question=question, result=result, outcome=Outcome.CHATBOT_ERROR)
-                records.append(record)
-                if on_record:
-                    on_record(record)
-                continue
-            deterministic_abstention = looks_like_abstention(result.answer)
-            evidence = "\n".join(f"[{s.file}, {s.location}] {s.excerpt}" for s in question.sources)
-            if question.supporting_quotes:
-                evidence += "\n\nVERIFIED SUPPORTING QUOTES:\n" + "\n".join(
-                    f"[{quote.source_id}] {quote.quote}" for quote in question.supporting_quotes
-                )
-            if result.metadata.get("source_file"):
-                evidence = "לא סופקה ראיית ייחוס נפרדת; התשובה הצפויה היא מקור האמת לבדיקה."
-            prompt = JUDGE_PROMPT.format(
-                question=question.question, reference=question.expected_answer,
-                expected_behavior=question.expected_behavior.value,
-                reference_claims=json.dumps(
-                    [
-                        {"claim_id": f"C{index:03d}", "text": claim}
-                        for index, claim in enumerate(question.reference_claims, 1)
-                    ],
-                    ensure_ascii=False,
-                ),
-                evidence=evidence, candidate=result.answer, retrieved=result.retrieved_context,
-            )
-            try:
-                scores = self.judge.generate(prompt, JudgeScores, self.judge_model)
-                scores = apply_fixed_claims(question, scores)
-                if deterministic_abstention:
-                    scores.response_is_abstention = True
-            except Exception as exc:
-                logger.exception("judge_error question_id=%s", question.id)
-                record = EvaluationRecord(question=question, result=result, outcome=Outcome.JUDGE_ERROR, judge_error=str(exc))
-                records.append(record)
-                if on_record:
-                    on_record(record)
-                continue
-            outcome = classify(question, scores)
-            logger.info("question_evaluated question_id=%s topic=%r outcome=%s latency_ms=%s", question.id, question.topic, outcome.value, result.latency_ms)
-            record = EvaluationRecord(question=question, result=result, outcome=outcome, scores=scores)
-            records.append(record)
-            if on_record:
-                on_record(record)
+        if self.max_concurrency == 1:
+            iterator = (self._evaluate_one(question, on_record) for question in questions)
+            records = list(track(
+                iterator, enabled=self.progress_enabled, description="Evaluating answers", total=len(questions),
+            ))
+        else:
+            with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
+                iterator = executor.map(lambda question: self._evaluate_one(question, on_record), questions)
+                records = list(track(
+                    iterator, enabled=self.progress_enabled, description="Evaluating answers", total=len(questions),
+                ))
         logger.info("evaluation_completed record_count=%d", len(records))
         return records
+
+    def _evaluate_one(
+        self,
+        question: SilverQuestion,
+        on_record: Callable[[EvaluationRecord], None] | None,
+    ) -> EvaluationRecord:
+        result = self.chatbot.ask(question)
+        if result.error:
+            if result.metadata.get("source_file"):
+                logger.info(
+                    "premade_chatbot_error question_id=%s source_file=%s source_row=%s error=%r",
+                    question.id, result.metadata.get("source_file"), result.metadata.get("source_row"), result.error,
+                )
+            else:
+                logger.warning("chatbot_error question_id=%s error=%r", question.id, result.error)
+            record = EvaluationRecord(question=question, result=result, outcome=Outcome.CHATBOT_ERROR)
+            if on_record:
+                on_record(record)
+            return record
+        deterministic_abstention = looks_like_abstention(result.answer)
+        evidence = "\n".join(f"[{s.file}, {s.location}] {s.excerpt}" for s in question.sources)
+        if question.supporting_quotes:
+            evidence += "\n\nVERIFIED SUPPORTING QUOTES:\n" + "\n".join(
+                f"[{quote.source_id}] {quote.quote}" for quote in question.supporting_quotes
+            )
+        if result.metadata.get("source_file"):
+            evidence = "לא סופקה ראיית ייחוס נפרדת; התשובה הצפויה היא מקור האמת לבדיקה."
+        candidate, answer_omitted = _bounded_text(result.answer, self.max_answer_chars)
+        retrieved, context_omitted = _bounded_text(result.retrieved_context, self.max_context_chars)
+        if answer_omitted or context_omitted:
+            result.metadata["judge_input_truncation"] = {
+                "answer_chars_omitted": answer_omitted,
+                "context_chars_omitted": context_omitted,
+            }
+            logger.info(
+                "judge_input_truncated question_id=%s answer_chars_omitted=%d context_chars_omitted=%d",
+                question.id, answer_omitted, context_omitted,
+            )
+        prompt = JUDGE_PROMPT.format(
+            question=question.question, reference=question.expected_answer,
+            expected_behavior=question.expected_behavior.value,
+            reference_claims=json.dumps(
+                [
+                    {"claim_id": f"C{index:03d}", "text": claim}
+                    for index, claim in enumerate(question.reference_claims, 1)
+                ],
+                ensure_ascii=False,
+            ),
+            evidence=evidence, candidate=candidate, retrieved=retrieved,
+        )
+        try:
+            scores = self.judge.generate(prompt, JudgeScores, self.judge_model)
+            scores = apply_fixed_claims(question, scores)
+            if deterministic_abstention:
+                scores.response_is_abstention = True
+        except Exception as exc:
+            logger.exception("judge_error question_id=%s", question.id)
+            record = EvaluationRecord(question=question, result=result, outcome=Outcome.JUDGE_ERROR, judge_error=str(exc))
+            if on_record:
+                on_record(record)
+            return record
+        outcome = classify(question, scores)
+        logger.info("question_evaluated question_id=%s topic=%r outcome=%s latency_ms=%s", question.id, question.topic, outcome.value, result.latency_ms)
+        record = EvaluationRecord(question=question, result=result, outcome=outcome, scores=scores)
+        if on_record:
+            on_record(record)
+        return record
 
     def judge_results(
         self,

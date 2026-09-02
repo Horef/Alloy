@@ -38,6 +38,11 @@ class Settings:
     chatbot_pacing_seconds: float
     chatbot_max_response_bytes: int
     chatbot_require_json_content_type: bool
+    judge_max_answer_chars: int
+    judge_max_context_chars: int
+    insights_max_prompt_chars: int
+    gemini_request_timeout_seconds: int
+    max_concurrency: int
     progress_enabled: bool
     log_file: str
     log_level: str
@@ -94,6 +99,14 @@ class Settings:
             errors.append("chatbot retry and pacing durations must be non-negative")
         if self.chatbot_max_response_bytes < 1024:
             errors.append("evaluation.chatbot_max_response_bytes must be at least 1024")
+        if self.judge_max_answer_chars < 100 or self.judge_max_context_chars < 100:
+            errors.append("judge input character limits must be at least 100")
+        if self.insights_max_prompt_chars < 1000:
+            errors.append("evaluation.insights_max_prompt_chars must be at least 1000")
+        if self.gemini_request_timeout_seconds <= 0:
+            errors.append("evaluation.gemini_request_timeout_seconds must be positive")
+        if self.max_concurrency < 1:
+            errors.append("evaluation.max_concurrency must be positive")
         if self.log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
             errors.append("runtime.log_level must be DEBUG, INFO, WARNING, or ERROR")
         if errors:
@@ -171,6 +184,11 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
             _get(data, "evaluation", "chatbot_require_json_content_type", True),
             "evaluation.chatbot_require_json_content_type",
         ),
+        judge_max_answer_chars=int(_get(data, "evaluation", "judge_max_answer_chars", 20_000)),
+        judge_max_context_chars=int(_get(data, "evaluation", "judge_max_context_chars", 60_000)),
+        insights_max_prompt_chars=int(_get(data, "evaluation", "insights_max_prompt_chars", 80_000)),
+        gemini_request_timeout_seconds=int(_get(data, "evaluation", "gemini_request_timeout_seconds", 120)),
+        max_concurrency=int(_get(data, "evaluation", "max_concurrency", 1)),
         progress_enabled=_as_bool(_get(data, "runtime", "progress_enabled", True), "runtime.progress_enabled"),
         log_file=str(_get(data, "runtime", "log_file", "")),
         log_level=str(_get(data, "runtime", "log_level", "INFO")),

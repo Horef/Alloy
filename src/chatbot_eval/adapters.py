@@ -4,6 +4,7 @@ import json
 import random
 import socket
 import time
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -47,6 +48,7 @@ class HttpChatbotAdapter:
         self.max_response_bytes = max_response_bytes
         self.require_json_content_type = require_json_content_type
         self._last_request_at: float | None = None
+        self._pacing_lock = threading.Lock()
 
     @staticmethod
     def _field(data: dict, dotted_path: str, default=None):
@@ -90,11 +92,12 @@ class HttpChatbotAdapter:
         return base + random.uniform(0, base * 0.25) if base else 0.0
 
     def _pace(self) -> None:
-        if self._last_request_at is None or self.pacing_seconds <= 0:
-            return
-        remaining = self.pacing_seconds - (time.monotonic() - self._last_request_at)
-        if remaining > 0:
-            time.sleep(remaining)
+        with self._pacing_lock:
+            if self._last_request_at is not None and self.pacing_seconds > 0:
+                remaining = self.pacing_seconds - (time.monotonic() - self._last_request_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+            self._last_request_at = time.monotonic()
 
     def _error_result(
         self,
@@ -129,7 +132,6 @@ class HttpChatbotAdapter:
             )
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    self._last_request_at = time.monotonic()
                     content_type = response.headers.get_content_type()
                     if self.require_json_content_type and not (
                         content_type == "application/json" or content_type.endswith("+json")
@@ -176,7 +178,6 @@ class HttpChatbotAdapter:
                         metadata={"http_status": response.status, "attempts": attempt + 1},
                     )
             except urllib.error.HTTPError as exc:
-                self._last_request_at = time.monotonic()
                 category = self._category(exc.code, exc)
                 if exc.code in self.TRANSIENT_STATUSES and attempt < self.max_retries:
                     time.sleep(self._retry_delay(attempt, exc.headers))
@@ -186,7 +187,6 @@ class HttpChatbotAdapter:
                     attempts=attempt + 1, status=exc.code,
                 )
             except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-                self._last_request_at = time.monotonic()
                 reason = getattr(exc, "reason", exc)
                 category = self._category(None, reason if isinstance(reason, Exception) else exc)
                 if attempt < self.max_retries:
@@ -196,7 +196,6 @@ class HttpChatbotAdapter:
                     question, started, category=category, message=str(exc), attempts=attempt + 1,
                 )
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                self._last_request_at = time.monotonic()
                 return self._error_result(
                     question, started, category="malformed_response", message=str(exc), attempts=attempt + 1,
                 )

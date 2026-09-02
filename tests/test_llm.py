@@ -1,5 +1,7 @@
 from chatbot_eval.llm import GeminiStructuredLLM
 from chatbot_eval.models import JudgeScores
+from google.genai import errors
+import pytest
 
 
 def test_direct_client_remains_the_default(monkeypatch):
@@ -8,7 +10,8 @@ def test_direct_client_remains_the_default(monkeypatch):
 
     GeminiStructuredLLM("direct-secret")
 
-    assert captured == {"api_key": "direct-secret"}
+    assert captured["api_key"] == "direct-secret"
+    assert captured["http_options"].timeout == 120_000
 
 
 def test_apigee_client_uses_gateway_sdk_configuration(monkeypatch):
@@ -82,3 +85,51 @@ def test_structured_calls_explicitly_disable_afc():
     llm.generate("prompt", JudgeScores, "test-model")
 
     assert captured["config"].automatic_function_calling.disable is True
+
+
+def test_non_retryable_client_error_fails_immediately(monkeypatch):
+    class Models:
+        calls = 0
+
+        def generate_content(self, **kwargs):
+            self.calls += 1
+            raise errors.ClientError(401, {"message": "unauthorized"})
+
+    llm = object.__new__(GeminiStructuredLLM)
+    llm._client = type("Client", (), {"models": Models()})()
+    llm._max_retries = 3
+    monkeypatch.setattr("chatbot_eval.llm.time.sleep", lambda _: pytest.fail("must not sleep"))
+
+    with pytest.raises(errors.ClientError):
+        llm.generate("prompt", JudgeScores, "model")
+    assert llm._client.models.calls == 1
+
+
+def test_retryable_server_error_honors_retry_after(monkeypatch):
+    class Response:
+        headers = {"Retry-After": "0"}
+
+    class Models:
+        calls = 0
+
+        def generate_content(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise errors.ServerError(503, {"message": "busy"}, Response())
+            return type("Result", (), {"text": JudgeScores(
+                claim_assessments=[], required_points_total=0, answer_points_addressed=0,
+                answer_points_correct=0, answer_false_claims=0, answer_unsupported_claims=0,
+                answer_extraneous_claims=0, retrieval_points_found=0, retrieved_chunks_total=0,
+                retrieved_chunks_relevant=0, retrieved_chunks_contradictory=0, answer_scope="exact",
+                incorrect_type="not_applicable", response_is_abstention=True, explanation="x",
+                missing_or_wrong="", retrieval_explanation="",
+            ).model_dump_json()})()
+
+    llm = object.__new__(GeminiStructuredLLM)
+    llm._client = type("Client", (), {"models": Models()})()
+    llm._max_retries = 1
+    delays = []
+    monkeypatch.setattr("chatbot_eval.llm.time.sleep", delays.append)
+
+    llm.generate("prompt", JudgeScores, "model")
+    assert delays == [0.0]

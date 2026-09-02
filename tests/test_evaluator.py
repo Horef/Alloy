@@ -86,3 +86,42 @@ def test_evaluator_persists_callback_after_fixed_claim_judging():
 
     assert records[0].outcome == Outcome.CORRECT_ANSWER
     assert persisted == records
+
+
+def test_evaluator_bounds_large_answer_and_context():
+    item = question(True)
+    item.reference_claims = ["תשובת הייחוס"]
+
+    class Adapter:
+        def ask(self, current):
+            return ChatbotResult(
+                question_id=current.id, answer="A" * 500, retrieved_context="C" * 500,
+            )
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            assert "content omitted by Alloy input limit" in prompt
+            judged = scores(required=1, addressed=1, correct=1)
+            judged.claim_assessments = [
+                ClaimAssessment(claim_id="C001", addressed=True, correct=True),
+            ]
+            return judged
+
+    record = Evaluator(
+        Adapter(), Judge(), "judge", max_answer_chars=120, max_context_chars=130,
+    ).evaluate([item])[0]
+
+    assert record.result.metadata["judge_input_truncation"]["answer_chars_omitted"] > 0
+    assert record.result.metadata["judge_input_truncation"]["context_chars_omitted"] > 0
+
+
+def test_concurrent_evaluation_preserves_input_order():
+    items = [SilverQuestion(id=f"Q{i}", topic="x", question="q", expected_answer="a") for i in range(4)]
+
+    class Adapter:
+        def ask(self, current):
+            return ChatbotResult(question_id=current.id, answer="error", error="stored error")
+
+    records = Evaluator(Adapter(), object(), "judge", max_concurrency=2).evaluate(items)
+
+    assert [record.question.id for record in records] == [item.id for item in items]

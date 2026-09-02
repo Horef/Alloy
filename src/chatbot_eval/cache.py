@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .artifacts import atomic_write_text, file_sha256
 from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
-from .models import TopicCandidate, TopicMap
+from .models import EvaluationInsights, EvaluationRecord, SilverQuestion, TopicCandidate, TopicMap
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,78 @@ class CorpusAnalysisCache:
             "directory": str(self.directory.resolve()),
             **self.events,
         }
+
+    def load_question_topics(
+        self,
+        questions: list[SilverQuestion],
+        *,
+        model: str,
+        transport: str,
+        batch_size: int,
+        implementation_sha256: str,
+        discover: Callable[[], dict[str, str]],
+    ) -> dict[str, str]:
+        key = _json_hash({
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "implementation_sha256": implementation_sha256,
+            "questions": [{"id": q.id, "question": q.question} for q in questions],
+            "model": model, "transport": transport, "batch_size": batch_size,
+        })
+        path = self.directory / "question_topics" / f"{key}.json"
+        if self.enabled and not self.refresh:
+            payload = self._read_payload(path, "question_topics", key)
+            if payload is not None and isinstance(payload.get("assignments"), dict):
+                assignments = payload["assignments"]
+                if all(isinstance(k, str) and isinstance(v, str) for k, v in assignments.items()):
+                    self.events["question_topics"] = "hit"
+                    return assignments
+        assignments = discover()
+        self.events["question_topics"] = "refresh" if self.enabled and self.refresh else "miss"
+        if self.enabled:
+            atomic_write_text(path, json.dumps({
+                "schema_version": CACHE_SCHEMA_VERSION, "kind": "question_topics", "key": key,
+                "assignments": assignments,
+            }, ensure_ascii=False, separators=(",", ":")))
+        else:
+            self.events["question_topics"] = "disabled"
+        return assignments
+
+    def load_insights(
+        self,
+        records: list[EvaluationRecord],
+        *,
+        model: str,
+        transport: str,
+        max_prompt_chars: int,
+        implementation_sha256: str,
+        discover: Callable[[], EvaluationInsights],
+    ) -> EvaluationInsights:
+        records_hash = _json_hash([record.model_dump(mode="json") for record in records])
+        key = _json_hash({
+            "schema_version": CACHE_SCHEMA_VERSION, "records_sha256": records_hash,
+            "implementation_sha256": implementation_sha256, "model": model,
+            "transport": transport, "max_prompt_chars": max_prompt_chars,
+        })
+        path = self.directory / "insights" / f"{key}.json"
+        if self.enabled and not self.refresh:
+            payload = self._read_payload(path, "insights", key)
+            if payload is not None:
+                try:
+                    insights = EvaluationInsights.model_validate(payload["insights"])
+                    self.events["insights"] = "hit"
+                    return insights
+                except (KeyError, TypeError, ValueError):
+                    pass
+        insights = discover()
+        self.events["insights"] = "refresh" if self.enabled and self.refresh else "miss"
+        if self.enabled:
+            atomic_write_text(path, json.dumps({
+                "schema_version": CACHE_SCHEMA_VERSION, "kind": "insights", "key": key,
+                "insights": insights.model_dump(mode="json"),
+            }, ensure_ascii=False, separators=(",", ":")))
+        else:
+            self.events["insights"] = "disabled"
+        return insights
 
     @staticmethod
     def _read_chunks(path: Path, expected_key: str) -> list[Chunk] | None:
