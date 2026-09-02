@@ -1,6 +1,6 @@
 from chatbot_eval.cache import CorpusAnalysisCache
 from chatbot_eval.models import (
-    ChatbotResult, EvaluationInsights, EvaluationRecord, Outcome, SilverQuestion, TopicCandidate,
+    ChatbotResult, EvaluationInsights, EvaluationRecord, Outcome, PromptPackage, SilverQuestion, TopicCandidate,
 )
 
 
@@ -160,3 +160,33 @@ def test_insights_are_reused_for_identical_evaluation_records(tmp_path):
     assert actual == expected
     assert calls == 1
     assert second.summary()["insights"] == "hit"
+
+
+def test_prompt_package_is_reused_for_identical_generation_evidence(tmp_path):
+    expected = PromptPackage(
+        system_prompt_hebrew="הנחיית מערכת מפורטת בעברית שנועדה לבדוק שמירת חבילת פרומפט במטמון המקומי.",
+        corpus_scope_summary=["נהלים"], assumptions_requiring_review=["קהל יעד"],
+        application_guardrails=["הרשאות"], manager_review_checklist=["בדיקה"],
+        suggested_test_questions=["מה הנוהל?"],
+    )
+    calls = 0
+
+    def generate():
+        nonlocal calls
+        calls += 1
+        return expected
+
+    arguments = {
+        "chunk_key": "chunks-v1", "topics": [_topic()], "assistant_name": "תומי",
+        "audience": "עובדים", "previous_records": [], "previous_insights": None,
+        "current_prompt": "", "model": "model", "transport": "direct",
+        "document_context_chars": 100_000, "evaluation_context_chars": 60_000,
+        "auxiliary_context_chars": 30_000, "implementation_sha256": "v1", "generate": generate,
+    }
+    CorpusAnalysisCache(tmp_path / "cache").load_prompt_package(**arguments)
+    second = CorpusAnalysisCache(tmp_path / "cache")
+    actual = second.load_prompt_package(**arguments)
+
+    assert actual == expected
+    assert calls == 1
+    assert second.summary()["prompt_package"] == "hit"

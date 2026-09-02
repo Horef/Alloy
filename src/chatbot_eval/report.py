@@ -205,6 +205,37 @@ def build_comparison(
     """Compare whole-run KPIs and like-for-like question outcomes."""
     current_summary = build_summary(current_records)
     previous_summary = build_summary(previous_records)
+    current_groups: dict[str, list[EvaluationRecord]] = defaultdict(list)
+    previous_groups: dict[str, list[EvaluationRecord]] = defaultdict(list)
+    for record in current_records:
+        current_groups[record.question.id].append(record)
+    for record in previous_records:
+        previous_groups[record.question.id].append(record)
+    current_duplicate_ids = sorted(identifier for identifier, values in current_groups.items() if len(values) > 1)
+    previous_duplicate_ids = sorted(identifier for identifier, values in previous_groups.items() if len(values) > 1)
+    current_by_id = {identifier: values[0] for identifier, values in current_groups.items() if len(values) == 1}
+    previous_by_id = {identifier: values[0] for identifier, values in previous_groups.items() if len(values) == 1}
+    common_ids = sorted(set(current_by_id) & set(previous_by_id))
+    id_conflicts: list[str] = []
+    matched_ids: list[str] = []
+    for question_id in common_ids:
+        current_question = current_by_id[question_id].question.model_dump(mode="json")
+        previous_question = previous_by_id[question_id].question.model_dump(mode="json")
+        # Review workflow annotations do not alter the evaluation task. Every other field does.
+        for value in (current_question, previous_question):
+            value.pop("review_status", None)
+            value.pop("reviewer_notes", None)
+        if _normalized_comparison_value(current_question) == _normalized_comparison_value(previous_question):
+            matched_ids.append(question_id)
+        else:
+            id_conflicts.append(question_id)
+
+    current_only_ids = sorted(set(current_groups) - set(previous_groups))
+    previous_only_ids = sorted(set(previous_groups) - set(current_groups))
+    aggregate_comparable = not any((
+        current_duplicate_ids, previous_duplicate_ids, id_conflicts,
+        current_only_ids, previous_only_ids,
+    ))
     metric_definitions = {
         "factual_answer_success_rate": ("תשובות עובדתיות נכונות", False),
         "useful_answer_rate_on_answerable": ("תשובות שימושיות", False),
@@ -218,7 +249,7 @@ def build_comparison(
     for key, (label, lower_is_better) in metric_definitions.items():
         current = current_summary.get(key)
         previous = previous_summary.get(key)
-        delta = current - previous if current is not None and previous is not None else None
+        delta = current - previous if aggregate_comparable and current is not None and previous is not None else None
         favorable = None
         if delta:
             favorable = delta < 0 if lower_is_better else delta > 0
@@ -231,22 +262,13 @@ def build_comparison(
             "favorable": favorable,
         }
 
-    current_by_id = {record.question.id: record for record in current_records}
-    previous_by_id = {record.question.id: record for record in previous_records}
-    common_ids = sorted(set(current_by_id) & set(previous_by_id))
     transitions = Counter()
     states = Counter()
     by_topic: dict[str, Counter] = defaultdict(Counter)
-    id_conflicts: list[str] = []
     matched = 0
-    for question_id in common_ids:
+    for question_id in matched_ids:
         current = current_by_id[question_id]
         previous = previous_by_id[question_id]
-        current_identity = (" ".join(current.question.question.casefold().split()), current.question.expected_behavior)
-        previous_identity = (" ".join(previous.question.question.casefold().split()), previous.question.expected_behavior)
-        if current_identity != previous_identity:
-            id_conflicts.append(question_id)
-            continue
         matched += 1
         transitions[f"{previous.outcome.value}->{current.outcome.value}"] += 1
         topic = current.question.topic or "לא סווג"
@@ -271,9 +293,14 @@ def build_comparison(
         "previous_total": len(previous_records),
         "matched_questions": matched,
         "comparable_questions": comparable,
-        "current_only": len(set(current_by_id) - set(previous_by_id)),
-        "previous_only": len(set(previous_by_id) - set(current_by_id)),
+        "aggregate_comparable": aggregate_comparable,
+        "current_only": len(current_only_ids),
+        "previous_only": len(previous_only_ids),
+        "current_only_ids": current_only_ids,
+        "previous_only_ids": previous_only_ids,
         "id_conflicts": id_conflicts,
+        "current_duplicate_ids": current_duplicate_ids,
+        "previous_duplicate_ids": previous_duplicate_ids,
         "metrics": metrics,
         "matched_outcomes": {
             **{key: states[key] for key in (
@@ -292,6 +319,17 @@ def build_comparison(
             for topic, values in sorted(by_topic.items())
         },
     }
+
+
+def _normalized_comparison_value(value: object) -> object:
+    """Normalize insignificant text whitespace while retaining complete question semantics."""
+    if isinstance(value, str):
+        return " ".join(value.casefold().split())
+    if isinstance(value, list):
+        return [_normalized_comparison_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalized_comparison_value(item) for key, item in sorted(value.items())}
+    return value
 
 
 def _pct(value: float | None) -> str:
@@ -330,7 +368,10 @@ def _comparison_block(comparison: dict | None) -> str:
     metric_rows = []
     for metric in comparison["metrics"].values():
         delta = metric["delta"]
-        delta_text = "לא זמין" if delta is None else f"{delta:+.1%}"
+        delta_text = (
+            "לא בר השוואה" if not comparison["aggregate_comparable"] else
+            "לא זמין" if delta is None else f"{delta:+.1%}"
+        )
         delta_class = "neutral" if metric["favorable"] is None else ("good" if metric["favorable"] else "bad")
         metric_rows.append(
             f'<tr><td>{_esc(metric["label"])}</td><td>{_pct(metric["previous"])}</td>'
@@ -344,16 +385,28 @@ def _comparison_block(comparison: dict | None) -> str:
         for topic, data in comparison["by_topic"].items()
     )
     conflict_note = "" if not comparison["id_conflicts"] else (
-        f'<div class="note warn">{len(comparison["id_conflicts"])} מזהים הופיעו בשני הדוחות אך השאלה או ההתנהגות '
-        'המצופה השתנו, ולכן הם לא נכללו בהשוואה הישירה.</div>'
+        f'<div class="note warn">{len(comparison["id_conflicts"])} מזהים הופיעו בשני הדוחות אך לפחות שדה מהותי '
+        'בשאלת הכסף השתנה, ולכן הם לא נכללו בהשוואה הישירה.</div>'
+    )
+    duplicate_count = len(comparison["current_duplicate_ids"]) + len(comparison["previous_duplicate_ids"])
+    duplicate_note = "" if not duplicate_count else (
+        f'<div class="note warn">נמצאו {duplicate_count} מופעים של מזהי שאלה כפולים בין הקבצים. '
+        'המזהים הכפולים הוחרגו מהתאמה כדי למנוע החלפה שקטה של תוצאות.</div>'
+    )
+    aggregate_note = (
+        '<div class="note">מערך הבדיקה זהה בשתי הריצות; שינויי המדדים הכוללים ניתנים להשוואה ישירה.</div>'
+        if comparison["aggregate_comparable"] else
+        '<div class="note warn">מערכי הבדיקה אינם זהים לחלוטין. הערכים הכוללים מוצגים לתיאור בלבד, '
+        'אך שינוייהם הוסתרו כדי שלא להציג שינוי בהרכב המדגם כשינוי בביצועים.</div>'
     )
     no_match_note = "" if comparison["matched_questions"] else (
-        '<div class="note warn">לא נמצאו שאלות זהות להשוואה ישירה. השוואת המדדים הכוללת עדיין מוצגת, אך ייתכן שהרכב מערך הבדיקה השתנה.</div>'
+        '<div class="note warn">לא נמצאו שאלות זהות להשוואה ישירה. ערכי המדדים הכוללים עדיין מוצגים, '
+        'אך שינוייהם אינם מוצגים אלא אם מערכי הבדיקה זהים.</div>'
     )
     return f'''<div class="panel comparison"><h2>השוואה לריצה הקודמת</h2>
-<div class="note">השינוי במדדים הכוללים עשוי לשקף גם שינוי בהרכב השאלות. השוואת השאלות המותאמות משתמשת רק באותו מזהה, אותו נוסח ואותה התנהגות מצופה. הצלחה ישירה פירושה תשובה נכונה, הימנעות נכונה או הבהרה נכונה בהתאם למשימה.</div>
+<div class="note">השוואת שאלות מותאמות דורשת אותו מזהה ואת כל שדות המשימה המהותיים, כולל נוסח, תשובת ייחוס, טענות, ראיות, סוג, צורה, נושא והתנהגות מצופה. הצלחה ישירה פירושה תשובה נכונה, הימנעות נכונה או הבהרה נכונה בהתאם למשימה.</div>
 <div class="cards"><div class="card">שאלות מותאמות<b>{comparison["matched_questions"]}</b><small>{comparison["comparable_questions"]} ניתנות להשוואת הצלחה</small></div><div class="card">השתפרו<b>{matched["improved"]}</b></div><div class="card">נסוגו<b>{matched["regressed"]}</b></div><div class="card">שיפור נטו<b>{matched["net_improvement"]:+d}</b><small>השתפרו פחות נסוגו</small></div><div class="card">חדשות / הוסרו<b>{comparison["current_only"]} / {comparison["previous_only"]}</b></div></div>
-{conflict_note}{no_match_note}
+{conflict_note}{duplicate_note}{no_match_note}{aggregate_note}
 <h3>שינוי במדדים הכוללים</h3><table><thead><tr><th>מדד</th><th>קודם</th><th>עכשיו</th><th>שינוי</th></tr></thead><tbody>{''.join(metric_rows)}</tbody></table>
 {('<h3>שינוי בשאלות מותאמות לפי נושא</h3><table><thead><tr><th>נושא</th><th>מותאמות</th><th>השתפרו</th><th>נסוגו</th><th>הצלחה נשמרה</th><th>כשל נשאר</th></tr></thead><tbody>' + topic_rows + '</tbody></table>') if topic_rows else ''}</div>'''
 

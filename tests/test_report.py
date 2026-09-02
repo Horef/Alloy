@@ -151,6 +151,8 @@ def test_report_compares_aggregate_and_matched_question_results(tmp_path):
     assert comparison["matched_outcomes"]["regressed"] == 1
     assert comparison["id_conflicts"] == ["Q3"]
     assert comparison["current_only"] == 1
+    assert comparison["aggregate_comparable"] is False
+    assert comparison["metrics"]["factual_answer_success_rate"]["delta"] is None
 
     summary_path, report_path = write_report(current, tmp_path, previous_records=previous)
     summary = __import__("json").loads(summary_path.read_text(encoding="utf-8"))
@@ -159,3 +161,39 @@ def test_report_compares_aggregate_and_matched_question_results(tmp_path):
     assert "השוואה לריצה הקודמת" in rendered
     assert "שאלות מותאמות" in rendered
     assert "מזהים הופיעו בשני הדוחות" in rendered
+    assert "לא בר השוואה" in rendered
+
+
+def test_report_comparison_requires_full_question_identity_and_unique_ids():
+    def record(identifier, answer, outcome=Outcome.CORRECT_ANSWER):
+        return EvaluationRecord(
+            question=SilverQuestion(
+                id=identifier, topic="נושא", question="אותה שאלה", expected_answer=answer,
+                reference_claims=[answer],
+            ),
+            result=ChatbotResult(question_id=identifier, answer=answer), outcome=outcome,
+        )
+
+    previous = [record("Q1", "תשובה ישנה"), record("Q2", "תשובה")]
+    current = [record("Q1", "תשובה חדשה"), record("Q2", "תשובה"), record("Q2", "תשובה")]
+
+    comparison = build_comparison(current, previous)
+
+    assert comparison["matched_questions"] == 0
+    assert comparison["id_conflicts"] == ["Q1"]
+    assert comparison["current_duplicate_ids"] == ["Q2"]
+    assert comparison["previous_duplicate_ids"] == []
+    assert comparison["aggregate_comparable"] is False
+
+
+def test_report_aggregate_delta_requires_identical_benchmark():
+    previous = [EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="נושא", question="שאלה", expected_answer="תשובה"),
+        result=ChatbotResult(question_id="Q1", answer="לא נכון"), outcome=Outcome.UNRELATED_ANSWER,
+    )]
+    current = [previous[0].model_copy(update={"outcome": Outcome.CORRECT_ANSWER})]
+
+    comparison = build_comparison(current, previous)
+
+    assert comparison["aggregate_comparable"] is True
+    assert comparison["metrics"]["factual_answer_success_rate"]["delta"] == 1.0

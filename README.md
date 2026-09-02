@@ -147,6 +147,9 @@ log_level = "INFO"
 | `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
+| `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
+| `generation.prompt_max_evaluation_chars` | `60000` | Maximum prior-evaluation evidence characters supplied to prompt revision. |
+| `generation.prompt_max_auxiliary_chars` | `30000` | Independent maximum for the current prompt and generated-insights context. |
 | `cache.enabled` | `true` | Reuse content-addressed chunks, document topics, premade-question topics, and optional evaluation insights. |
 | `cache.directory` | `.chatbot_eval_cache` | Shared local cache directory. Relative paths are resolved next to the selected config file. |
 | `evaluation.request_timeout_seconds` | `60` | Timeout for each live chatbot HTTP request. |
@@ -240,16 +243,18 @@ discriminator such as population, status, timeframe, or requested procedure.
 All Gemini-backed workflows share a persistent, content-addressed cache. `generate` and
 `generate-prompt` cache local document extraction/chunking and document topic discovery;
 `evaluate-file` can cache inferred question topics; both evaluation workflows can cache optional
-insights. A normal repeated run skips matching reusable stages. Question generation, judging, and
-final prompt generation are not ordinary cache entries: generation has an explicit interruption
-checkpoint, judging has its existing explicit `--resume` checkpoint, and prompts remain fresh.
+insights. Final prompt packages are also cached from the full corpus, configuration, prior-run
+evidence, current prompt, model, transport, budgets, and generator implementation. A normal repeated
+run skips matching reusable stages. Question generation and judging are not ordinary cache entries:
+generation has an explicit interruption checkpoint and judging has its explicit `--resume` checkpoint.
 
 Cache invalidation is based on supported document relative paths and SHA-256 content hashes,
 chunk size/overlap, topic batch size, Gemini model and transport, cache schema, and the relevant
 implementation code. File modification timestamps are not trusted. Changing any keyed input creates
 a new entry automatically; unchanged inputs reuse the prior result.
 
-Use `--refresh-cache` to ignore and atomically replace the matching chunk and topic entries, for
+Use `--refresh-cache` to ignore and atomically replace every matching workflow entry, including a
+final prompt package, for
 example after deciding an upstream model alias should be sampled again. Use `--no-cache` for a run
 that must neither read nor write cache data. `--cache-dir` overrides the configured shared location.
 The two switches are mutually exclusive.
@@ -579,7 +584,7 @@ facts that the corpus does not support.
 | `--insights PATH` | unset | Explicit `evaluation_insights.json`; overrides insights discovered through `--previous-run`. |
 | `--current-prompt PATH` | unset | Current Markdown/text prompt, `prompt_package.json`, or prompt output directory to revise conservatively. |
 | `--cache-dir DIR` | config value | Override the shared local corpus-analysis cache directory. |
-| `--refresh-cache` | off | Recompute and atomically replace matching chunk/topic entries. |
+| `--refresh-cache` | off | Recompute and atomically replace matching chunk, topic, and final prompt-package entries. |
 | `--no-cache` | off | Disable cache reads and writes for this run. |
 
 ```bash
@@ -606,6 +611,10 @@ All records contribute to aggregate diagnostics. Detailed model context is bound
 failed, evaluable questions; it excludes raw answers and expected answers. The generator is told to
 change only prompt-addressable behavior and to route retrieval, corpus, infrastructure, permission,
 and application-security problems to guardrails or manager review instead of hiding them in wording.
+Document evidence is selected round-robin across discovered topics before extra chunks are added, so
+a large high-priority topic cannot silently consume the entire prompt. Current-prompt, prior-run, and
+insight inputs have separate limits. Identical prompt-generation inputs reuse the cached validated
+package; use `--refresh-cache` when a deliberately new sample is wanted.
 
 Outputs:
 
@@ -633,11 +642,14 @@ chatbot-eval --config config.toml report \
   --output ./outputs/run-002-comparison
 ```
 
-The comparison presents whole-run KPI deltas and a stricter like-for-like view. Questions are
-matched only when ID, normalized wording, and expected behavior agree; changed sequential-ID rows
-are flagged rather than compared. Matched outcomes show improvements, regressions, persistent
-successes/failures, and topic-level movement. Aggregate deltas are labeled as potentially affected
-by changes in test-set composition.
+The comparison presents whole-run values and a strict like-for-like view. Questions are matched only
+when the ID and every material silver-question field agree after whitespace normalization, including
+wording, reference answer and claims, evidence, answerability, topic, type, form, provenance, and
+expected behavior. Changed rows are flagged rather than compared, and duplicate IDs are excluded
+instead of silently overwriting one another. Aggregate KPI deltas are calculated only when both
+runs contain the same unique benchmark; otherwise the two absolute values remain visible but the
+delta is marked non-comparable. Matched outcomes still show improvements, regressions, persistent
+successes/failures, and topic-level movement.
 
 ## Judging logic and outcomes
 

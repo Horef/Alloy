@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -11,6 +12,10 @@ from .models import EvaluationInsights, EvaluationRecord, Outcome, PromptPackage
 from .report import build_summary
 
 logger = logging.getLogger(__name__)
+
+
+def prompt_generation_fingerprint() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 PROMPT_GENERATION_PROMPT = """Design a production-ready Hebrew system prompt for a closed-domain
@@ -96,20 +101,57 @@ IMPROVEMENT CONTEXT:
 
 def _prompt_context(chunks: list[Chunk], topics: list[TopicCandidate], max_chars: int = 100_000) -> str:
     by_id = {chunk.id: chunk for chunk in chunks}
+    ranked_topics = sorted(topics, key=lambda item: (-item.importance, item.name))
+    coverage: list[Chunk] = []
+    for topic in ranked_topics:
+        chunk = next((by_id[source_id] for source_id in topic.source_ids if source_id in by_id), None)
+        if chunk and chunk not in coverage:
+            coverage.append(chunk)
     ordered: list[Chunk] = []
-    for topic in sorted(topics, key=lambda item: item.importance, reverse=True):
-        for source_id in topic.source_ids:
+    # Round-robin gives every discovered topic a chance to contribute evidence before a topic with
+    # many sources consumes the whole budget.
+    maximum_sources = max((len(topic.source_ids) for topic in ranked_topics), default=0)
+    for source_index in range(maximum_sources):
+        for topic in ranked_topics:
+            if source_index >= len(topic.source_ids):
+                continue
+            source_id = topic.source_ids[source_index]
             chunk = by_id.get(source_id)
-            if chunk and chunk not in ordered:
+            if chunk and chunk not in coverage and chunk not in ordered:
                 ordered.append(chunk)
-    ordered.extend(chunk for chunk in chunks if chunk not in ordered)
+    ordered.extend(chunk for chunk in chunks if chunk not in coverage and chunk not in ordered)
+
+    def render(chunk: Chunk) -> str:
+        return f"\n[SOURCE_ID: {chunk.id}; FILE: {chunk.file}; LOCATION: {chunk.location}]\n{chunk.text}\n"
+
     rendered, used = [], 0
+    coverage_values = [render(chunk) for chunk in coverage]
+    if sum(map(len, coverage_values)) > max_chars and coverage_values:
+        share = max(1, max_chars // len(coverage_values))
+        for value in coverage_values:
+            marker = "\n[... excerpt truncated for topic coverage ...]"
+            rendered.append(value[:max(0, share - len(marker))] + marker[:share])
+        used = sum(map(len, rendered))
+    else:
+        rendered.extend(coverage_values)
+        used = sum(map(len, rendered))
+
     for chunk in ordered:
-        value = f"\n[SOURCE_ID: {chunk.id}; FILE: {chunk.file}; LOCATION: {chunk.location}]\n{chunk.text}\n"
-        if rendered and used + len(value) > max_chars:
+        value = render(chunk)
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        if len(value) > remaining:
+            marker = "\n[... excerpt truncated by Alloy prompt limit ...]"
+            rendered.append(value[:max(0, remaining - len(marker))] + marker[:remaining])
+            used = max_chars
             break
         rendered.append(value)
         used += len(value)
+    logger.info(
+        "system_prompt_document_context included_chunks=%d total_chunks=%d chars=%d limit=%d",
+        len(rendered), len(chunks), used, max_chars,
+    )
     return "".join(rendered)
 
 
@@ -180,8 +222,14 @@ def _evaluation_history_context(records: list[EvaluationRecord], max_chars: int 
 
 
 class SystemPromptGenerator:
-    def __init__(self, llm: StructuredLLM, model: str):
+    def __init__(
+        self, llm: StructuredLLM, model: str, *, document_context_chars: int = 100_000,
+        evaluation_context_chars: int = 60_000, auxiliary_context_chars: int = 30_000,
+    ):
         self.llm, self.model = llm, model
+        self.document_context_chars = document_context_chars
+        self.evaluation_context_chars = evaluation_context_chars
+        self.auxiliary_context_chars = auxiliary_context_chars
 
     def generate(
         self,
@@ -201,9 +249,14 @@ class SystemPromptGenerator:
         topic_data = json.dumps([topic.model_dump() for topic in topics], ensure_ascii=False)
         previous_records = previous_records or []
         improvement_mode = bool(previous_records or previous_insights or current_prompt.strip())
-        history_context = _evaluation_history_context(previous_records)
-        insights_context = previous_insights.model_dump_json() if previous_insights else "Not supplied."
-        current_prompt_context = current_prompt.strip() or "Not supplied."
+        history_context = _evaluation_history_context(previous_records, self.evaluation_context_chars)
+        insights_context = _bounded_context(
+            previous_insights.model_dump_json() if previous_insights else "Not supplied.",
+            self.auxiliary_context_chars,
+        )
+        current_prompt_context = _bounded_context(
+            current_prompt.strip() or "Not supplied.", self.auxiliary_context_chars,
+        )
         evidence_ids = {record.question.id for record in previous_records}
         if previous_insights:
             evidence_ids.update(
@@ -218,7 +271,7 @@ class SystemPromptGenerator:
         generation_prompt = PROMPT_GENERATION_PROMPT.format(
                 configuration=configuration,
                 topics=topic_data,
-                excerpts=_prompt_context(chunks, topics),
+                excerpts=_prompt_context(chunks, topics, self.document_context_chars),
                 current_prompt=current_prompt_context,
                 evaluation_history=history_context,
                 evaluation_insights=insights_context,
@@ -255,6 +308,15 @@ class SystemPromptGenerator:
             raise ValueError("Generated prompt package failed deterministic validation: " + "; ".join(failures))
         logger.info("system_prompt_generation_completed")
         return package
+
+
+def _bounded_context(value: str, maximum: int) -> str:
+    if len(value) <= maximum:
+        return value
+    marker = "\n\n[... content omitted by Alloy prompt limit ...]\n\n"
+    available = max(0, maximum - len(marker))
+    beginning = (available * 2) // 3
+    return value[:beginning] + marker + value[-(available - beginning):]
 
 
 def validate_prompt_package(

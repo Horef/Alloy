@@ -25,7 +25,7 @@ from .io import read_questions, write_evaluations, write_questions
 from .llm import GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, SilverQuestion
-from .prompt_generator import SystemPromptGenerator, write_prompt_package
+from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .report import write_report
 from .results_io import ResultColumns, read_premade_results
 from .topics import infer_topics, topic_inference_fingerprint
@@ -299,10 +299,27 @@ def main(argv: list[str] | None = None) -> int:
                 batch_chunks=settings.batch_chunks, implementation_sha256=topic_discovery_fingerprint(),
                 discover=lambda: topic_generator.discover_topics(chunks, settings.batch_chunks),
             )
-            package = SystemPromptGenerator(llm, settings.generation_model).generate(
-                chunks, topics, assistant_name=args.assistant_name, audience=args.audience,
-                previous_records=previous_records, previous_insights=previous_insights,
-                current_prompt=current_prompt,
+            prompt_generator = SystemPromptGenerator(
+                llm, settings.generation_model,
+                document_context_chars=settings.prompt_max_document_chars,
+                evaluation_context_chars=settings.prompt_max_evaluation_chars,
+                auxiliary_context_chars=settings.prompt_max_auxiliary_chars,
+            )
+            package = cache.load_prompt_package(
+                chunk_key=chunk_key, topics=topics,
+                assistant_name=args.assistant_name, audience=args.audience,
+                previous_records=previous_records or [], previous_insights=previous_insights,
+                current_prompt=current_prompt, model=settings.generation_model,
+                transport=settings.gemini_transport,
+                document_context_chars=settings.prompt_max_document_chars,
+                evaluation_context_chars=settings.prompt_max_evaluation_chars,
+                auxiliary_context_chars=settings.prompt_max_auxiliary_chars,
+                implementation_sha256=prompt_generation_fingerprint(),
+                generate=lambda: prompt_generator.generate(
+                    chunks, topics, assistant_name=args.assistant_name, audience=args.audience,
+                    previous_records=previous_records, previous_insights=previous_insights,
+                    current_prompt=current_prompt,
+                ),
             )
             prompt_path, package_path = write_prompt_package(package, args.output)
             manifest.complete(

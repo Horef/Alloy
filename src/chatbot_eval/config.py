@@ -29,6 +29,9 @@ class Settings:
     question_type_targets: dict[str, float]
     min_topic_questions: int
     max_topic_share: float
+    prompt_max_document_chars: int
+    prompt_max_evaluation_chars: int
+    prompt_max_auxiliary_chars: int
     cache_enabled: bool
     cache_directory: str
     request_timeout_seconds: int
@@ -69,6 +72,12 @@ class Settings:
             errors.append("generation.min_topic_questions must be non-negative")
         if not 0 < self.max_topic_share <= 1:
             errors.append("generation.max_topic_share must be in (0, 1]")
+        if min(
+            self.prompt_max_document_chars,
+            self.prompt_max_evaluation_chars,
+            self.prompt_max_auxiliary_chars,
+        ) < 1000:
+            errors.append("prompt generation character limits must be at least 1000")
         if not self.cache_directory.strip():
             errors.append("cache.directory must not be empty")
         if not 0 <= self.unanswerable_ratio < 1:
@@ -172,6 +181,9 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         },
         min_topic_questions=int(_get(data, "generation", "min_topic_questions", 1)),
         max_topic_share=float(_get(data, "generation", "max_topic_share", 0.35)),
+        prompt_max_document_chars=int(_get(data, "generation", "prompt_max_document_chars", 100_000)),
+        prompt_max_evaluation_chars=int(_get(data, "generation", "prompt_max_evaluation_chars", 60_000)),
+        prompt_max_auxiliary_chars=int(_get(data, "generation", "prompt_max_auxiliary_chars", 30_000)),
         cache_enabled=_as_bool(_get(data, "cache", "enabled", True), "cache.enabled"),
         cache_directory=str(_get(data, "cache", "directory", ".chatbot_eval_cache")),
         request_timeout_seconds=int(_get(data, "evaluation", "request_timeout_seconds", 60)),

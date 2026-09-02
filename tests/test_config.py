@@ -85,6 +85,9 @@ def test_evaluation_safety_limits_have_conservative_defaults(tmp_path):
     assert settings.insights_max_prompt_chars == 80_000
     assert settings.gemini_request_timeout_seconds == 120
     assert settings.max_concurrency == 1
+    assert settings.prompt_max_document_chars == 100_000
+    assert settings.prompt_max_evaluation_chars == 60_000
+    assert settings.prompt_max_auxiliary_chars == 30_000
 
 
 def test_configuration_rejects_invalid_evaluation_safety_limits(tmp_path):

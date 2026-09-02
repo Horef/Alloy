@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .artifacts import atomic_write_text, file_sha256
 from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
-from .models import EvaluationInsights, EvaluationRecord, SilverQuestion, TopicCandidate, TopicMap
+from .models import EvaluationInsights, EvaluationRecord, PromptPackage, SilverQuestion, TopicCandidate, TopicMap
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,68 @@ class CorpusAnalysisCache:
         else:
             self.events["insights"] = "disabled"
         return insights
+
+    def load_prompt_package(
+        self,
+        *,
+        chunk_key: str,
+        topics: list[TopicCandidate],
+        assistant_name: str,
+        audience: str,
+        previous_records: list[EvaluationRecord],
+        previous_insights: EvaluationInsights | None,
+        current_prompt: str,
+        model: str,
+        transport: str,
+        document_context_chars: int,
+        evaluation_context_chars: int,
+        auxiliary_context_chars: int,
+        implementation_sha256: str,
+        generate: Callable[[], PromptPackage],
+    ) -> PromptPackage:
+        key = _json_hash({
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "implementation_sha256": implementation_sha256,
+            "chunk_key": chunk_key,
+            "topics": [topic.model_dump(mode="json") for topic in topics],
+            "assistant_name": assistant_name,
+            "audience": audience,
+            "previous_records_sha256": _json_hash([
+                record.model_dump(mode="json") for record in previous_records
+            ]),
+            "previous_insights": previous_insights.model_dump(mode="json") if previous_insights else None,
+            "current_prompt_sha256": _json_hash(current_prompt),
+            "model": model,
+            "transport": transport,
+            "document_context_chars": document_context_chars,
+            "evaluation_context_chars": evaluation_context_chars,
+            "auxiliary_context_chars": auxiliary_context_chars,
+        })
+        path = self.directory / "prompt_packages" / f"{key}.json"
+        if self.enabled and not self.refresh:
+            payload = self._read_payload(path, "prompt_package", key)
+            if payload is not None:
+                try:
+                    package = PromptPackage.model_validate(payload["prompt_package"])
+                    self.events["prompt_package"] = "hit"
+                    logger.info("cache_hit kind=prompt_package key=%s path=%s", key[:12], path)
+                    return package
+                except (KeyError, TypeError, ValueError):
+                    pass
+
+        package = generate()
+        self.events["prompt_package"] = "refresh" if self.enabled and self.refresh else "miss"
+        if self.enabled:
+            atomic_write_text(path, json.dumps({
+                "schema_version": CACHE_SCHEMA_VERSION,
+                "kind": "prompt_package",
+                "key": key,
+                "prompt_package": package.model_dump(mode="json"),
+            }, ensure_ascii=False, separators=(",", ":")))
+            logger.info("cache_write kind=prompt_package key=%s path=%s", key[:12], path)
+        else:
+            self.events["prompt_package"] = "disabled"
+        return package
 
     @staticmethod
     def _read_chunks(path: Path, expected_key: str) -> list[Chunk] | None:

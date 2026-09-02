@@ -2,7 +2,9 @@ import json
 
 from chatbot_eval.documents import Chunk
 from chatbot_eval.models import ChatbotResult, EvaluationRecord, Outcome, PromptPackage, SilverQuestion, TopicCandidate
-from chatbot_eval.prompt_generator import SystemPromptGenerator, validate_prompt_package, write_prompt_package
+from chatbot_eval.prompt_generator import (
+    SystemPromptGenerator, _prompt_context, validate_prompt_package, write_prompt_package,
+)
 
 
 class FakeLLM:
@@ -122,3 +124,43 @@ def test_prompt_revision_uses_bounded_evidence_and_requires_traceability():
             package, "תומי", improvement_mode=True, valid_evidence_ids={"Q1"},
         )
     )
+
+
+def test_prompt_document_context_is_bounded_and_covers_topics():
+    chunks = [
+        Chunk("a#1", "a.md", "document", "א" * 500),
+        Chunk("b#1", "b.md", "document", "ב" * 500),
+    ]
+    topics = [
+        TopicCandidate(name="א", description="", importance=5, source_ids=["a#1"]),
+        TopicCandidate(name="ב", description="", importance=1, source_ids=["b#1"]),
+    ]
+
+    context = _prompt_context(chunks, topics, max_chars=240)
+
+    assert len(context) <= 240
+    assert "SOURCE_ID: a#1" in context
+    assert "SOURCE_ID: b#1" in context
+
+
+def test_prompt_revision_bounds_current_prompt_and_insights():
+    class RevisionLLM(FakeLLM):
+        def generate(self, prompt, schema, model):
+            package = super().generate(prompt, schema, model)
+            package.revision_summary = ["נשמרה ההתנהגות הקיימת"]
+            return package
+
+    llm = RevisionLLM()
+    generator = SystemPromptGenerator(
+        llm, "model", document_context_chars=1_000,
+        evaluation_context_chars=1_000, auxiliary_context_chars=1_000,
+    )
+
+    generator.generate(
+        [Chunk("a#1", "a.md", "document", "תוכן")],
+        [TopicCandidate(name="נושא", description="", importance=1, source_ids=["a#1"])],
+        assistant_name="תומי", audience="עובדים", current_prompt="א" * 2_000,
+    )
+
+    assert "content omitted by Alloy prompt limit" in llm.prompt
+    assert "א" * 1_100 not in llm.prompt
