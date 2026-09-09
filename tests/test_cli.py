@@ -1,9 +1,12 @@
+import json
 from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
 
 from chatbot_eval import cli
+from chatbot_eval.artifacts import RunManifest
+from chatbot_eval.config import load_settings
 from chatbot_eval.models import ChatbotResult, EvaluationInsights, EvaluationRecord, Outcome, SilverQuestion
 
 
@@ -43,6 +46,81 @@ def test_generation_cache_flags_are_explicit_and_mutually_exclusive():
         raise AssertionError("mutually exclusive cache flags should be rejected")
 
 
+def test_report_manifest_uses_report_specific_filename(tmp_path):
+    settings_path = tmp_path / "config.toml"
+    settings_path.write_text("", encoding="utf-8")
+    settings = load_settings(settings_path, require_api_key=False)
+
+    with RunManifest(tmp_path / "report", command="report", settings=settings, inputs=[], parameters={}):
+        pass
+
+    assert (tmp_path / "report" / "report_manifest.json").exists()
+    assert not (tmp_path / "report" / "run_manifest.json").exists()
+
+
+def test_live_parser_exposes_deployment_identity():
+    args = cli.build_parser().parse_args([
+        "evaluate", "--questions", "questions.json", "--chatbot-url", "https://chatbot.test",
+        "--deployment-id", "blue-2026-09",
+    ])
+
+    assert args.deployment_id == "blue-2026-09"
+
+
+def test_evaluate_file_parser_exposes_behavioral_metadata_columns():
+    args = cli.build_parser().parse_args([
+        "evaluate-file", "--results", "results.jsonl",
+        "--expected-behavior-column", "mode", "--question-form-column", "shape",
+        "--parent-question-id-column", "parent", "--question-type-column", "kind",
+        "--difficulty-column", "level", "--reference-claims-column", "claims",
+        "--supporting-quotes-column", "quotes", "--reference-sources-column", "gold_docs",
+    ])
+
+    assert args.expected_behavior_column == "mode"
+    assert args.question_form_column == "shape"
+    assert args.parent_question_id_column == "parent"
+    assert args.question_type_column == "kind"
+    assert args.difficulty_column == "level"
+    assert args.reference_claims_column == "claims"
+    assert args.supporting_quotes_column == "quotes"
+    assert args.reference_sources_column == "gold_docs"
+
+
+def test_report_passes_evaluation_contracts_to_comparison(tmp_path, monkeypatch):
+    settings_path = tmp_path / "config.toml"
+    settings_path.write_text("", encoding="utf-8")
+    record = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="Q1", answer="a"), outcome=Outcome.CORRECT_ANSWER,
+    )
+    current = tmp_path / "current"
+    previous = tmp_path / "previous"
+    for directory, contract in ((current, {"judge": "new"}), (previous, {"judge": "old"})):
+        directory.mkdir()
+        (directory / "evaluation_details.jsonl").write_text(record.model_dump_json() + "\n", encoding="utf-8")
+        (directory / "run_manifest.json").write_text(
+            json.dumps({"evaluation_contract": contract}), encoding="utf-8",
+        )
+    captured = {}
+
+    def fake_write_report(records, output, insights, **kwargs):
+        captured.update(kwargs)
+        output.mkdir(parents=True, exist_ok=True)
+        summary, report = output / "evaluation_summary.json", output / "evaluation_report.html"
+        summary.write_text("{}", encoding="utf-8")
+        report.write_text("report", encoding="utf-8")
+        return summary, report
+
+    monkeypatch.setattr(cli, "write_report", fake_write_report)
+    assert cli.main([
+        "--config", str(settings_path), "report", "--results", str(current),
+        "--compare-with", str(previous), "--output", str(tmp_path / "report"),
+    ]) == 0
+
+    assert captured["current_contract"] == {"judge": "new"}
+    assert captured["previous_contract"] == {"judge": "old"}
+
+
 def test_cache_directory_cannot_be_inside_documents(tmp_path):
     documents = tmp_path / "docs"
     documents.mkdir()
@@ -61,13 +139,27 @@ def test_resume_can_retry_only_checkpointed_errors(tmp_path):
     items = [(question, ChatbotResult(question_id="Q1", answer=""))]
 
     class Evaluator:
-        def __init__(self, outcome):
+        def __init__(self, outcome, answer=""):
             self.outcome = outcome
+            self.answer = answer
+            self.evaluate_calls = 0
+            self.judge_calls = 0
 
         def evaluate(self, questions, on_record):
+            self.evaluate_calls += 1
             record = EvaluationRecord(
-                question=questions[0], result=ChatbotResult(question_id="Q1", answer=""),
+                question=questions[0], result=ChatbotResult(question_id="Q1", answer=self.answer),
                 outcome=self.outcome,
+            )
+            on_record(record)
+            return [record]
+
+        def judge_results(self, pairs, on_record):
+            self.judge_calls += 1
+            question, result = pairs[0]
+            assert result.answer == "captured chatbot answer"
+            record = EvaluationRecord(
+                question=question, result=result, outcome=self.outcome,
             )
             on_record(record)
             return [record]
@@ -76,15 +168,20 @@ def test_resume_can_retry_only_checkpointed_errors(tmp_path):
         checkpoint=None, output=tmp_path, resume=False, retry_errors=False,
     )
     cli._checkpointed_evaluation(
-        args, items, Evaluator(Outcome.JUDGE_ERROR), premade=False, contract={"judge": "v1"},
+        args, items, Evaluator(Outcome.JUDGE_ERROR, "captured chatbot answer"),
+        premade=False, contract={"judge": "v1"},
     )
     args.resume = True
     args.retry_errors = True
+    retry = Evaluator(Outcome.CORRECT_ANSWER)
     records, resumed, _ = cli._checkpointed_evaluation(
-        args, items, Evaluator(Outcome.CORRECT_ANSWER), premade=False, contract={"judge": "v1"},
+        args, items, retry, premade=False, contract={"judge": "v1"},
     )
 
     assert records[0].outcome == Outcome.CORRECT_ANSWER
+    assert records[0].result.answer == "captured chatbot answer"
+    assert retry.evaluate_calls == 0
+    assert retry.judge_calls == 1
     assert resumed == 0
 
 
@@ -98,3 +195,58 @@ def test_generation_resume_rejects_cache_refresh():
         cli.main([
             "generate", "--documents", "docs", "--resume", "--refresh-cache",
         ])
+
+
+def test_generate_persists_diagnostics_and_inventories_them_in_manifest(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_text("", encoding="utf-8")
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "source.txt").write_text("source", encoding="utf-8")
+    output = tmp_path / "output"
+    expected = {
+        "planned_total": 1,
+        "accepted_total": 0,
+        "rejected": {"quote_not_verbatim": 1},
+        "unallocated": 1,
+        "boundary_evidence_scope": "selected_excerpts",
+    }
+
+    class Cache:
+        enabled = True
+        refresh = False
+
+        def load_chunks(self, *args, **kwargs):
+            return [], "chunk-key"
+
+        def load_topics(self, *args, **kwargs):
+            return []
+
+        def summary(self):
+            return {"hits": 0, "misses": 0}
+
+    class Generator:
+        def __init__(self, *args, **kwargs):
+            self.last_generation_diagnostics = {}
+
+        def generate(self, chunks, options, *, topics):
+            self.last_generation_diagnostics = expected
+            return [], topics
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_analysis_cache", lambda *args, **kwargs: Cache())
+    monkeypatch.setattr(cli, "SilverSetGenerator", Generator)
+
+    assert cli.main([
+        "--config", str(config), "generate", "--documents", str(documents),
+        "--output", str(output), "--max-questions", "1",
+    ]) == 0
+
+    diagnostics_path = output / "generation_diagnostics.json"
+    assert json.loads(diagnostics_path.read_text(encoding="utf-8")) == expected
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["results"]["generation_diagnostics"] == expected
+    assert str(diagnostics_path.resolve()) in {
+        item["path"] for item in manifest["results"]["outputs"]
+    }

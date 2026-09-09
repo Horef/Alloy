@@ -150,6 +150,8 @@ log_level = "INFO"
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
 | `generation.prompt_max_evaluation_chars` | `60000` | Maximum prior-evaluation evidence characters supplied to prompt revision. |
 | `generation.prompt_max_auxiliary_chars` | `30000` | Independent maximum for the current prompt and generated-insights context. |
+| `generation.prompt_instruction_profile` | `guided` | Code-assembled policy profile. `guided` includes illustrative examples; `compact` omits them. |
+| `generation.prompt_answer_policy` | `balanced` | Code-assembled partial-answer policy. `balanced` permits a clearly separated supported part; `conservative` avoids an unsupported conclusion. |
 | `cache.enabled` | `true` | Reuse content-addressed chunks, document topics, premade-question topics, and optional evaluation insights. |
 | `cache.directory` | `.chatbot_eval_cache` | Shared local cache directory. Relative paths are resolved next to the selected config file. |
 | `evaluation.request_timeout_seconds` | `60` | Timeout for each live chatbot HTTP request. |
@@ -318,7 +320,8 @@ An answerable candidate is retained only when:
 - it is not a near-duplicate of an accepted or excluded question; and
 - it contains distinct atomic `reference_claims` for stable claim-level judging.
 
-Rejection counts are written to operational logs at `INFO` level.
+Rejection counts are written to operational logs at `INFO` level and to the reviewable
+`generation_diagnostics.json` artifact.
 
 ### Generate parameters
 
@@ -394,6 +397,15 @@ downstream prompt.
 `supporting_quotes` is JSON inside the CSV cell. `silver_questions.jsonl` preserves nested values
 without flattening.
 
+`generation_diagnostics.json` records the requested and accepted totals, accepted distributions,
+candidate rejection counts, unallocated capacity and its reason, topic quotas, and the source IDs
+actually rendered for each topic. The same object is embedded in `run_manifest.json`, and the
+artifact is listed in the manifest output inventory with its size and SHA-256 hash. A
+`boundary_evidence_scope` value of `selected_excerpts` means boundary candidates were checked against
+the excerpts selected and rendered for their generation calls. It does not claim that every passage
+in the corpus was exhaustively searched for an answer. When no boundary cases were requested, the
+value is `not_requested`.
+
 Reviewers should confirm the user need, reference answer, sources, and quotations; edit as needed;
 then set `review_status` to `approved` or `rejected`. Keep rejected/deleted questions in an exclusion
 file if they must not reappear. Do not rename required CSV columns if the module will read the file.
@@ -419,6 +431,7 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 |---|---|---|
 | `--questions PATH` | required | Silver CSV or JSONL. |
 | `--chatbot-url URL` | required | JSON-over-HTTP endpoint. |
+| `--deployment-id ID` | empty | Optional nonsecret deployment/model/tenant identity included in the evaluation contract and resume fingerprint. Change it when routing or deployed behavior changes. |
 | `--output DIR` | `outputs/evaluation` | Output directory. |
 | `--question-field NAME` | `question` | Request property containing the question; not a dotted request path. |
 | `--answer-field PATH` | `answer` | Dotted response path for the answer. |
@@ -493,6 +506,14 @@ retrieved source/context, external ID, topic, answerability, and explicit error 
 | Retrieved source | `source`, `evidence`, `context`, `retrieved_context`, `מקור` |
 | ID | `id`, `question_id`, `messageId` |
 | Topic | `topic`, `category`, `נושא` |
+| Expected behavior | `expected_behavior`, `target_behavior` |
+| Question form | `question_form`, `form` |
+| Parent question ID | `parent_question_id`, `parent_id`, `source_question_id` |
+| Question type | `question_type`, `type`, `kind` |
+| Difficulty | `difficulty`, `complexity` |
+| Reference claims | `reference_claims`, `gold_claims`, `required_claims` |
+| Supporting quotes | `supporting_quotes`, `evidence_quotes` |
+| Explicit reference sources | `reference_sources`, `reference_sources_json`, `gold_sources`, `gold_evidence`, `sources_json` |
 
 Explicit mappings are recommended for stable production jobs.
 
@@ -511,6 +532,14 @@ Explicit mappings are recommended for stable production jobs.
 | `--topic-column NAME` | optional/auto | Topic; missing values become `לא סווג`. |
 | `--answerable-column NAME` | optional/auto | true/false, 1/0, or yes/no; defaults to true. |
 | `--error-column NAME` | optional/auto | Stored error; such rows bypass judging. |
+| `--expected-behavior-column NAME` | optional/auto | Expected `answer`, `clarify`, or `abstain` behavior. |
+| `--question-form-column NAME` | optional/auto | `canonical`, `natural_user`, or `ambiguous`. |
+| `--parent-question-id-column NAME` | optional/auto | External parent ID; resolved to the imported parent row's Alloy ID. |
+| `--question-type-column NAME` | optional/auto | Silver-question type such as `basic_knowledge` or `document_wide`. |
+| `--difficulty-column NAME` | optional/auto | Difficulty label retained on the imported question. |
+| `--reference-claims-column NAME` | optional/auto | JSON array of atomic reference claims. |
+| `--supporting-quotes-column NAME` | optional/auto | JSON array of `{source_id, quote}` objects. |
+| `--reference-sources-column NAME` | optional/auto | JSON array of explicit gold `{source_id, file, location, excerpt}` objects. |
 | `--infer-topics` | off | Infer broad Hebrew topics for unclassified rows, bounded by both 250 rows and 60,000 rendered characters per batch. |
 | `--generate-insights` | off | Write and embed optional cross-result insights. |
 | `--hide-correct-answer-metrics` | off | Hide correctness presentation metrics but retain data. |
@@ -545,7 +574,12 @@ importer does not retry stored errors. Imported fault details are categorized an
 gateway payloads are not propagated into reports.
 
 The expected-answer column is the judging reference. The optional source column is treated as the
-chatbot's retrieved context for diagnostics, not as a separately reviewed gold reference.
+chatbot's retrieved context for diagnostics, not as a separately reviewed gold reference. Gold
+document evidence must use an explicit reference-source column (or Alloy's canonical `sources_json`);
+it remains separate from runtime retrieval. If multiple aliases for one logical field occur, the
+import fails until the corresponding explicit `--*-column` mapping selects one, so metadata is not
+chosen silently. Parent values refer to external IDs in the imported file and unresolved parents are
+cleared while the original value is retained in result metadata.
 
 ## Workflow 4: generate a system prompt from documents
 
@@ -709,8 +743,14 @@ Both evaluation workflows write:
 | `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, and pipeline diagnostics. |
 | `evaluation_report.html` | Interactive Hebrew RTL report. |
 | `evaluation_insights.json` | Written only when optional insights succeed. |
+| `evaluation_insights_status.json` | Always written; records whether insights were disabled, generated, or failed and the evaluation-record fingerprint. |
 | `evaluation_checkpoint.jsonl` | Durable per-question records used by `--resume`. |
 | `run_manifest.json` | Redacted settings, input and implementation hashes, versions, timing, status, and result counts. |
+
+The `report` command writes `report_manifest.json` so report-generation metadata cannot be confused
+with an evaluation run manifest. A previous-run directory only supplies `evaluation_insights.json`
+when its status file matches both the evaluation-record hash and the insights-artifact hash; failed
+or disabled status therefore cannot accidentally reuse a stale artifact.
 
 The HTML includes KPI cards, outcome distribution, retrieval-versus-answer diagnostics, information
 metrics, topic performance as `percentage (count/denominator)` with 95% Wilson intervals and small-
@@ -738,7 +778,9 @@ Insight evidence is globally bounded by `evaluation.insights_max_prompt_chars`; 
 outcomes are considered before successes. Identical completed records reuse a content-addressed
 insight result unless `--refresh-cache` or `--no-cache` is selected. Likewise,
 `evaluate-file --infer-topics` caches assignments by question ID/text, model, transport, batching,
-and implementation.
+and implementation. Prompt-package cache entries also include the selected instruction profile,
+answer policy, and configured model/deployment identity, so changing any of these cannot reuse an
+incompatible package.
 
 ## Progress, logging, retries, and rate limits
 

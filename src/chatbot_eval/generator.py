@@ -27,6 +27,9 @@ from .progress import track
 
 logger = logging.getLogger(__name__)
 
+_PROMPT_TRUNCATION_LOCATION = "; prompt excerpt truncated from "
+_PROMPT_TRUNCATION_MARKER = "[PROMPT_EXCERPT_TRUNCATED]"
+
 
 def topic_discovery_fingerprint() -> str:
     """Invalidate persisted topic maps whenever their implementation module changes."""
@@ -133,15 +136,43 @@ class GenerationOptions:
     excluded_questions: tuple[str, ...] = ()
 
 
-def _render_chunks(chunks: list[Chunk], max_chars: int = 90000) -> str:
-    output, used = [], 0
+def _render_chunk(chunk: Chunk) -> str:
+    marker = f"\n{_PROMPT_TRUNCATION_MARKER}" if _PROMPT_TRUNCATION_LOCATION in chunk.location else ""
+    return f"\n[SOURCE_ID: {chunk.id}]\n{chunk.text}{marker}\n"
+
+
+def _renderable_chunks(chunks: list[Chunk], max_chars: int = 90000) -> list[Chunk]:
+    """Select prompt evidence without ever exceeding ``max_chars`` when rendered.
+
+    If the next whole chunk cannot fit, retain a bounded prefix when there is
+    room for its source ID and an explicit truncation marker. The returned
+    clone records the original character count in ``location``; its ``text``
+    contains only evidence actually shown to the model, so later quote
+    validation cannot accept text from the hidden suffix.
+    """
+    if max_chars <= 0:
+        return []
+    selected: list[Chunk] = []
+    used = 0
     for chunk in chunks:
-        rendered = f"\n[SOURCE_ID: {chunk.id}]\n{chunk.text}\n"
-        if output and used + len(rendered) > max_chars:
+        rendered = _render_chunk(chunk)
+        if used + len(rendered) <= max_chars:
+            selected.append(chunk)
+            used += len(rendered)
+            continue
+
+        location = f"{chunk.location}{_PROMPT_TRUNCATION_LOCATION}{len(chunk.text)} chars"
+        empty_excerpt = Chunk(chunk.id, chunk.file, location, "")
+        available_text = max_chars - used - len(_render_chunk(empty_excerpt))
+        if available_text <= 0:
             break
-        output.append(rendered)
-        used += len(rendered)
-    return "".join(output)
+        selected.append(Chunk(chunk.id, chunk.file, location, chunk.text[:available_text]))
+        break
+    return selected
+
+
+def _render_chunks(chunks: list[Chunk], max_chars: int = 90000) -> str:
+    return "".join(_render_chunk(chunk) for chunk in _renderable_chunks(chunks, max_chars))
 
 
 def _tokens(text: str) -> set[str]:
@@ -165,7 +196,10 @@ def _relevant_chunks(topic: TopicCandidate, chunks: list[Chunk], limit: int = 10
 def allocate_quotas(topics: list[TopicCandidate], total: int, minimum: int, max_share: float) -> dict[str, int]:
     if total <= 0 or not topics:
         return {}
-    cap = max(minimum, math.ceil(total * max_share))
+    # The share is a hard diversity cap. A requested minimum that is larger
+    # than the cap is infeasible and must not silently weaken that cap; any
+    # remaining capacity is reported by the caller's generation diagnostics.
+    cap = max(0, math.ceil(total * max_share))
     quotas = {topic.name: 0 for topic in topics}
     ordered = sorted(topics, key=lambda t: t.importance, reverse=True)
     remaining = total
@@ -277,6 +311,10 @@ def _assign_stable_ids(questions: list[SilverQuestion]) -> None:
 
 def validate_candidate(candidate: GeneratedQuestion, chunk_by_id: dict[str, Chunk]) -> tuple[list[Chunk], str | None]:
     """Apply deterministic grounding checks before a generated question reaches human review."""
+    if not candidate.question.strip():
+        return [], "blank_question"
+    if not candidate.expected_answer.strip():
+        return [], "blank_expected_answer"
     if len(candidate.source_ids) != len(set(candidate.source_ids)):
         return [], "duplicate_source_ids"
     unknown = [source_id for source_id in candidate.source_ids if source_id not in chunk_by_id]
@@ -286,6 +324,10 @@ def validate_candidate(candidate: GeneratedQuestion, chunk_by_id: dict[str, Chun
     if not candidate.answerable:
         if candidate.question_type != QuestionType.UNANSWERABLE:
             return [], "invalid_unanswerable_type"
+        if any(claim.strip() for claim in candidate.reference_claims):
+            return [], "unanswerable_has_reference_claims"
+        if candidate.supporting_quotes:
+            return [], "unanswerable_has_supporting_quotes"
         return chunks, None
     if candidate.question_type in {QuestionType.PERSONAL_BASIC, QuestionType.PERSONAL_INTEGRATION, QuestionType.UNANSWERABLE}:
         return [], "unsupported_question_type"
@@ -318,6 +360,9 @@ class SilverSetGenerator:
     def __init__(self, llm: StructuredLLM, model: str, progress_enabled: bool = False):
         self.llm, self.model = llm, model
         self.progress_enabled = progress_enabled
+        # Kept as a diagnostic side channel so the existing return API remains
+        # compatible while callers can inspect bounded-generation shortfalls.
+        self.last_generation_diagnostics: dict = {}
 
     def discover_topics(self, chunks: list[Chunk], batch_size: int) -> list[TopicCandidate]:
         maps = []
@@ -338,12 +383,19 @@ class SilverSetGenerator:
         topics: list[TopicCandidate] | None = None,
     ) -> tuple[list[SilverQuestion], list[TopicCandidate]]:
         topics = list(topics) if topics is not None else self.discover_topics(chunks, options.batch_chunks)
-        unanswerable_budget = min(round(options.max_questions * options.unanswerable_ratio), max(0, options.max_questions - 1))
+        effective_max = options.max_questions
+        if options.requested_topic_count is not None:
+            if options.requested_topic_count < 1:
+                raise ValueError("requested topic count must be positive")
+            # The topic count is a total ceiling, including canonical items,
+            # variants, and boundary cases.
+            effective_max = min(effective_max, options.requested_topic_count)
+        unanswerable_budget = min(round(effective_max * options.unanswerable_ratio), max(0, effective_max - 1))
         variation_budget = min(
-            round(options.max_questions * options.user_variation_ratio),
-            max(0, options.max_questions - unanswerable_budget - 1),
+            round(effective_max * options.user_variation_ratio),
+            max(0, effective_max - unanswerable_budget - 1),
         )
-        answerable_budget = max(0, options.max_questions - unanswerable_budget - variation_budget)
+        answerable_budget = max(0, effective_max - unanswerable_budget - variation_budget)
         type_remaining = allocate_type_targets(answerable_budget, options.question_type_targets, chunks)
         if options.requested_topic:
             requested = TopicCandidate(
@@ -359,7 +411,7 @@ class SilverSetGenerator:
                 topics.append(requested)
             count = options.requested_topic_count or options.max_questions
             quotas = {topic.name: 0 for topic in topics}
-            quotas[requested.name] = min(count, options.max_questions)
+            quotas[requested.name] = min(count, effective_max)
         else:
             quotas = allocate_quotas(topics, answerable_budget, options.min_topic_questions, options.max_topic_share)
 
@@ -367,12 +419,24 @@ class SilverSetGenerator:
         chunk_by_id = {chunk.id: chunk for chunk in chunks}
         produced_answerable = 0
         rejected = Counter()
+        rendered_source_ids: dict[str, list[str]] = {}
         for topic in track(topics, enabled=self.progress_enabled, description="Generating questions", total=len(topics)):
             wanted = quotas.get(topic.name, 0)
             if wanted <= 0 or produced_answerable >= answerable_budget:
                 continue
             wanted = min(wanted, answerable_budget - produced_answerable)
-            relevant = _relevant_chunks(topic, chunks)
+            relevant = _renderable_chunks(_relevant_chunks(topic, chunks))
+            rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
+            unknown_topic_sources = [source_id for source_id in topic.source_ids if source_id not in chunk_by_id]
+            if unknown_topic_sources:
+                rejected["topic_unknown_source_id"] += len(unknown_topic_sources)
+            if not relevant:
+                rejected["topic_no_rendered_evidence"] += 1
+                continue
+            # A candidate is only grounded by source IDs that were actually
+            # rendered in this call, rather than by an ID present elsewhere in
+            # the corpus but hidden by the rendering limit.
+            rendered_by_id = {chunk.id: chunk for chunk in relevant}
             topic_produced = 0
             retry_feedback: list[str] = []
             for _round in range(options.max_candidate_rounds):
@@ -400,7 +464,7 @@ class SilverSetGenerator:
                         rejected["question_type_over_target"] += 1
                         retry_feedback.append(f"question_type_over_target: {candidate.question[:180]}")
                         continue
-                    valid, reason = validate_candidate(candidate, chunk_by_id)
+                    valid, reason = validate_candidate(candidate, rendered_by_id)
                     if reason:
                         rejected[reason] += 1
                         retry_feedback.append(f"{reason}: {candidate.question[:180]}")
@@ -460,20 +524,32 @@ class SilverSetGenerator:
                     if form_counts[form.value] >= limit:
                         rejected["variation_type_over_budget"] += 1
                         continue
+                    if not variation.question.strip():
+                        rejected["blank_variation"] += 1
+                        continue
                     if form == QuestionForm.AMBIGUOUS and not variation.required_clarification.strip():
                         rejected["ambiguous_without_clarification"] += 1
+                        continue
+                    if form == QuestionForm.NATURAL_USER and variation.required_clarification.strip():
+                        rejected["natural_with_clarification"] += 1
                         continue
                     accepted.append(self._to_variation(variation, parent, len(accepted) + 1))
                     form_counts[form.value] += 1
 
         boundary_topics = [requested] if options.requested_topic else topics
+        boundary_requested = unanswerable_budget > 0
         if unanswerable_budget and boundary_topics:
             per_topic = max(1, math.ceil(unanswerable_budget / len(boundary_topics)))
             sorted_topics = sorted(boundary_topics, key=lambda t: t.importance, reverse=True)
             for topic in track(sorted_topics, enabled=self.progress_enabled, description="Generating boundary cases", total=len(sorted_topics)):
-                if len(accepted) >= options.max_questions or unanswerable_budget <= 0:
+                if len(accepted) >= effective_max or unanswerable_budget <= 0:
                     break
-                relevant = _relevant_chunks(topic, chunks)
+                relevant = _renderable_chunks(_relevant_chunks(topic, chunks))
+                rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
+                if not relevant:
+                    rejected["topic_no_rendered_evidence"] += 1
+                    continue
+                rendered_by_id = {chunk.id: chunk for chunk in relevant}
                 wanted = min(per_topic, unanswerable_budget)
                 topic_produced = 0
                 retry_feedback = []
@@ -497,7 +573,7 @@ class SilverSetGenerator:
                             rejected["wrong_answerability_or_duplicate"] += 1
                             retry_feedback.append(f"wrong_answerability_or_duplicate: {candidate.question[:180]}")
                             continue
-                        valid, reason = validate_candidate(candidate, chunk_by_id)
+                        valid, reason = validate_candidate(candidate, rendered_by_id)
                         if reason:
                             rejected[reason] += 1
                             retry_feedback.append(f"{reason}: {candidate.question[:180]}")
@@ -507,9 +583,30 @@ class SilverSetGenerator:
                         unanswerable_budget -= 1
         if rejected:
             logger.info("question_candidates_rejected counts=%s", dict(rejected))
-        accepted = accepted[: options.max_questions]
+        accepted = accepted[:effective_max]
         if options.stable_question_ids:
             _assign_stable_ids(accepted)
+        planned = effective_max
+        self.last_generation_diagnostics = {
+            "planned_total": planned,
+            "accepted_total": len(accepted),
+            "accepted_by_behavior": dict(Counter(question.expected_behavior.value for question in accepted)),
+            "accepted_by_form": dict(Counter(question.question_form.value for question in accepted)),
+            "accepted_by_type": dict(Counter(question.question_type.value for question in accepted)),
+            "rejected": dict(rejected),
+            "unallocated": max(0, planned - len(accepted)),
+            "unallocated_reason": "topic_cap_capacity" if sum(quotas.values()) < answerable_budget else (
+                "candidate_validation_shortfall" if len(accepted) < planned else ""
+            ),
+            "topic_quotas": dict(quotas),
+            "rendered_source_ids": rendered_source_ids,
+            "boundary_evidence_scope": "selected_excerpts" if boundary_requested else "not_requested",
+        }
+        if sum(quotas.values()) < answerable_budget:
+            rejected["topic_cap_capacity"] += answerable_budget - sum(quotas.values())
+            self.last_generation_diagnostics["rejected"] = dict(rejected)
+        if len(accepted) < planned:
+            logger.info("generation_shortfall diagnostics=%s", self.last_generation_diagnostics)
         return accepted, topics
 
     @staticmethod

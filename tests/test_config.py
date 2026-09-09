@@ -88,6 +88,25 @@ def test_evaluation_safety_limits_have_conservative_defaults(tmp_path):
     assert settings.prompt_max_document_chars == 100_000
     assert settings.prompt_max_evaluation_chars == 60_000
     assert settings.prompt_max_auxiliary_chars == 30_000
+    assert settings.prompt_instruction_profile == "guided"
+    assert settings.prompt_answer_policy == "balanced"
+
+
+def test_prompt_profile_and_answer_policy_are_configurable(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[generation]
+prompt_instruction_profile = "compact"
+prompt_answer_policy = "conservative"
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(path, require_api_key=False)
+
+    assert settings.prompt_instruction_profile == "compact"
+    assert settings.prompt_answer_policy == "conservative"
 
 
 def test_configuration_rejects_invalid_evaluation_safety_limits(tmp_path):

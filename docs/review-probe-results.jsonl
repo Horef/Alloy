@@ -1,0 +1,18 @@
+{"probe": "abstention_override", "detected": true, "outcome": "incorrect_abstention", "correct_claims": 1}
+{"probe": "unsafe_success", "abstention": "correct_abstention", "clarification": "correct_clarification", "reported_risky_rate": 0.0, "reported_false_claims": 0}
+{"probe": "csv_sources", "original": "Name | Amount | Deadline", "csv": "Name", "jsonl": "Name | Amount | Deadline"}
+{"probe": "legacy_jsonl", "error": "ValueError"}
+{"probe": "all_rows_invalid", "imported_count": 0}
+{"probe": "comparison_denominators", "aggregate_comparable": true, "factual_metric": {"label": "תשובות עובדתיות נכונות", "current": 1.0, "previous": 0.5, "delta": 0.5, "lower_is_better": false, "favorable": true}, "matched_outcomes": {"improved": 0, "regressed": 0, "unchanged_success": 1, "unchanged_failure": 0, "not_comparable": 1, "net_improvement": 0}}
+{"probe": "evaluation_checkpoint_missing_newline", "initial_loaded": 1, "subsequent_load_error": "ValueError"}
+{"probe": "generation_checkpoint_missing_newline", "subsequent_load_error": "ValueError"}
+{"probe": "generation_mismatch_without_newline", "error": null, "remaining_bytes": 0}
+{"probe": "http_answer_shape", "input": null, "answer": "null", "error": ""}
+{"probe": "http_answer_shape", "input": "", "answer": "", "error": ""}
+{"probe": "http_answer_shape", "input": {"error": "upstream failure"}, "answer": "{\"error\": \"upstream failure\"}", "error": ""}
+{"probe": "short_document", "input_chars": 26, "chunks": []}
+{"probe": "candidate_validation_gap", "rejection": null, "final_validation_error": "ValueError"}
+{"probe": "infeasible_topic_cap", "requested": 30, "allocated": 11}
+{"probe": "live_judge_retry_recaptures_answer", "original": "Original captured answer", "retried": "The optional attachment is not provided. Submit the application tomorrow."}
+{"probe": "stale_insights", "discovered_summary": "Old run"}
+{"probe": "topic_count_ceiling", "topic_count": 1, "produced": 6}

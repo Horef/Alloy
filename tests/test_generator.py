@@ -1,6 +1,6 @@
 from chatbot_eval.documents import Chunk
 from chatbot_eval.generator import (
-    GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate,
+    GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate, _render_chunks,
     allocate_quotas, allocate_type_targets, validate_candidate,
 )
 from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, TopicCandidate, TopicMap, VariationBatch
@@ -27,6 +27,63 @@ def test_quota_never_overallocates_when_minimum_exceeds_budget():
     topics = [TopicCandidate(name=str(i), description="", importance=1, source_ids=[]) for i in range(5)]
     quotas = allocate_quotas(topics, total=2, minimum=3, max_share=0.5)
     assert sum(quotas.values()) == 2
+
+
+def test_quota_preserves_share_cap_when_minimum_is_infeasible():
+    topics = [
+        TopicCandidate(name="A", description="", importance=5, source_ids=[]),
+        TopicCandidate(name="B", description="", importance=4, source_ids=[]),
+    ]
+
+    quotas = allocate_quotas(topics, total=10, minimum=6, max_share=0.4)
+
+    assert quotas == {"A": 4, "B": 4}
+    assert sum(quotas.values()) == 8
+
+
+def test_render_chunks_truncates_oversized_first_chunk_with_provenance():
+    rendered = _render_chunks(
+        [Chunk("large#1", "large.md", "document", "x" * 500)],
+        max_chars=100,
+    )
+
+    assert len(rendered) <= 100
+    assert "[SOURCE_ID: large#1]" in rendered
+    assert "[PROMPT_EXCERPT_TRUNCATED]" in rendered
+    assert "x" in rendered
+
+
+def test_generation_diagnostics_expose_capacity_blocked_by_topic_cap():
+    class EmptyLLM:
+        def generate(self, prompt, schema, model):
+            assert schema is QuestionBatch
+            return QuestionBatch(questions=[])
+
+    topics = [
+        TopicCandidate(name="A", description="", importance=5, source_ids=["a#1"]),
+        TopicCandidate(name="B", description="", importance=4, source_ids=["b#1"]),
+    ]
+    generator = SilverSetGenerator(EmptyLLM(), "test")
+
+    generator.generate(
+        [
+            Chunk("a#1", "a.md", "document", "evidence A"),
+            Chunk("b#1", "b.md", "document", "evidence B"),
+        ],
+        GenerationOptions(
+            max_questions=10,
+            batch_chunks=2,
+            min_topic_questions=6,
+            max_topic_share=0.4,
+            unanswerable_ratio=0,
+            max_candidate_rounds=1,
+        ),
+        topics=topics,
+    )
+
+    assert generator.last_generation_diagnostics["topic_quotas"] == {"A": 4, "B": 4}
+    assert generator.last_generation_diagnostics["unallocated_reason"] == "topic_cap_capacity"
+    assert generator.last_generation_diagnostics["rejected"]["topic_cap_capacity"] == 2
 
 
 def test_type_targets_redistribute_types_the_corpus_cannot_support():

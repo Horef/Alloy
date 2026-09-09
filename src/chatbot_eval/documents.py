@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
+from docx.document import Document as DocumentObject
+from docx.table import Table, _Cell
+from docx.text.paragraph import Paragraph
 from pypdf import PdfReader
 
 from .progress import track
@@ -34,15 +37,44 @@ def _read_sections(path: Path) -> list[tuple[str, str]]:
     if suffix == ".jsonl":
         return [("document", path.read_text(encoding="utf-8", errors="replace"))]
     if suffix == ".pdf":
-        return [(f"page {number}", page.extract_text() or "") for number, page in enumerate(PdfReader(path).pages, 1)]
+        sections = []
+        for number, page in enumerate(PdfReader(path).pages, 1):
+            text = page.extract_text() or ""
+            if not text.strip():
+                # An empty extracted page is useful diagnostic information: it
+                # may require OCR, but extraction must never claim that OCR ran.
+                import logging
+                logging.getLogger(__name__).warning("pdf_page_empty file=%s page=%d", path, number)
+            sections.append((f"page {number}", text))
+        return sections
     if suffix == ".docx":
         document = Document(path)
-        sections = [("paragraphs", "\n\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()))]
-        for number, table in enumerate(document.tables, 1):
-            rows = [" | ".join(cell.text.strip() for cell in row.cells) for row in table.rows]
-            sections.append((f"table {number}", "\n\n".join(rows)))
-        return sections
+        # document.paragraphs and document.tables are separate collections and
+        # therefore lose the meaningful paragraph/table/paragraph ordering.
+        # Iterate the underlying XML body so a table is kept beside its text.
+        ordered: list[str] = []
+        for block in _iter_docx_blocks(document):
+            if isinstance(block, Paragraph):
+                text = block.text.strip()
+                if text:
+                    ordered.append(text)
+            else:
+                rows = [" | ".join(cell.text.strip() for cell in row.cells) for row in block.rows]
+                table_text = "\n".join(row for row in rows if row.strip())
+                if table_text:
+                    ordered.append(table_text)
+        return [("document", "\n\n".join(ordered))]
     raise ValueError(f"Unsupported file type: {path}")
+
+
+def _iter_docx_blocks(parent: DocumentObject | _Cell):
+    """Yield DOCX paragraphs and tables in their source XML order."""
+    parent_element = parent.element.body if isinstance(parent, DocumentObject) else parent._tc
+    for child in parent_element.iterchildren():
+        if child.tag.endswith("}p"):
+            yield Paragraph(child, parent)
+        elif child.tag.endswith("}tbl"):
+            yield Table(child, parent)
 
 
 def _blocks(text: str) -> list[str]:
@@ -65,6 +97,12 @@ def _blocks(text: str) -> list[str]:
 
 
 def _structured_chunks(text: str, chunk_chars: int, overlap_chars: int) -> list[tuple[str, str]]:
+    if chunk_chars <= 0:
+        raise ValueError("chunk size must be positive")
+    if overlap_chars < 0:
+        raise ValueError("chunk overlap cannot be negative")
+    if overlap_chars >= chunk_chars:
+        raise ValueError("chunk overlap must be smaller than chunk size")
     blocks = _blocks(text)
     if not blocks:
         return []
@@ -90,7 +128,9 @@ def _structured_chunks(text: str, chunk_chars: int, overlap_chars: int) -> list[
             used += addition
             end += 1
         content = "\n\n".join(selected)
-        if len(content.strip()) >= 80:
+        # A short section can contain the only operative rule in a document.
+        # chunk_chars is a bound/target, never an evidence deletion threshold.
+        if content.strip():
             chunks.append((f"blocks {start + 1}-{end}", content))
         if end >= len(expanded):
             break
@@ -104,6 +144,10 @@ def _structured_chunks(text: str, chunk_chars: int, overlap_chars: int) -> list[
 
 
 def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabled: bool = False) -> list[Chunk]:
+    if chunk_chars <= 0:
+        raise ValueError("chunk size must be positive")
+    if overlap_chars < 0:
+        raise ValueError("chunk overlap cannot be negative")
     if overlap_chars >= chunk_chars:
         raise ValueError("chunk overlap must be smaller than chunk size")
     files = [p for p in sorted(root.rglob("*")) if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES]
@@ -114,6 +158,9 @@ def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabl
         relative = str(path.relative_to(root))
         chunk_number = 0
         for section_location, raw_text in _read_sections(path):
+            if not raw_text.strip():
+                import logging
+                logging.getLogger(__name__).warning("document_section_empty file=%s section=%s", relative, section_location)
             for block_location, part in _structured_chunks(raw_text, chunk_chars, overlap_chars):
                 chunk_number += 1
                 location = f"{section_location}, {block_location}"

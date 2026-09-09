@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import defaultdict, deque
 from pathlib import Path
 
 from .artifacts import atomic_write_text
@@ -10,12 +11,21 @@ from .documents import Chunk
 from .llm import StructuredLLM
 from .models import EvaluationInsights, EvaluationRecord, Outcome, PromptPackage, TopicCandidate
 from .report import build_summary
+from .response_errors import placeholder_error
+from .prompt_policy import POLICY_VERSION, assemble_prompt, response_policy, strip_policy
 
 logger = logging.getLogger(__name__)
 
 
 def prompt_generation_fingerprint() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    schema = json.dumps(
+        PromptPackage.model_json_schema(), sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(
+        Path(__file__).read_bytes()
+        + Path(__file__).with_name("prompt_policy.py").read_bytes()
+        + schema
+    ).hexdigest()
 
 
 PROMPT_GENERATION_PROMPT = """Design a production-ready Hebrew system prompt for a closed-domain
@@ -58,9 +68,17 @@ When improvement evidence or a current prompt is supplied, work conservatively:
 - Do not compensate in the prompt for retrieval gaps, stale/missing documents, gateway failures,
   permissions, application security, or missing tools. Put those actions in guardrails/checklists.
 - Preserve effective current behavior and avoid tuning narrowly to individual test wording.
-- Fill revision_summary with concise manager-reviewable changes. If evaluation evidence is
-  supplied, revision_evidence_question_ids must contain only supplied question IDs that justify the
-  revision or the decision to preserve behavior.
+- Fill revision_mappings with one auditable mapping per proposed behavioral change. Each mapping
+  must state the observed failure, only the supplied evidence IDs actually used, the exact rule
+  changed, the expected observable behavior, and the limitation that must be fixed outside the
+  prompt (or explicitly state that no non-prompt limitation was observed). Do not infer a failure
+  from omitted or truncated evidence. Keep revision_summary and revision_evidence_question_ids as
+  concise compatibility views of those mappings.
+- Build regression_cases from the supported behavior changes. Every case must contain a realistic
+  question, a very small synthetic retrieved context (including an explicit empty/insufficient
+  context when relevant), the expected answer/clarify/abstain behavior, and a non-empty list of
+  content the answer must not contain. Do not copy benchmark answers, identifiers, or personal
+  data. Keep suggested_regression_questions as a compatibility list of the case questions.
 
 CHATBOT CONFIGURATION:
 {configuration}
@@ -180,56 +198,115 @@ def _evaluation_history_context(records: list[EvaluationRecord], max_chars: int 
     }
     aggregate["topic_count"] = len(topic_items)
     aggregate["topics_included"] = len(aggregate["by_topic"])
-    prioritized = sorted(
-        records,
-        key=lambda record: (
-            record.outcome in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR},
-            record.outcome in {Outcome.CORRECT_ANSWER, Outcome.CORRECT_ABSTENTION, Outcome.CORRECT_CLARIFICATION},
-            record.question.id,
-        ),
-    )
-    evidence: list[dict] = []
-    used = len(json.dumps(aggregate, ensure_ascii=False))
-    for record in prioritized:
+    # Interleave failure categories and success counterexamples, then topics within each category.
+    categories = [Outcome.MISSING_CLARIFICATION, Outcome.MISLEADING_HALLUCINATION,
+                  Outcome.SHOULD_HAVE_ABSTAINED, Outcome.INCORRECT_ABSTENTION,
+                  Outcome.PARTIAL_TOO_MUCH, Outcome.CORRECT_ANSWER,
+                  Outcome.CORRECT_CLARIFICATION, Outcome.CORRECT_ABSTENTION,
+                  Outcome.PARTIAL_TOO_LITTLE, Outcome.UNRELATED_ANSWER]
+    buckets = defaultdict(lambda: defaultdict(deque))
+    excluded_errors = 0
+    for record in sorted(records, key=lambda r: (r.question.topic, r.question.id)):
+        if record.outcome in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR} or placeholder_error(record.result.answer):
+            excluded_errors += 1
+            continue
+        buckets[record.outcome][record.question.topic].append(record)
+    ordered = []
+    while any(queue for topics in buckets.values() for queue in topics.values()):
+        for category in categories:
+            for topic in sorted(buckets[category]):
+                queue = buckets[category][topic]
+                if queue:
+                    ordered.append(queue.popleft())
+
+    payload = {"aggregate_summary_for_all_records": aggregate, "bounded_question_evidence": [],
+               "included_records": 0, "total_records": len(records),
+               "omitted_records": len(records), "excluded_error_examples": excluded_errors}
+    def render():
+        return json.dumps(payload, ensure_ascii=False)
+    # Retain a compact all-record aggregate even for small budgets. Count the JSON envelope too.
+    while len(render()) > max_chars and aggregate["by_topic"]:
+        aggregate["by_topic"].pop(next(reversed(aggregate["by_topic"])))
+        aggregate["topics_included"] = len(aggregate["by_topic"])
+    if len(render()) > max_chars:
+        payload["aggregate_summary_for_all_records"] = {
+            key: aggregate[key] for key in ("total", "evaluable", "answer_tasks", "clarification_tasks",
+                                            "abstention_tasks", "infrastructure_errors")
+        }
+        payload["aggregate_details_omitted"] = True
+    if len(render()) > max_chars:
+        raise ValueError("Evaluation context budget cannot fit the minimal evidence envelope")
+    for record in ordered:
         scores = record.scores
         item = {
-            "question_id": record.question.id,
-            "topic": record.question.topic,
+            "question_id": record.question.id, "topic": record.question.topic,
             "question_form": record.question.question_form.value,
             "expected_behavior": record.question.expected_behavior.value,
             "outcome": record.outcome.value,
-            "error_category": record.result.metadata.get("error_category"),
-            "judge_explanation": scores.explanation[:700] if scores else "",
-            "missing_or_wrong": scores.missing_or_wrong[:500] if scores else "",
-            "retrieval_explanation": scores.retrieval_explanation[:500] if scores else "",
+            "retrieval_status": "available" if record.result.retrieved_context.strip() else "not_available_in_record",
             "retrieval_points_found": scores.retrieval_points_found if scores else None,
             "required_points_total": scores.required_points_total if scores else None,
+            "false_claims": scores.answer_false_claims if scores else None,
+            "unsupported_claims": scores.answer_unsupported_claims if scores else None,
         }
-        rendered = json.dumps(item, ensure_ascii=False)
-        if evidence and used + len(rendered) > max_chars:
-            break
-        evidence.append(item)
-        used += len(rendered)
-    return json.dumps(
-        {
-            "aggregate_summary_for_all_records": aggregate,
-            "bounded_question_evidence": evidence,
-            "included_records": len(evidence),
-            "total_records": len(records),
-        },
-        ensure_ascii=False,
-    )
+        fields = {
+            "question": (record.question.question, 700),
+            "expected_answer": (record.question.expected_answer, 900),
+            "chatbot_answer": (record.result.answer, 1200),
+            "retrieved_context": (record.result.retrieved_context, 1500),
+            "reference_evidence": ("\n".join(q.quote for q in record.question.supporting_quotes)
+                                   or "\n".join(s.excerpt for s in record.question.sources), 900),
+            "judge_explanation": (scores.explanation if scores else "", 500),
+            "missing_or_wrong": (scores.missing_or_wrong if scores else "", 400),
+        }
+        for name, (value, limit) in fields.items():
+            item[name] = _bounded_context(value, limit)
+            if len(value) > limit:
+                item[name + "_original_chars"] = len(value)
+                item[name + "_truncated"] = True
+        payload["bounded_question_evidence"].append(item)
+        payload["included_records"] += 1
+        payload["omitted_records"] -= 1
+        if len(render()) > max_chars:
+            payload["bounded_question_evidence"].pop()
+            payload["included_records"] -= 1
+            payload["omitted_records"] += 1
+    return render()
+
+
+def _insights_context(insights: EvaluationInsights | None, maximum: int) -> tuple[str, set[str]]:
+    if insights is None:
+        return "Not supplied.", set()
+    payload = {"executive_summary": _bounded_context(insights.executive_summary, min(700, maximum // 3)),
+               "issues": [], "total_issues": len(insights.issues), "omitted_issues": len(insights.issues)}
+    ids: set[str] = set()
+    for issue in insights.issues:
+        item = issue.model_dump(mode="json")
+        payload["issues"].append(item)
+        payload["omitted_issues"] -= 1
+        if len(json.dumps(payload, ensure_ascii=False)) > maximum:
+            payload["issues"].pop()
+            payload["omitted_issues"] += 1
+        else:
+            ids.update(issue.example_question_ids)
+    rendered = json.dumps(payload, ensure_ascii=False)
+    if len(rendered) > maximum:
+        raise ValueError("Insights context budget cannot fit its minimal envelope")
+    return rendered, ids
 
 
 class SystemPromptGenerator:
     def __init__(
         self, llm: StructuredLLM, model: str, *, document_context_chars: int = 100_000,
         evaluation_context_chars: int = 60_000, auxiliary_context_chars: int = 30_000,
+        instruction_profile: str = "guided", answer_policy: str = "balanced",
     ):
         self.llm, self.model = llm, model
         self.document_context_chars = document_context_chars
         self.evaluation_context_chars = evaluation_context_chars
         self.auxiliary_context_chars = auxiliary_context_chars
+        response_policy(instruction_profile, answer_policy)  # Validate public constructor arguments.
+        self.instruction_profile, self.answer_policy = instruction_profile, answer_policy
 
     def generate(
         self,
@@ -243,27 +320,20 @@ class SystemPromptGenerator:
         current_prompt: str = "",
     ) -> PromptPackage:
         configuration = json.dumps(
-            {"assistant_name": assistant_name, "audience": audience, "response_language": "Hebrew"},
+            {"assistant_name": assistant_name, "audience": audience, "response_language": "Hebrew",
+             "instruction_profile": self.instruction_profile, "answer_policy": self.answer_policy},
             ensure_ascii=False,
         )
         topic_data = json.dumps([topic.model_dump() for topic in topics], ensure_ascii=False)
         previous_records = previous_records or []
         improvement_mode = bool(previous_records or previous_insights or current_prompt.strip())
         history_context = _evaluation_history_context(previous_records, self.evaluation_context_chars)
-        insights_context = _bounded_context(
-            previous_insights.model_dump_json() if previous_insights else "Not supplied.",
-            self.auxiliary_context_chars,
-        )
+        insights_context, insight_ids = _insights_context(previous_insights, self.auxiliary_context_chars)
         current_prompt_context = _bounded_context(
-            current_prompt.strip() or "Not supplied.", self.auxiliary_context_chars,
+            strip_policy(current_prompt) or "Not supplied.", self.auxiliary_context_chars,
         )
-        evidence_ids = {record.question.id for record in previous_records}
-        if previous_insights:
-            evidence_ids.update(
-                identifier
-                for issue in previous_insights.issues
-                for identifier in issue.example_question_ids
-            )
+        history_data = json.loads(history_context) if previous_records else {}
+        evidence_ids = {item["question_id"] for item in history_data.get("bounded_question_evidence", [])} | insight_ids
         logger.info(
             "system_prompt_generation_started model=%s topic_count=%d chunk_count=%d",
             self.model, len(topics), len(chunks),
@@ -276,7 +346,13 @@ class SystemPromptGenerator:
                 evaluation_history=history_context,
                 evaluation_insights=insights_context,
             )
+        generation_prompt += "\n\nFIXED RESPONSE POLICY (will be assembled by code; do not repeat it):\n" + response_policy(self.instruction_profile, self.answer_policy)
+        generation_prompt += "\nProduce compatible domain/role/tone guidance. Use concrete failure patterns, not stronger adjectives. Missing runtime context is unknown telemetry, not proven failed retrieval. Reference evidence is not runtime context. Truncated/omitted content cannot prove absence. Do not copy benchmark facts or examples into operational policy."
         package = self.llm.generate(generation_prompt, PromptPackage, self.model)
+        _populate_legacy_review_fields(package)
+        package.system_prompt_hebrew = assemble_prompt(
+            package.system_prompt_hebrew, self.instruction_profile, self.answer_policy,
+        )
         failures = validate_prompt_package(
             package, assistant_name, improvement_mode=improvement_mode,
             valid_evidence_ids=evidence_ids,
@@ -300,12 +376,22 @@ class SystemPromptGenerator:
                 PromptPackage,
                 self.model,
             )
+            _populate_legacy_review_fields(package)
+            package.system_prompt_hebrew = assemble_prompt(
+                package.system_prompt_hebrew, self.instruction_profile, self.answer_policy,
+            )
             failures = validate_prompt_package(
                 package, assistant_name, improvement_mode=improvement_mode,
                 valid_evidence_ids=evidence_ids,
             )
         if failures:
             raise ValueError("Generated prompt package failed deterministic validation: " + "; ".join(failures))
+        package.instruction_profile = self.instruction_profile
+        package.answer_policy = self.answer_policy
+        package.policy_version = POLICY_VERSION
+        package.evidence_coverage = {key: value for key, value in history_data.items()
+                                     if key not in {"aggregate_summary_for_all_records", "bounded_question_evidence"}}
+        package.evidence_coverage["included_evidence_ids"] = sorted(evidence_ids)
         logger.info("system_prompt_generation_completed")
         return package
 
@@ -313,10 +399,32 @@ class SystemPromptGenerator:
 def _bounded_context(value: str, maximum: int) -> str:
     if len(value) <= maximum:
         return value
+    if maximum < 0:
+        raise ValueError("Context limit cannot be negative")
     marker = "\n\n[... content omitted by Alloy prompt limit ...]\n\n"
-    available = max(0, maximum - len(marker))
+    if maximum <= len(marker):
+        return marker[:maximum]
+    available = maximum - len(marker)
     beginning = (available * 2) // 3
-    return value[:beginning] + marker + value[-(available - beginning):]
+    tail = available - beginning
+    return value[:beginning] + marker + (value[-tail:] if tail else "")
+
+
+def _populate_legacy_review_fields(package: PromptPackage) -> None:
+    """Keep additive structured output consumable by older artifact readers."""
+    if package.revision_mappings:
+        if not package.revision_summary:
+            package.revision_summary = [mapping.changed_rule for mapping in package.revision_mappings]
+        mapped_ids = {
+            identifier
+            for mapping in package.revision_mappings
+            for identifier in mapping.included_evidence_question_ids
+        }
+        package.revision_evidence_question_ids = sorted(
+            set(package.revision_evidence_question_ids) | mapped_ids,
+        )
+    if package.regression_cases and not package.suggested_regression_questions:
+        package.suggested_regression_questions = [case.question for case in package.regression_cases]
 
 
 def validate_prompt_package(
@@ -353,6 +461,7 @@ def validate_prompt_package(
         "suggested_test_questions": package.suggested_test_questions,
         "revision_summary": package.revision_summary,
         "revision_evidence_question_ids": package.revision_evidence_question_ids,
+        "suggested_regression_questions": package.suggested_regression_questions,
     }
     for name, values in list_fields.items():
         normalized = [" ".join(value.casefold().split()) for value in values if value.strip()]
@@ -368,11 +477,52 @@ def validate_prompt_package(
         failures.append("suggested test questions must be written in Hebrew")
     if improvement_mode and not package.revision_summary:
         failures.append("revision_summary is required when improvement context is supplied")
+    if improvement_mode and not package.revision_mappings:
+        failures.append("revision_mappings is required when improvement context is supplied")
+    if improvement_mode and not package.regression_cases:
+        failures.append("regression_cases is required when improvement context is supplied")
     if improvement_mode and valid_evidence_ids and not package.revision_evidence_question_ids:
         failures.append("revision_evidence_question_ids is required when evaluation evidence is supplied")
-    unknown_evidence_ids = sorted(set(package.revision_evidence_question_ids) - (valid_evidence_ids or set()))
+    mapped_evidence_ids = [
+        identifier
+        for mapping in package.revision_mappings
+        for identifier in mapping.included_evidence_question_ids
+    ]
+    all_revision_evidence_ids = set(package.revision_evidence_question_ids) | set(mapped_evidence_ids)
+    unknown_evidence_ids = sorted(all_revision_evidence_ids - (valid_evidence_ids or set()))
     if unknown_evidence_ids:
-        failures.append(f"revision_evidence_question_ids contains unknown IDs: {unknown_evidence_ids}")
+        failures.append(f"revision evidence contains unknown IDs: {unknown_evidence_ids}")
+    if package.revision_mappings and set(package.revision_evidence_question_ids) != set(mapped_evidence_ids):
+        failures.append(
+            "revision_evidence_question_ids must match the IDs in structured revision mappings"
+        )
+    if improvement_mode and valid_evidence_ids and not mapped_evidence_ids:
+        failures.append("at least one revision mapping must cite supplied evaluation evidence")
+    for index, mapping in enumerate(package.revision_mappings):
+        text_fields = {
+            "observed_failure": mapping.observed_failure,
+            "changed_rule": mapping.changed_rule,
+            "expected_observable_behavior": mapping.expected_observable_behavior,
+            "non_prompt_limitation": mapping.non_prompt_limitation,
+        }
+        if any(not value.strip() for value in text_fields.values()):
+            failures.append(f"revision_mappings[{index}] must contain non-empty text fields")
+        ids = mapping.included_evidence_question_ids
+        if len(ids) != len(set(ids)) or any(not identifier.strip() for identifier in ids):
+            failures.append(
+                f"revision_mappings[{index}].included_evidence_question_ids must contain distinct non-empty IDs"
+            )
+    for index, case in enumerate(package.regression_cases):
+        if not case.question.strip() or not case.miniature_context.strip():
+            failures.append(f"regression_cases[{index}] must contain a question and miniature context")
+        prohibited = [" ".join(value.casefold().split()) for value in case.prohibited_content if value.strip()]
+        if len(prohibited) != len(case.prohibited_content) or len(prohibited) != len(set(prohibited)):
+            failures.append(f"regression_cases[{index}].prohibited_content must contain distinct non-empty items")
+    if package.regression_cases:
+        case_questions = {" ".join(case.question.casefold().split()) for case in package.regression_cases}
+        legacy_questions = {" ".join(question.casefold().split()) for question in package.suggested_regression_questions}
+        if not case_questions.issubset(legacy_questions):
+            failures.append("suggested_regression_questions must include every structured regression case question")
     return failures
 
 

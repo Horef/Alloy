@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
-import random
+import math
+import http.client
 import socket
 import time
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
+import urllib.parse
 from typing import Protocol
 
 from .models import ChatbotResult, SilverQuestion
-from .response_errors import placeholder_error
+from .response_errors import placeholder_error, bounded_retry_delay
 
 
 class ChatbotAdapter(Protocol):
@@ -20,7 +20,11 @@ class ChatbotAdapter(Protocol):
 
 
 class HttpChatbotAdapter:
-    """Generic JSON-over-HTTP adapter; field paths cover most later integrations."""
+    """Generic JSON HTTP adapter with at most max_retries + 1 attempts.
+
+    Each retry wait is capped. Socket timeouts are not a total operation deadline;
+    a timeout may happen after server acceptance, so retries are at-least-once.
+    """
 
     TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
 
@@ -36,9 +40,22 @@ class HttpChatbotAdapter:
         max_retries: int = 2,
         retry_base_seconds: float = 0.5,
         pacing_seconds: float = 0.0,
+        max_retry_delay_seconds: float = 60.0,
         max_response_bytes: int = 5_000_000,
         require_json_content_type: bool = True,
     ):
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("chatbot URL must be HTTP(S), with a host and without credentials or fragment")
+        for name, value in (("question_field", question_field), ("answer_field", answer_field), ("context_field", context_field)):
+            if not isinstance(value, str) or not value.strip() or any(not part.strip() for part in value.split(".")):
+                raise ValueError(f"{name} must be a nonempty field path")
+        for name, value in (("timeout", timeout), ("retry_base_seconds", retry_base_seconds), ("pacing_seconds", pacing_seconds), ("max_retry_delay_seconds", max_retry_delay_seconds)):
+            if not math.isfinite(value) or value < 0 or (name == "timeout" and value == 0):
+                raise ValueError(f"{name} must be finite and {'positive' if name == 'timeout' else 'nonnegative'}")
+        if not isinstance(max_retries, int) or max_retries < 0 or max_response_bytes <= 0:
+            raise ValueError("max_retries must be a nonnegative integer and max_response_bytes positive")
+        self.max_retry_delay_seconds = max_retry_delay_seconds
         self.url, self.question_field, self.answer_field = url, question_field, answer_field
         self.context_field, self.timeout = context_field, timeout
         self.headers = {"Content-Type": "application/json", **(headers or {})}
@@ -57,7 +74,7 @@ class HttpChatbotAdapter:
             if not isinstance(value, dict) or part not in value:
                 return default
             value = value[part]
-        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        return value
 
     @staticmethod
     def _category(status: int | None, exc: Exception | None = None) -> str:
@@ -76,20 +93,10 @@ class HttpChatbotAdapter:
         return "connection_error"
 
     def _retry_delay(self, attempt: int, headers=None) -> float:
-        retry_after = headers.get("Retry-After") if headers else None
-        if retry_after:
-            try:
-                return max(0.0, float(retry_after))
-            except ValueError:
-                try:
-                    retry_time = parsedate_to_datetime(retry_after)
-                    if retry_time.tzinfo is None:
-                        retry_time = retry_time.replace(tzinfo=timezone.utc)
-                    return max(0.0, (retry_time - datetime.now(timezone.utc)).total_seconds())
-                except (TypeError, ValueError):
-                    pass
-        base = self.retry_base_seconds * (2**attempt)
-        return base + random.uniform(0, base * 0.25) if base else 0.0
+        return bounded_retry_delay(
+            headers.get("Retry-After") if headers else None,
+            attempt, self.retry_base_seconds, self.max_retry_delay_seconds,
+        )
 
     def _pace(self) -> None:
         with self._pacing_lock:
@@ -150,13 +157,20 @@ class HttpChatbotAdapter:
                         )
                     payload = json.loads(body.decode("utf-8"))
                     answer = self._field(payload, self.answer_field)
-                    if answer is None:
+                    if not isinstance(answer, str) or not answer.strip():
                         return self._error_result(
                             question, started, category="malformed_response",
-                            message=f"missing answer field {self.answer_field!r}",
+                            message=f"answer field {self.answer_field!r} must be a nonblank string",
                             attempts=attempt + 1, status=response.status,
                         )
-                    retrieved_context = self._field(payload, self.context_field, "")
+                    missing = object()
+                    context = self._field(payload, self.context_field, missing)
+                    if context is missing or context is None:
+                        context_status = "missing" if context is missing else "null"
+                        retrieved_context = ""
+                    else:
+                        context_status = "empty" if context == "" or context == [] or context == {} else "populated"
+                        retrieved_context = context if isinstance(context, str) else json.dumps(context, ensure_ascii=False)
                     if error := placeholder_error(answer):
                         return ChatbotResult(
                             question_id=question.id,
@@ -165,6 +179,7 @@ class HttpChatbotAdapter:
                             latency_ms=(time.perf_counter() - started) * 1000,
                             metadata={
                                 "http_status": response.status,
+                                "retrieval_context_status": context_status,
                                 "attempts": attempt + 1,
                                 "error_category": "answer_generation_failed",
                             },
@@ -175,7 +190,7 @@ class HttpChatbotAdapter:
                         answer=answer,
                         retrieved_context=retrieved_context,
                         latency_ms=(time.perf_counter() - started) * 1000,
-                        metadata={"http_status": response.status, "attempts": attempt + 1},
+                        metadata={"http_status": response.status, "attempts": attempt + 1, "retrieval_context_status": context_status},
                     )
             except urllib.error.HTTPError as exc:
                 category = self._category(exc.code, exc)
@@ -183,20 +198,20 @@ class HttpChatbotAdapter:
                     time.sleep(self._retry_delay(attempt, exc.headers))
                     continue
                 return self._error_result(
-                    question, started, category=category, message=str(exc),
+                    question, started, category=category, message=type(exc).__name__,
                     attempts=attempt + 1, status=exc.code,
                 )
-            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, http.client.HTTPException) as exc:
                 reason = getattr(exc, "reason", exc)
                 category = self._category(None, reason if isinstance(reason, Exception) else exc)
                 if attempt < self.max_retries:
                     time.sleep(self._retry_delay(attempt))
                     continue
                 return self._error_result(
-                    question, started, category=category, message=str(exc), attempts=attempt + 1,
+                    question, started, category=category, message=type(exc).__name__, attempts=attempt + 1,
                 )
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 return self._error_result(
-                    question, started, category="malformed_response", message=str(exc), attempts=attempt + 1,
+                    question, started, category="malformed_response", message=type(exc).__name__, attempts=attempt + 1,
                 )
         raise AssertionError("unreachable retry loop")

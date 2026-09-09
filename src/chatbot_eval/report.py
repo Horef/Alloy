@@ -89,12 +89,12 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
     answer_tasks = [r for r in evaluable if r.question.expected_behavior == ExpectedBehavior.ANSWER]
     clarification_tasks = [r for r in evaluable if r.question.expected_behavior == ExpectedBehavior.CLARIFY]
     abstention_tasks = [r for r in evaluable if r.question.expected_behavior == ExpectedBehavior.ABSTAIN]
-    retrieval_scored = [r for r in answer_tasks if r.scores and r.scores.retrieved_chunks_total > 0]
+    retrieval_scored = [r for r in answer_tasks if r.scores and r.scores.retrieved_chunks_total > 0 and bool(r.result.retrieved_context.strip())]
     good_retrieval = [r for r in retrieval_scored if _retrieval_good(r)]
     generation_failures = [r for r in good_retrieval if r.outcome not in PIPELINE_SUCCESS]
     pipeline = Counter()
     for record in answer_tasks:
-        if not record.scores or record.scores.retrieved_chunks_total == 0:
+        if not record.scores or record.scores.retrieved_chunks_total == 0 or not record.result.retrieved_context.strip():
             pipeline["retrieval_unavailable"] += 1
         else:
             retrieval = "good" if _retrieval_good(record) else "poor"
@@ -108,7 +108,8 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
     for topic, topic_records in sorted(by_topic_records.items(), key=lambda item: (-len(item[1]), item[0])):
         topic_evaluable = [r for r in topic_records if r.outcome not in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}]
         topic_answer_tasks = [r for r in topic_evaluable if r.question.expected_behavior == ExpectedBehavior.ANSWER]
-        topic_retrieval = [r for r in topic_answer_tasks if r.scores and r.scores.retrieved_chunks_total > 0]
+        topic_answerable = [r for r in topic_evaluable if r.question.answerable]
+        topic_retrieval = [r for r in topic_answer_tasks if r.scores and r.scores.retrieved_chunks_total > 0 and bool(r.result.retrieved_context.strip())]
         topic_correct = sum(r.outcome in ANSWER_SUCCESS for r in topic_records)
         topic_useful = sum(r.outcome in ANSWER_USEFUL for r in topic_records)
         topic_risky = sum(r.outcome in RISKY for r in topic_records)
@@ -116,15 +117,15 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         by_topic[topic] = {
             "total": len(topic_records),
             "evaluable": len(topic_evaluable), "retrieval_evaluated": len(topic_retrieval),
-            "answer_tasks": len(topic_answer_tasks),
+            "answer_tasks": len(topic_answer_tasks), "answerable_questions": len(topic_answerable),
             "correct": topic_correct, "useful": topic_useful, "risky": topic_risky,
             "good_retrieval": topic_good_retrieval,
             "correct_rate": _rate(topic_correct, len(topic_answer_tasks)),
-            "useful_rate": _rate(topic_useful, len(topic_evaluable)),
+            "useful_rate": _rate(topic_useful, len(topic_answerable)),
             "risky_rate": _rate(topic_risky, len(topic_evaluable)),
             "good_retrieval_rate": _rate(topic_good_retrieval, len(topic_retrieval)),
             "correct_interval_95": _wilson_interval(topic_correct, len(topic_answer_tasks)),
-            "useful_interval_95": _wilson_interval(topic_useful, len(topic_evaluable)),
+            "useful_interval_95": _wilson_interval(topic_useful, len(topic_answerable)),
             "risky_interval_95": _wilson_interval(topic_risky, len(topic_evaluable)),
             "good_retrieval_interval_95": _wilson_interval(topic_good_retrieval, len(topic_retrieval)),
             "small_sample_warning": len(topic_evaluable) < MIN_TOPIC_SAMPLE,
@@ -143,6 +144,9 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
     chunks_total = sum(r.scores.retrieved_chunks_total for r in retrieval_scored)
     chunks_relevant = sum(r.scores.retrieved_chunks_relevant for r in retrieval_scored)
     chunks_contradictory = sum(r.scores.retrieved_chunks_contradictory for r in retrieval_scored)
+    all_scored = [r for r in evaluable if r.scores]
+    factual_risk = sum(bool(r.scores.answer_false_claims or r.scores.answer_unsupported_claims) for r in all_scored)
+    behavior_failures = sum(r.outcome in {Outcome.MISSING_CLARIFICATION, Outcome.INCORRECT_ABSTENTION, Outcome.SHOULD_HAVE_ABSTAINED} for r in evaluable)
     infrastructure_errors = len(records) - len(evaluable)
     return {
         "total": len(records), "evaluable": len(evaluable),
@@ -171,6 +175,19 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "generation_failures_despite_good_retrieval": len(generation_failures),
         "generation_failure_question_ids": [r.question.id for r in generation_failures],
         "outcomes": dict(counts),
+        "factual_risk_count": factual_risk,
+        "factual_risk_rate": _rate(factual_risk, len(all_scored)),
+        "factual_risk_denominator": len(all_scored),
+        "behavior_failure_count": behavior_failures,
+        "behavior_failure_rate": _rate(behavior_failures, len(evaluable)),
+        "behavior_failure_denominator": len(evaluable),
+        "risky_misinformation_scope": "legacy outcome-based composite including missing clarification",
+        "all_response_claim_violations": {
+            "scored_responses": len(all_scored),
+            "responses_with_violations": factual_risk,
+            "false_claims_total": sum(r.scores.answer_false_claims for r in all_scored),
+            "unsupported_claims_total": sum(r.scores.answer_unsupported_claims for r in all_scored),
+        },
         "answer_claim_metrics": {
             "required_points_total": required_total, "addressed_points_total": addressed_total,
             "correct_points_total": correct_points,
@@ -201,6 +218,9 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
 def build_comparison(
     current_records: list[EvaluationRecord],
     previous_records: list[EvaluationRecord],
+    *,
+    current_contract: dict | None = None,
+    previous_contract: dict | None = None,
 ) -> dict:
     """Compare whole-run KPIs and like-for-like question outcomes."""
     current_summary = build_summary(current_records)
@@ -245,16 +265,51 @@ def build_comparison(
         "risky_misinformation_rate": ("סיכון למידע מטעה", True),
         "infrastructure_error_rate": ("שגיאות תשתית", True),
     }
+    def eligible(values, key):
+        scored = [r for r in values if r.outcome not in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}]
+        if key == "infrastructure_error_rate":
+            selected = values
+        elif key == "factual_answer_success_rate":
+            selected = [r for r in scored if r.question.expected_behavior == ExpectedBehavior.ANSWER]
+        elif key == "useful_answer_rate_on_answerable":
+            selected = [r for r in scored if r.question.answerable]
+        elif key in {"clarification_success_rate", "abstention_success_rate"}:
+            behavior = ExpectedBehavior.CLARIFY if key == "clarification_success_rate" else ExpectedBehavior.ABSTAIN
+            selected = [r for r in scored if r.question.expected_behavior == behavior]
+        elif key == "good_retrieval_rate":
+            selected = [r for r in scored if r.question.expected_behavior == ExpectedBehavior.ANSWER and r.scores and r.scores.retrieved_chunks_total > 0 and bool(r.result.retrieved_context.strip())]
+        elif key == "factual_risk_rate":
+            selected = [r for r in scored if r.scores]
+        else:
+            selected = scored
+        return {r.question.id for r in selected}
+
+    metric_definitions["factual_risk_rate"] = ("טענות שגויות או לא מבוססות", True)
+    metric_definitions["behavior_failure_rate"] = ("כשל במדיניות המענה", True)
     metrics = {}
     for key, (label, lower_is_better) in metric_definitions.items():
         current = current_summary.get(key)
         previous = previous_summary.get(key)
-        delta = current - previous if aggregate_comparable and current is not None and previous is not None else None
+        current_ids = eligible(current_records, key)
+        previous_ids = eligible(previous_records, key)
+        metric_comparable = aggregate_comparable and current_ids == previous_ids
+        reason = "benchmark_identity_changed" if not aggregate_comparable else (
+            "eligible_population_changed" if current_ids != previous_ids else None
+        )
+        delta = current - previous if metric_comparable and current is not None and previous is not None else None
         favorable = None
         if delta:
             favorable = delta < 0 if lower_is_better else delta > 0
         metrics[key] = {
             "label": label,
+            "comparable": metric_comparable,
+            "reason": reason,
+            "current_denominator": len(current_ids),
+            "previous_denominator": len(previous_ids),
+            "current_numerator": round(current * len(current_ids)) if current is not None else 0,
+            "previous_numerator": round(previous * len(previous_ids)) if previous is not None else 0,
+            "current_excluded": len(current_records) - len(current_ids),
+            "previous_excluded": len(previous_records) - len(previous_ids),
             "current": current,
             "previous": previous,
             "delta": delta,
@@ -288,7 +343,10 @@ def build_comparison(
         by_topic[topic][state] += 1
 
     comparable = matched - states["not_comparable"]
+    contract_comparison = compare_evaluation_contracts(current_contract, previous_contract)
     return {
+        "evaluation_contract_compatibility": contract_comparison["status"],
+        "evaluation_contract_changed_fields": contract_comparison["changed_fields"],
         "current_total": len(current_records),
         "previous_total": len(previous_records),
         "matched_questions": matched,
@@ -318,6 +376,36 @@ def build_comparison(
             }
             for topic, values in sorted(by_topic.items())
         },
+    }
+
+
+def compare_evaluation_contracts(current: dict | None, previous: dict | None) -> dict:
+    """Compare sanitized evaluation manifests without exposing their values.
+
+    Historical JSONL files and older manifests have no contract, so absence is
+    deliberately reported as unknown rather than inferred from the records.
+    """
+    if not isinstance(current, dict) or not current or not isinstance(previous, dict) or not previous:
+        return {"status": "unknown", "changed_fields": []}
+
+    changed_fields: list[str] = []
+
+    def visit(current_value: object, previous_value: object, path: str) -> None:
+        if isinstance(current_value, dict) and isinstance(previous_value, dict):
+            for key in sorted(set(current_value) | set(previous_value)):
+                child_path = f"{path}.{key}" if path else str(key)
+                if key not in current_value or key not in previous_value:
+                    changed_fields.append(child_path)
+                else:
+                    visit(current_value[key], previous_value[key], child_path)
+            return
+        if current_value != previous_value:
+            changed_fields.append(path)
+
+    visit(current, previous, "")
+    return {
+        "status": "compatible" if not changed_fields else "incompatible",
+        "changed_fields": changed_fields,
     }
 
 
@@ -362,20 +450,22 @@ def _pct_count_ci(rate: float | None, count: int, denominator: int, interval: li
     return f"{base}<small>רווח סמך 95%: {interval[0]:.1%}–{interval[1]:.1%}</small>"
 
 
-def _comparison_block(comparison: dict | None) -> str:
+def _comparison_block(comparison: dict | None, show_correct_answer_metrics: bool = True) -> str:
     if not comparison:
         return ""
     metric_rows = []
-    for metric in comparison["metrics"].values():
+    for key, metric in comparison["metrics"].items():
+        if not show_correct_answer_metrics and key == "factual_answer_success_rate":
+            continue
         delta = metric["delta"]
         delta_text = (
-            "לא בר השוואה" if not comparison["aggregate_comparable"] else
+            "לא בר השוואה" if not metric.get("comparable", comparison["aggregate_comparable"]) else
             "לא זמין" if delta is None else f"{delta:+.1%}"
         )
         delta_class = "neutral" if metric["favorable"] is None else ("good" if metric["favorable"] else "bad")
         metric_rows.append(
-            f'<tr><td>{_esc(metric["label"])}</td><td>{_pct(metric["previous"])}</td>'
-            f'<td>{_pct(metric["current"])}</td><td class="delta {delta_class}">{delta_text}</td></tr>'
+            f'<tr><td>{_esc(metric["label"])}</td><td>{_pct(metric["previous"])} ({metric.get("previous_numerator", "?")}/{metric.get("previous_denominator", "?")})</td>'
+            f'<td>{_pct(metric["current"])} ({metric.get("current_numerator", "?")}/{metric.get("current_denominator", "?")})</td><td class="delta {delta_class}">{delta_text}</td></tr>'
         )
     matched = comparison["matched_outcomes"]
     topic_rows = "".join(
@@ -403,10 +493,25 @@ def _comparison_block(comparison: dict | None) -> str:
         '<div class="note warn">לא נמצאו שאלות זהות להשוואה ישירה. ערכי המדדים הכוללים עדיין מוצגים, '
         'אך שינוייהם אינם מוצגים אלא אם מערכי הבדיקה זהים.</div>'
     )
+    contract_status = comparison.get("evaluation_contract_compatibility", "unknown")
+    changed_contract_fields = comparison.get("evaluation_contract_changed_fields", [])
+    if contract_status == "compatible":
+        contract_note = '<div class="note">חוזי ההערכה המתועדים בשתי הריצות זהים.</div>'
+    elif contract_status == "incompatible":
+        fields = ", ".join(_esc(field) for field in changed_contract_fields)
+        contract_note = (
+            '<div class="note warn">חוזי ההערכה המתועדים שונים. יש לפרש את שינויי הביצועים '
+            f'ביחס לשינויי החוזה. שדות שהשתנו: {fields}.</div>'
+        )
+    else:
+        contract_note = (
+            '<div class="note">תאימות חוזה ההערכה אינה ידועה, משום שלא קיים חוזה מתועד '
+            'עבור אחת הריצות או שתיהן.</div>'
+        )
     return f'''<div class="panel comparison"><h2>השוואה לריצה הקודמת</h2>
 <div class="note">השוואת שאלות מותאמות דורשת אותו מזהה ואת כל שדות המשימה המהותיים, כולל נוסח, תשובת ייחוס, טענות, ראיות, סוג, צורה, נושא והתנהגות מצופה. הצלחה ישירה פירושה תשובה נכונה, הימנעות נכונה או הבהרה נכונה בהתאם למשימה.</div>
 <div class="cards"><div class="card">שאלות מותאמות<b>{comparison["matched_questions"]}</b><small>{comparison["comparable_questions"]} ניתנות להשוואת הצלחה</small></div><div class="card">השתפרו<b>{matched["improved"]}</b></div><div class="card">נסוגו<b>{matched["regressed"]}</b></div><div class="card">שיפור נטו<b>{matched["net_improvement"]:+d}</b><small>השתפרו פחות נסוגו</small></div><div class="card">חדשות / הוסרו<b>{comparison["current_only"]} / {comparison["previous_only"]}</b></div></div>
-{conflict_note}{duplicate_note}{no_match_note}{aggregate_note}
+{contract_note}{conflict_note}{duplicate_note}{no_match_note}{aggregate_note}
 <h3>שינוי במדדים הכוללים</h3><table><thead><tr><th>מדד</th><th>קודם</th><th>עכשיו</th><th>שינוי</th></tr></thead><tbody>{''.join(metric_rows)}</tbody></table>
 {('<h3>שינוי בשאלות מותאמות לפי נושא</h3><table><thead><tr><th>נושא</th><th>מותאמות</th><th>השתפרו</th><th>נסוגו</th><th>הצלחה נשמרה</th><th>כשל נשאר</th></tr></thead><tbody>' + topic_rows + '</tbody></table>') if topic_rows else ''}</div>'''
 
@@ -468,10 +573,15 @@ def write_report(
     *,
     show_correct_answer_metrics: bool = True,
     previous_records: list[EvaluationRecord] | None = None,
+    current_contract: dict | None = None,
+    previous_contract: dict | None = None,
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = build_summary(records)
-    comparison = build_comparison(records, previous_records) if previous_records else None
+    comparison = build_comparison(
+        records, previous_records,
+        current_contract=current_contract, previous_contract=previous_contract,
+    ) if previous_records else None
     if comparison:
         summary["comparison"] = comparison
     json_path = output_dir / "evaluation_summary.json"
@@ -504,7 +614,7 @@ def write_report(
     topic_rows = "".join(
         f'<tr><td>{_esc(topic)}{sample_warning(data)}</td><td>{data["total"]}</td>'
         f'{correct_topic_cell(data)}'
-        f'<td>{_pct_count_ci(data["useful_rate"], data["useful"], data["evaluable"], data["useful_interval_95"])}</td>'
+        f'<td>{_pct_count_ci(data["useful_rate"], data["useful"], data["answerable_questions"], data["useful_interval_95"])}</td>'
         f'<td>{_pct_count_ci(data["risky_rate"], data["risky"], data["evaluable"], data["risky_interval_95"])}</td>'
         f'<td>{_pct_count_ci(data["good_retrieval_rate"], data["good_retrieval"], data["retrieval_evaluated"], data["good_retrieval_interval_95"])}</td></tr>'
         for topic, data in summary["by_topic"].items()
@@ -522,7 +632,7 @@ def write_report(
     outcome_options = "".join(f'<option value="{o.value}">{_esc(OUTCOME_HEBREW[o])}</option>' for o in Outcome if o.value in summary["outcomes"])
     topic_options = "".join(f'<option value="{_esc(topic)}">{_esc(topic)}</option>' for topic in summary["by_topic"])
     insights_html = _insights_block(insights)
-    comparison_html = _comparison_block(comparison)
+    comparison_html = _comparison_block(comparison, show_correct_answer_metrics)
     correct_answer_card = (
         f'<div class="card">שיעור תשובות נכונות<b>{_pct(summary["correct_answer_rate_on_answerable"])}</b>'
         '<small>מתוך שאלות שניתנות למענה</small></div>'
@@ -536,10 +646,10 @@ def write_report(
     document = f'''<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>דוח הערכת צ׳אטבוט</title>
 <style>:root{{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px Arial,"Noto Sans Hebrew",sans-serif}}main{{max-width:1500px;margin:auto;padding:28px}}h1{{margin:0 0 4px}}h2{{margin-top:0}}.subtitle{{color:var(--muted);margin-bottom:24px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}}.card,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px #1e293b0a}}.card{{padding:18px}}.card b{{display:block;font-size:25px;margin-top:7px}}.card small,small{{color:var(--muted);display:block;margin-top:3px}}.sample-warning{{color:#b45309;font-weight:bold}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:16px}}.panel{{padding:20px;overflow:auto;margin-bottom:16px}}.comparison{{border-top:4px solid #2563eb}}.delta{{font-weight:bold;direction:ltr;text-align:right}}.delta.good{{color:#15803d}}.delta.bad{{color:#b91c1c}}.delta.neutral{{color:var(--muted)}}.bar-row,.score-row{{display:grid;grid-template-columns:minmax(145px,1.3fr) 3fr 45px 48px;gap:9px;align-items:center;margin:10px 0}}.score-row{{grid-template-columns:minmax(170px,1.3fr) 3fr 68px minmax(95px,auto)}}.track{{height:12px;background:#e8edf4;border-radius:10px;overflow:hidden}}.track i{{height:100%;display:block;border-radius:10px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}}th{{background:#eef3f8;position:sticky;top:0}}.note{{background:#f8fafc;border-right:4px solid #2563eb;padding:12px 14px;margin:12px 0;border-radius:6px;line-height:1.55}}.insights{{margin-bottom:16px;border-top:4px solid #7c3aed}}.insights .lead{{font-size:17px}}.insight-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}}.insight{{border:1px solid var(--line);border-radius:10px;padding:15px;background:#fcfcff}}.insight h3{{margin:12px 0 6px}}.filters{{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}}input,select{{border:1px solid #bcc8d8;border-radius:8px;padding:10px;background:white;min-width:190px}}input{{flex:1}}.result{{background:white;border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}}summary{{display:grid;grid-template-columns:90px 150px 1fr auto;gap:10px;align-items:center;padding:13px;cursor:pointer}}summary:hover{{background:#f8fafc}}.id,.topic{{color:var(--muted)}}.badge{{color:white;padding:5px 9px;border-radius:999px;font-size:12px;white-space:nowrap}}.detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}}section{{padding:8px 16px}}h4{{margin:8px 0;color:#334155}}p,pre{{white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}}pre{{max-height:260px;overflow:auto;background:#f8fafc;padding:12px;border-radius:8px;font:13px Arial}}.scores{{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}}.scores span{{background:#eef4ff;padding:7px;border-radius:7px}}.warn{{color:#b91c1c}}.hidden{{display:none}}@media(max-width:700px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}summary{{grid-template-columns:1fr}}.detail-grid{{grid-template-columns:1fr}}.score-row{{grid-template-columns:1fr}}}}</style></head>
 <body><main><h1>דוח הערכת ביצועי הצ׳אטבוט</h1><div class="subtitle">ניתוח איכות התשובות, האחזור והכשלים לאורך צינור ה-RAG</div>
-<div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מענה נכון, חלקי מועיל או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">סיכון למידע מטעה<b>{_pct(summary['risky_misinformation_rate'])}</b><small>הזיות, מענה במקום הימנעות או ללא בירור נדרש</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>{summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע נמצא אך התשובה לא הייתה נכונה</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']} ({_pct(summary['infrastructure_error_rate'])})</b><small>מתוך כלל השאלות; לא נכללו במדדי האיכות</small></div></div>
+<div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מענה נכון, חלקי מועיל או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">טענות שגויות או לא מבוססות<b>{_pct(summary["factual_risk_rate"])}</b><small>{summary["factual_risk_count"]}/{summary["factual_risk_denominator"]} תשובות עם ציוני שופט; בכל סוגי המשימות</small></div><div class="card">כשל במדיניות המענה<b>{_pct(summary["behavior_failure_rate"])}</b><small>{summary["behavior_failure_count"]}/{summary["behavior_failure_denominator"]} תשובות שנבדקו</small></div><div class="card">סיכון למידע מטעה<b>{_pct(summary['risky_misinformation_rate'])}</b><small>הזיות, מענה במקום הימנעות או ללא בירור נדרש</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>{summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע נמצא אך התשובה לא הייתה נכונה</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']} ({_pct(summary['infrastructure_error_rate'])})</b><small>מתוך כלל השאלות; לא נכללו במדדי האיכות</small></div></div>
 {comparison_html}
 <div class="grid"><div class="panel"><h2>התפלגות תוצאות</h2>{outcome_bars}<div class="note"><b>תשובה שימושית</b> היא תשובה נכונה, תשובה חלקית שיש בה מידע נכון או שאלת הבהרה מתאימה כשחסר פרט מהותי. <b>סיכון למידע מטעה</b> כולל הזיה שנשמעת סבירה, מענה לשאלה שהיה נכון להימנע ממנה או תשובה החלטית כשנדרש תחילה בירור.</div></div><div class="panel"><h2>אבחון צינור האחזור והיצירה</h2>{pipeline_bars}<div class="note"><b>אחזור טוב</b> פירושו שכל הפרטים הנדרשים נמצאו, ללא מקטע שסותר את תשובת הייחוס. <b>אחזור חלש</b> פירושו שחסר לפחות פרט נדרש אחד או שנמצא מקטע סותר. אחזור טוב עם תשובה לא תקינה מצביע על כשל בשלב יצירת התשובה.</div></div></div>
-<div class="grid"><div class="panel"><h2>מדדי מידע בתשובות</h2>{answer_scores}<div class="note"><b>כיסוי</b> הוא שיעור הפרטים הנדרשים שנענו נכון. <b>דיוק בפרטים שנענו</b> בודק כמה מהפרטים שהצ׳אטבוט ניסה לענות עליהם היו נכונים. בנוסף נמצאו בסך הכול: {answer_metrics['false_claims_total']} טענות שגויות, {answer_metrics['unsupported_claims_total']} טענות לא מבוססות ו-{answer_metrics['extraneous_claims_total']} טענות עודפות.</div></div><div class="panel"><h2>מדדי מידע באחזור</h2>{retrieval_scores}<div class="note"><b>כיסוי המידע</b> הוא מספר הפרטים הנדרשים שנמצאו במקטעים. <b>שיעור מקטעים רלוונטיים</b> מראה כמה מהמקטעים תרמו למענה. נמצאו {retrieval_metrics['irrelevant_chunks_total']} מקטעים לא רלוונטיים ו-{retrieval_metrics['contradictory_chunks_total']} מקטעים סותרים. המדדים מחושבים רק עבור שאלות שבהן סופקו מקטעים.</div></div></div>
+<div class="grid"><div class="panel"><h2>מדדי מידע בתשובות</h2>{answer_scores}<div class="note"><b>כיסוי</b> הוא שיעור הפרטים הנדרשים שנענו נכון. <b>דיוק בפרטים שנענו</b> בודק כמה מהפרטים שהצ׳אטבוט ניסה לענות עליהם היו נכונים. בנוסף נמצאו בסך הכול: {answer_metrics['false_claims_total']} טענות שגויות, {answer_metrics['unsupported_claims_total']} טענות לא מבוססות ו-{answer_metrics['extraneous_claims_total']} טענות עודפות.</div></div><div class="panel"><h2>מדדי מידע באחזור</h2>{retrieval_scores}<div class="note"><b>כיסוי המידע</b> הוא מספר הפרטים הנדרשים שנמצאו במקטעים. <b>שיעור מקטעים רלוונטיים</b> מראה כמה מהמקטעים תרמו למענה. נמצאו {retrieval_metrics['irrelevant_chunks_total']} מקטעים לא רלוונטיים ו-{retrieval_metrics['contradictory_chunks_total']} מקטעים סותרים. המדדים מחושבים רק עבור שאלות שבהן סופקו מקטעים. היעדר מקטעים הוא היעדר נתוני אחזור, ואינו הוכחה לכשל אחזור.</div></div></div>
 {paired_panel}
 <div class="panel"><h2>ביצועים לפי נושא</h2><div class="note">כל מדדי הביצוע מוצגים בפורמט <b>אחוז (מונה/מכנה)</b> עם רווח סמך וילסון של 95%. נושאים עם פחות מ-{summary['minimum_topic_sample']} תוצאות מסומנים כמדגם קטן. מדד התשובות הנכונות כולל רק משימות שבהן נדרש מענה עובדתי; הבהרה והימנעות נמדדות בנפרד.</div><table><thead><tr><th>נושא</th><th>שאלות</th>{correct_topic_header}<th>תשובות שימושיות</th><th>סיכון למידע מטעה</th><th>אחזור טוב</th></tr></thead><tbody>{topic_rows}</tbody></table></div>
 {insights_html}

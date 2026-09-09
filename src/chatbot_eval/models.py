@@ -198,6 +198,21 @@ class EvaluationInsights(BaseModel):
     methodology_note: str
 
 
+class PromptRevision(BaseModel):
+    observed_failure: str = Field(min_length=1)
+    included_evidence_question_ids: list[str] = Field(default_factory=list)
+    changed_rule: str = Field(min_length=1)
+    expected_observable_behavior: str = Field(min_length=1)
+    non_prompt_limitation: str = Field(min_length=1)
+
+
+class PromptRegressionCase(BaseModel):
+    question: str = Field(min_length=1)
+    miniature_context: str = Field(min_length=1)
+    expected_behavior: ExpectedBehavior
+    prohibited_content: list[str] = Field(min_length=1)
+
+
 class PromptPackage(BaseModel):
     system_prompt_hebrew: str = Field(min_length=40)
     corpus_scope_summary: list[str] = Field(min_length=1)
@@ -207,6 +222,13 @@ class PromptPackage(BaseModel):
     suggested_test_questions: list[str] = Field(min_length=1)
     revision_summary: list[str] = Field(default_factory=list)
     revision_evidence_question_ids: list[str] = Field(default_factory=list)
+    suggested_regression_questions: list[str] = Field(default_factory=list)
+    revision_mappings: list[PromptRevision] = Field(default_factory=list)
+    regression_cases: list[PromptRegressionCase] = Field(default_factory=list)
+    instruction_profile: Literal["compact", "guided"] = "guided"
+    answer_policy: Literal["balanced", "conservative"] = "balanced"
+    policy_version: str = ""
+    evidence_coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvaluationRecord(BaseModel):

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import uuid
+from importlib.metadata import version, PackageNotFoundError
 import os
 import platform
 import subprocess
@@ -79,6 +82,37 @@ def atomic_write_text(path: Path, content: str) -> None:
             Path(temporary_name).unlink()
 
 
+def _journal_items(path: Path):
+    """Repair only an undecodable final unterminated JSON line."""
+    content = path.read_text(encoding="utf-8")
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if index == len(lines) and not line.endswith("\n"):
+                atomic_write_text(path, "".join(lines[:index - 1]))
+                logging.getLogger(__name__).warning("Repaired torn checkpoint tail: %s", path)
+                return
+            raise ValueError(f"Invalid checkpoint JSON at line {index}: {exc}") from exc
+        yield index, item
+
+
+def _append_journal(path: Path, item: dict[str, Any]) -> None:
+    # A valid final JSON object need not have had a newline before this append.
+    with path.open("a+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell():
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+        handle.write((json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 class EvaluationCheckpoint:
     def __init__(
         self, path: Path, fingerprints: dict[str, str], *, resume: bool, run_signature: str = "",
@@ -95,22 +129,12 @@ class EvaluationCheckpoint:
         if not self.path.exists():
             return {}
         completed: dict[str, EvaluationRecord] = {}
-        content = self.path.read_text(encoding="utf-8")
-        lines = content.splitlines()
-        valid_lines: list[str] = []
-        truncated_tail = False
-        for line_number, line in enumerate(lines, 1):
-            if not line.strip():
-                continue
+        for line_number, item in _journal_items(self.path):
             try:
-                item = json.loads(line)
                 record = EvaluationRecord.model_validate(item["record"])
-                fingerprint = str(item["input_fingerprint"])
-                saved_signature = str(item.get("run_signature", ""))
-            except Exception as exc:
-                if line_number == len(lines) and not content.endswith("\n"):
-                    truncated_tail = True
-                    break
+                fingerprint = item["input_fingerprint"]
+                saved_signature = item.get("run_signature", "")
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 raise ValueError(f"Invalid checkpoint entry at line {line_number}: {exc}") from exc
             identifier = record.question.id
             if identifier not in self.fingerprints:
@@ -122,9 +146,6 @@ class EvaluationCheckpoint:
                     "Checkpoint evaluation contract mismatch; the model, prompt, endpoint, or relevant settings changed"
                 )
             completed[identifier] = record
-            valid_lines.append(line)
-        if truncated_tail:
-            atomic_write_text(self.path, "".join(line + "\n" for line in valid_lines))
         return completed
 
     def append(self, record: EvaluationRecord) -> None:
@@ -135,10 +156,7 @@ class EvaluationCheckpoint:
             "saved_at": _now(),
         }
         with self._write_lock:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            _append_journal(self.path, item)
 
 
 class StructuredCallCheckpoint:
@@ -157,26 +175,15 @@ class StructuredCallCheckpoint:
     def _load(self) -> None:
         if not self.path.exists():
             return
-        content = self.path.read_text(encoding="utf-8")
-        lines = content.splitlines()
-        valid_lines: list[str] = []
-        truncated_tail = False
-        for index, line in enumerate(lines, 1):
-            if not line.strip():
-                continue
+        for index, item in _journal_items(self.path):
             try:
-                item = json.loads(line)
                 if item["signature"] != self.signature:
                     raise ValueError("generation checkpoint contract mismatch")
-                self._responses.setdefault(str(item["call_key"]), []).append(item["response"])
-                valid_lines.append(line)
-            except Exception as exc:
-                if index == len(lines) and not content.endswith("\n"):
-                    truncated_tail = True
-                    break
+                if not isinstance(item["call_key"], str) or not isinstance(item["response"], dict):
+                    raise ValueError("call_key must be a string and response must be an object")
+                self._responses.setdefault(item["call_key"], []).append(item["response"])
+            except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError(f"Invalid generation checkpoint entry at line {index}: {exc}") from exc
-        if truncated_tail:
-            atomic_write_text(self.path, "".join(line + "\n" for line in valid_lines))
 
     def generate(self, prompt: str, schema, model: str):
         call_key = _json_hash({
@@ -196,10 +203,7 @@ class StructuredCallCheckpoint:
             "response": response.model_dump(mode="json"),
             "saved_at": _now(),
         }
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        _append_journal(self.path, item)
         self._responses.setdefault(call_key, []).append(item["response"])
         return response
 
@@ -231,6 +235,16 @@ def _implementation_hash() -> str:
     return _json_hash(values)
 
 
+def _dependency_versions() -> dict[str, str]:
+    installed = {}
+    for package in ("google-genai", "httpx", "requests", "pydantic"):
+        try:
+            installed[package] = version(package)
+        except PackageNotFoundError:
+            pass
+    return installed
+
+
 class RunManifest:
     def __init__(
         self,
@@ -244,9 +258,11 @@ class RunManifest:
         safe_settings = asdict(settings)
         safe_settings.pop("api_key", None)
         safe_settings.pop("apigee_api_key", None)
-        self.path = output_dir / "run_manifest.json"
+        self.path = output_dir / ("report_manifest.json" if command == "report" else "run_manifest.json")
         self.data: dict[str, Any] = {
             "schema_version": 1,
+            "run_id": str(uuid.uuid4()),
+            "dependency_versions": _dependency_versions(),
             "module_version": __version__,
             "command": command,
             "status": "running",
@@ -275,6 +291,6 @@ class RunManifest:
         self.data["finished_at"] = _now()
         if exc is not None:
             self.data["status"] = "failed"
-            self.data["error"] = {"type": type(exc).__name__, "message": str(exc)[:1000]}
+            self.data["error"] = {"type": type(exc).__name__, "message": "Run failed; inspect local logs for diagnostic context"}
         atomic_write_text(self.path, json.dumps(self.data, ensure_ascii=False, indent=2))
         return False

@@ -2,20 +2,53 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator, TextIO
 
 from .labels import ANSWER_SCOPE_HEBREW, EXPECTED_BEHAVIOR_HEBREW, INCORRECT_TYPE_HEBREW, OUTCOME_HEBREW, QUESTION_FORM_HEBREW
-from .models import EvaluationRecord, EvidenceQuote, ExpectedBehavior, QuestionForm, QuestionType, SilverQuestion
-from .validation import validate_question_set
+from .models import EvaluationRecord, EvidenceQuote, ExpectedBehavior, QuestionForm, QuestionType, SilverQuestion, SourceRef
+from .validation import normalize_question_payload, validate_question_set
 
 
 QUESTION_COLUMNS = [
     "id", "topic", "question", "expected_answer", "answerable", "difficulty", "question_type",
     "question_form", "expected_behavior", "parent_question_id",
     "rationale", "reference_claims", "source_ids", "source_files", "source_locations", "source_excerpts", "supporting_quotes",
-    "review_status", "reviewer_notes",
+    "review_status", "reviewer_notes", "sources_json", "csv_escape_version",
 ]
+
+
+@contextmanager
+def _staged_text_file(
+    path: Path, *, encoding: str, newline: str | None = None,
+) -> Iterator[tuple[TextIO, Path]]:
+    """Write and fsync a same-directory temporary file without publishing it."""
+    temporary_path: Path | None = None
+    handle: TextIO | None = None
+    try:
+        handle = tempfile.NamedTemporaryFile(
+            "w",
+            encoding=encoding,
+            newline=newline,
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        )
+        temporary_path = Path(handle.name)
+        yield handle, temporary_path
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        handle = None
+    finally:
+        if handle is not None:
+            handle.close()
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _safe_csv_value(value):
@@ -26,7 +59,8 @@ def _safe_csv_value(value):
 
 
 def _safe_csv_row(row: dict) -> dict:
-    return {key: _safe_csv_value(value) for key, value in row.items()}
+    return {key: ("\'" + value if row.get("csv_escape_version") == "2" and isinstance(value, str) and value.startswith("\'")
+                  else _safe_csv_value(value)) for key, value in row.items()}
 
 
 def _restore_csv_value(value: str | None) -> str:
@@ -39,11 +73,16 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
     output_dir.mkdir(parents=True, exist_ok=True)
     items = validate_question_set(list(questions))
     csv_path, jsonl_path = output_dir / "silver_questions.csv", output_dir / "silver_questions.jsonl"
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=QUESTION_COLUMNS)
+    with (
+        _staged_text_file(csv_path, encoding="utf-8-sig", newline="") as (csv_handle, csv_temporary),
+        _staged_text_file(jsonl_path, encoding="utf-8") as (jsonl_handle, jsonl_temporary),
+    ):
+        writer = csv.DictWriter(csv_handle, fieldnames=QUESTION_COLUMNS)
         writer.writeheader()
         for q in items:
             writer.writerow(_safe_csv_row({
+                "sources_json": json.dumps([source.model_dump() for source in q.sources], ensure_ascii=False),
+                "csv_escape_version": "2",
                 "id": q.id, "topic": q.topic, "question": q.question,
                 "expected_answer": q.expected_answer, "answerable": str(q.answerable).lower(),
                 "difficulty": q.difficulty, "question_type": q.question_type.value, "rationale": q.rationale,
@@ -59,10 +98,47 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
                 ),
                 "review_status": q.review_status, "reviewer_notes": q.reviewer_notes,
             }))
-    with jsonl_path.open("w", encoding="utf-8") as handle:
         for q in items:
-            handle.write(q.model_dump_json() + "\n")
+            jsonl_handle.write(q.model_dump_json() + "\n")
+        csv_handle.flush()
+        os.fsync(csv_handle.fileno())
+        jsonl_handle.flush()
+        os.fsync(jsonl_handle.fileno())
+        os.replace(csv_temporary, csv_path)
+        os.replace(jsonl_temporary, jsonl_path)
     return csv_path, jsonl_path
+
+
+def csv_question_row(row: dict) -> dict:
+    if None in row or any(value is None for value in row.values()):
+        raise ValueError("row has a different number of values than headers")
+    version = row.get("csv_escape_version")
+    return {key: (value[1:] if version == "2" and value.startswith("'") else value)
+            if version == "2" else _restore_csv_value(value) for key, value in row.items()}
+
+
+def question_sources(row: dict) -> list[SourceRef]:
+    fields = {"source_ids": "source_id", "source_files": "file", "source_locations": "location", "source_excerpts": "excerpt"}
+    if row.get("sources_json") not in (None, ""):
+        raw = row["sources_json"]
+        try:
+            raw = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(raw, list):
+                raise ValueError("sources_json must be a list")
+            sources = [SourceRef.model_validate(item) for item in raw]
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Invalid sources_json") from exc
+        for column, attribute in fields.items():
+            if column in row and row[column] != " | ".join(getattr(source, attribute) for source in sources):
+                raise ValueError(f"{column} conflicts with canonical sources_json; edit both representations")
+        return sources
+    columns = {key: row.get(key, "").split(" | ") if row.get(key) else [] for key in fields}
+    lengths = {len(values) for values in columns.values()}
+    if len(lengths) > 1:
+        logging.getLogger(__name__).warning("Legacy source column lengths differ; use original JSONL for lossless provenance recovery")
+    count = max(lengths, default=0)
+    return [SourceRef(**{attribute: columns[column][i] if i < len(columns[column]) else ""
+                         for column, attribute in fields.items()}) for i in range(count)]
 
 
 def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuestion]:
@@ -70,48 +146,30 @@ def read_questions(path: Path, approved_only: bool = False) -> list[SilverQuesti
     if suffix not in {".csv", ".jsonl"}:
         raise ValueError("Silver question files must be .csv or .jsonl")
     if suffix == ".jsonl":
-        items = [SilverQuestion.model_validate_json(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        rows = [(number, json.loads(line)) for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if line.strip()]
     else:
         with path.open(encoding="utf-8-sig", newline="") as handle:
-            items = []
-            for row in csv.DictReader(handle):
-                row = {key: _restore_csv_value(value) for key, value in row.items()}
-                sources = []
-                source_ids = row.get("source_ids", "").split(" | ") if row.get("source_ids") else []
-                files = row.get("source_files", "").split(" | ") if row.get("source_files") else []
-                locations = row.get("source_locations", "").split(" | ") if row.get("source_locations") else []
-                excerpts = row.get("source_excerpts", "").split(" | ") if row.get("source_excerpts") else []
-                from .models import SourceRef
-                for index, file in enumerate(files):
-                    sources.append(SourceRef(
-                        source_id=source_ids[index] if index < len(source_ids) else "",
-                        file=file, location=locations[index] if index < len(locations) else "",
-                        excerpt=excerpts[index] if index < len(excerpts) else "",
-                    ))
-                raw_claims = row.get("reference_claims", "").strip()
-                reference_claims = json.loads(raw_claims) if raw_claims else []
-                if not isinstance(reference_claims, list) or not all(isinstance(claim, str) for claim in reference_claims):
-                    raise ValueError(f"Question {row.get('id', '')!r} has invalid reference_claims JSON")
-                raw_quotes = row.get("supporting_quotes", "").strip()
-                supporting_quotes = [EvidenceQuote.model_validate(item) for item in json.loads(raw_quotes)] if raw_quotes else []
-                items.append(SilverQuestion(
-                    id=row["id"], topic=row["topic"], question=row["question"],
-                    expected_answer=row.get("expected_answer", ""),
-                    answerable=row.get("answerable", "true").lower() in {"true", "1", "yes"},
-                    difficulty=row.get("difficulty", "medium"),
-                    question_type=QuestionType(row.get("question_type") or QuestionType.BASIC_KNOWLEDGE.value),
-                    question_form=QuestionForm(row.get("question_form") or QuestionForm.CANONICAL.value),
-                    expected_behavior=ExpectedBehavior(
-                        row.get("expected_behavior")
-                        or (ExpectedBehavior.ANSWER.value if row.get("answerable", "true").lower() in {"true", "1", "yes"} else ExpectedBehavior.ABSTAIN.value)
-                    ),
-                    parent_question_id=row.get("parent_question_id", ""),
-                    reference_claims=reference_claims,
-                    rationale=row.get("rationale", ""), supporting_quotes=supporting_quotes,
-                    sources=sources, review_status=row.get("review_status", "pending"),
-                    reviewer_notes=row.get("reviewer_notes", ""),
-                ))
+            reader = csv.DictReader(handle)
+            headers = reader.fieldnames or []
+            if not headers or any(not header.strip() for header in headers) or len(set(headers)) != len(headers):
+                raise ValueError("Blank or duplicate CSV headers are not allowed")
+            rows = list(enumerate(reader, 2))
+    items = []
+    for number, raw in rows:
+        try:
+            if not isinstance(raw, dict):
+                raise ValueError("question must be an object")
+            row = csv_question_row(raw) if suffix == ".csv" else raw
+            if suffix == ".csv":
+                row["sources"] = question_sources(row)
+            question = SilverQuestion.model_validate(normalize_question_payload(row))
+            validate_question_set([question])
+            items.append(question)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"row {number}: {exc}") from exc
     selected = [q for q in items if not approved_only or q.review_status.lower() == "approved"]
+    if not selected:
+        raise ValueError("No usable questions remain after import and filtering")
     return validate_question_set(selected)
 
 
@@ -126,8 +184,11 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
         "מספר מקטעים", "מקטעים רלוונטיים", "מקטעים סותרים", "הסבר הבדיקה", "מידע חסר או שגוי",
         "הסבר האחזור", "זמן תגובה במילישניות", "שגיאת מערכת", "פירוט טענות הייחוס",
     ]
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+    with (
+        _staged_text_file(csv_path, encoding="utf-8-sig", newline="") as (csv_handle, csv_temporary),
+        _staged_text_file(jsonl_path, encoding="utf-8") as (jsonl_handle, jsonl_temporary),
+    ):
+        writer = csv.DictWriter(csv_handle, fieldnames=fields)
         writer.writeheader()
         for record in records:
             scores = record.scores
@@ -161,7 +222,12 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
                     ensure_ascii=False,
                 ),
             }))
-    with jsonl_path.open("w", encoding="utf-8") as handle:
         for record in records:
-            handle.write(record.model_dump_json() + "\n")
+            jsonl_handle.write(record.model_dump_json() + "\n")
+        csv_handle.flush()
+        os.fsync(csv_handle.fileno())
+        jsonl_handle.flush()
+        os.fsync(jsonl_handle.fileno())
+        os.replace(csv_temporary, csv_path)
+        os.replace(jsonl_temporary, jsonl_path)
     return csv_path, jsonl_path

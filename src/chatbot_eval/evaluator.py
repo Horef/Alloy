@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
-import re
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +11,8 @@ from .adapters import ChatbotAdapter
 from .llm import StructuredLLM
 from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
 from .progress import track
+from .response_errors import placeholder_error
+from .validation import validate_question_set
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,12 @@ def _bounded_text(value: str, maximum: int) -> tuple[str, int]:
     if len(value) <= maximum:
         return value, 0
     marker = "\n\n[... content omitted by Alloy input limit ...]\n\n"
-    available = max(0, maximum - len(marker))
+    if maximum <= len(marker):
+        return value[:maximum], len(value) - maximum
+    available = maximum - len(marker)
     beginning = (available * 2) // 3
-    bounded = value[:beginning] + marker + value[-(available - beginning):]
+    tail = available - beginning
+    bounded = value[:beginning] + marker + (value[-tail:] if tail else "")
     return bounded, len(value) - len(bounded)
 
 
@@ -55,8 +59,16 @@ For RETRIEVED CONTEXT:
    undelimited block, count it as one. If context is empty, use zero for all retrieval counts.
 9. retrieved_chunks_relevant: chunks containing information useful for this question.
 10. retrieved_chunks_contradictory: chunks that materially contradict the reference answer.
-11. response_is_clarification: true only when the candidate asks a focused follow-up needed to
+11. response_is_clarification: true only when the whole response is a focused follow-up needed to
     disambiguate the user's situation before giving a potentially incorrect definitive answer.
+    It may give brief neutral context for the question, but it must not also claim to give the
+    requested definitive answer.
+
+12. response_is_abstention: true only for a whole-response refusal or admission that the answer
+    cannot be determined. A supported partial answer, quoted refusal, or statement that one attachment
+    is unavailable is not whole-response abstention. Never set both response flags true.
+    Count false/unsupported assertions even when the candidate also refuses or asks a question.
+    Absent retrieved context means unavailable telemetry, not proof of retrieval failure.
 
 Counts must obey: correct <= addressed <= required; retrieved points <= required; relevant and
 contradictory chunks <= total chunks. Do not count wording variants of the same claim twice.
@@ -97,30 +109,29 @@ RETRIEVED CONTEXT (may be empty):
 {retrieved}
 """
 
-ABSTENTION_PATTERNS = [
-    r"\bi (?:do not|don't) know\b", r"\bi (?:do not|don't) have (?:enough )?information\b",
-    r"\bnot (?:available|provided|found)\b", r"\bcannot (?:answer|determine|find)\b",
-    r"\binsufficient (?:information|context)\b", r"\bאין (?:לי )?מספיק מידע\b", r"\bלא יודע\b",
-]
-
-
-def looks_like_abstention(answer: str) -> bool:
-    normalized = " ".join(answer.casefold().split())
-    return not normalized or any(re.search(pattern, normalized) for pattern in ABSTENTION_PATTERNS)
-
-
 def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
+    """Classify factual safety first, then the response behavior required by the task.
+
+    Whole-response flags only earn success for their matching task. On an ANSWER task, a
+    clarification defers the requested answer: preserve partial credit when the response also
+    contains a correct reference point, otherwise classify it like an incorrect abstention.
+    This deliberately prevents a contradictory judge result (all claims correct plus a
+    clarification flag) from becoming ``CORRECT_ANSWER``.
+    """
+    if scores.response_is_abstention and scores.response_is_clarification:
+        raise ValueError("Judge flags conflict: whole-response abstention and clarification cannot both be true")
+    if scores.answer_false_claims or scores.answer_unsupported_claims or scores.incorrect_type == "hallucination":
+        return Outcome.MISLEADING_HALLUCINATION
     if question.expected_behavior == ExpectedBehavior.CLARIFY:
         return Outcome.CORRECT_CLARIFICATION if scores.response_is_clarification else Outcome.MISSING_CLARIFICATION
-    abstained = scores.response_is_abstention
-    if question.answerable and abstained:
+    if question.expected_behavior == ExpectedBehavior.ANSWER and scores.response_is_abstention:
         return Outcome.INCORRECT_ABSTENTION
-    if not question.answerable and abstained:
+    if question.expected_behavior == ExpectedBehavior.ABSTAIN and scores.response_is_abstention:
         return Outcome.CORRECT_ABSTENTION
-    if not question.answerable:
+    if question.expected_behavior == ExpectedBehavior.ABSTAIN:
         return Outcome.SHOULD_HAVE_ABSTAINED
-    if scores.incorrect_type == "hallucination":
-        return Outcome.MISLEADING_HALLUCINATION
+    if scores.response_is_clarification:
+        return Outcome.PARTIAL_TOO_LITTLE if scores.answer_points_correct > 0 else Outcome.INCORRECT_ABSTENTION
     if scores.incorrect_type == "unrelated" and scores.answer_points_correct == 0:
         return Outcome.UNRELATED_ANSWER
     fully_correct = (
@@ -171,6 +182,8 @@ class Evaluator:
         progress_enabled: bool = False, *, max_answer_chars: int = 20_000,
         max_context_chars: int = 60_000, max_concurrency: int = 1,
     ):
+        if min(max_answer_chars, max_context_chars, max_concurrency) < 1:
+            raise ValueError("Judge input limits and max_concurrency must be positive")
         self.chatbot, self.judge, self.judge_model = chatbot, judge, judge_model
         self.progress_enabled = progress_enabled
         self.max_answer_chars, self.max_context_chars = max_answer_chars, max_context_chars
@@ -181,6 +194,7 @@ class Evaluator:
         questions: list[SilverQuestion],
         on_record: Callable[[EvaluationRecord], None] | None = None,
     ) -> list[EvaluationRecord]:
+        validate_question_set(questions)
         logger.info("evaluation_started question_count=%d judge_model=%s", len(questions), self.judge_model)
         if self.max_concurrency == 1:
             iterator = (self._evaluate_one(question, on_record) for question in questions)
@@ -202,6 +216,19 @@ class Evaluator:
         on_record: Callable[[EvaluationRecord], None] | None,
     ) -> EvaluationRecord:
         result = self.chatbot.ask(question)
+        return self._judge_one(question, result, on_record)
+
+    def _judge_one(
+        self, question: SilverQuestion, result: ChatbotResult,
+        on_record: Callable[[EvaluationRecord], None] | None,
+    ) -> EvaluationRecord:
+        if result.question_id != question.id:
+            raise ValueError(f"Result question_id {result.question_id!r} does not match {question.id!r}")
+        result = result.model_copy(deep=True)
+        if not result.error:
+            result.error = placeholder_error(result.answer) or (
+                "empty_answer: chatbot returned no answer" if not result.answer.strip() else ""
+            )
         if result.error:
             if result.metadata.get("source_file"):
                 logger.info(
@@ -214,13 +241,12 @@ class Evaluator:
             if on_record:
                 on_record(record)
             return record
-        deterministic_abstention = looks_like_abstention(result.answer)
         evidence = "\n".join(f"[{s.file}, {s.location}] {s.excerpt}" for s in question.sources)
         if question.supporting_quotes:
             evidence += "\n\nVERIFIED SUPPORTING QUOTES:\n" + "\n".join(
                 f"[{quote.source_id}] {quote.quote}" for quote in question.supporting_quotes
             )
-        if result.metadata.get("source_file"):
+        if result.metadata.get("source_file") and result.metadata.get("reference_evidence_origin") != "explicit_reference":
             evidence = "לא סופקה ראיית ייחוס נפרדת; התשובה הצפויה היא מקור האמת לבדיקה."
         candidate, answer_omitted = _bounded_text(result.answer, self.max_answer_chars)
         retrieved, context_omitted = _bounded_text(result.retrieved_context, self.max_context_chars)
@@ -248,15 +274,13 @@ class Evaluator:
         try:
             scores = self.judge.generate(prompt, JudgeScores, self.judge_model)
             scores = apply_fixed_claims(question, scores)
-            if deterministic_abstention:
-                scores.response_is_abstention = True
+            outcome = classify(question, scores)
         except Exception as exc:
             logger.exception("judge_error question_id=%s", question.id)
             record = EvaluationRecord(question=question, result=result, outcome=Outcome.JUDGE_ERROR, judge_error=str(exc))
             if on_record:
                 on_record(record)
             return record
-        outcome = classify(question, scores)
         logger.info("question_evaluated question_id=%s topic=%r outcome=%s latency_ms=%s", question.id, question.topic, outcome.value, result.latency_ms)
         record = EvaluationRecord(question=question, result=result, outcome=outcome, scores=scores)
         if on_record:
@@ -269,16 +293,11 @@ class Evaluator:
         on_record: Callable[[EvaluationRecord], None] | None = None,
     ) -> list[EvaluationRecord]:
         """Judge already-produced chatbot results without invoking a chatbot."""
-        class PremadeAdapter:
-            def __init__(self, values: list[tuple[SilverQuestion, ChatbotResult]]):
-                self._by_id = {question.id: result for question, result in values}
-
-            def ask(self, question: SilverQuestion) -> ChatbotResult:
-                return self._by_id[question.id]
-
-        original = self.chatbot
-        try:
-            self.chatbot = PremadeAdapter(pairs)
-            return self.evaluate([question for question, _ in pairs], on_record=on_record)
-        finally:
-            self.chatbot = original
+        validate_question_set([question for question, _ in pairs])
+        for question, result in pairs:
+            if question.id != result.question_id:
+                raise ValueError(f"Result question_id {result.question_id!r} does not match {question.id!r}")
+        if self.max_concurrency == 1:
+            return [self._judge_one(question, result, on_record) for question, result in pairs]
+        with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
+            return list(executor.map(lambda pair: self._judge_one(*pair, on_record), pairs))

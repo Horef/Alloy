@@ -119,3 +119,62 @@ apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
     manifest_text = (tmp_path / "output" / "run_manifest.json").read_text(encoding="utf-8")
     assert "apigee_api_key" not in manifest_text
     assert "apigee-secret-value" not in manifest_text
+
+
+@pytest.mark.parametrize('kind', ['evaluation', 'generation'])
+def test_journal_valid_unterminated_tail_can_append_and_resume(tmp_path, kind):
+    path = tmp_path / 'journal.jsonl'
+    if kind == 'evaluation':
+        checkpoint = EvaluationCheckpoint(path, {'Q1': 'fp'}, resume=False)
+        checkpoint.append(_record('first'))
+        path.write_text(path.read_text().rstrip('\n'))
+        checkpoint = EvaluationCheckpoint(path, {'Q1': 'fp'}, resume=True)
+        assert checkpoint.load()['Q1'].result.answer == 'first'
+        checkpoint.append(_record('second'))
+        assert checkpoint.load()['Q1'].result.answer == 'second'
+    else:
+        class LLM:
+            def generate(self, *args):
+                return TopicMap(topics=[])
+        checkpoint = StructuredCallCheckpoint(path, LLM(), signature='same', resume=False)
+        checkpoint.generate('p', TopicMap, 'm')
+        path.write_text(path.read_text().rstrip('\n'))
+        checkpoint = StructuredCallCheckpoint(path, LLM(), signature='same', resume=True)
+        checkpoint.generate('p', TopicMap, 'm')
+        checkpoint.generate('p', TopicMap, 'm')
+        resumed = StructuredCallCheckpoint(path, LLM(), signature='same', resume=True)
+        assert len(next(iter(resumed._responses.values()))) == 2
+    assert len(path.read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize('kind', ['evaluation', 'generation'])
+@pytest.mark.parametrize('newline', ['', '\n'])
+def test_journal_semantic_errors_are_never_torn_tail(tmp_path, kind, newline):
+    path = tmp_path / 'journal.jsonl'
+    content = json.dumps({'signature': 'wrong', 'response': {}, 'call_key': 'x'}) + newline
+    path.write_text(content)
+    with pytest.raises(ValueError):
+        if kind == 'evaluation':
+            EvaluationCheckpoint(path, {'Q1': 'fp'}, resume=True).load()
+        else:
+            StructuredCallCheckpoint(path, None, signature='same', resume=True)
+    assert path.read_text() == content
+
+
+@pytest.mark.parametrize('kind', ['evaluation', 'generation'])
+def test_journal_recovers_only_unterminated_bad_json(tmp_path, kind):
+    path = tmp_path / 'journal.jsonl'
+    for tail, recoverable in [('{"broken":', True), ('{"broken":\n', False), ('{}\n{"broken":', False)]:
+        path.write_text(tail)
+        def load():
+            if kind == 'evaluation':
+                EvaluationCheckpoint(path, {'Q1': 'fp'}, resume=True).load()
+            else:
+                StructuredCallCheckpoint(path, None, signature='same', resume=True)
+        if recoverable:
+            load()
+            assert path.read_text() == ''
+        else:
+            with pytest.raises(ValueError):
+                load()
+            assert path.read_text() == tail

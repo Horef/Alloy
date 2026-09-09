@@ -133,3 +133,16 @@ def test_retryable_server_error_honors_retry_after(monkeypatch):
 
     llm.generate("prompt", JudgeScores, "model")
     assert delays == [0.0]
+
+
+@pytest.mark.parametrize('hint', ['inf', 'NaN', '-1', '999999999', 'Wed, 01 Jan 2100 00:00:00 GMT'])
+def test_llm_retry_delay_is_capped(hint):
+    error = RuntimeError('retry')
+    error.response = type('Response', (), {'headers': {'Retry-After': hint}})()
+    assert 0 <= GeminiStructuredLLM._retry_delay(error, 1000, cap=2) <= 2
+
+
+@pytest.mark.parametrize('kwargs', [{'max_retries': -1}, {'request_timeout_seconds': float('inf')}, {'max_retry_delay_seconds': float('nan')}])
+def test_llm_invalid_retry_configuration(kwargs):
+    with pytest.raises(ValueError):
+        GeminiStructuredLLM('unused', **kwargs)

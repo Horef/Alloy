@@ -28,6 +28,10 @@ max_topic_share = 0.35
 prompt_max_document_chars = 100000
 prompt_max_evaluation_chars = 60000
 prompt_max_auxiliary_chars = 30000
+# Code-assembled behavioral policy profile: "guided" includes illustrative examples; "compact" omits them.
+prompt_instruction_profile = "guided"
+# "balanced" permits a clearly separated supported partial answer; "conservative" abstains from an unsupported conclusion.
+prompt_answer_policy = "balanced"
 
 [cache]
 # Reuse locally extracted chunks and Gemini-discovered topic maps when document content and
@@ -49,6 +53,7 @@ insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
 # Keep 1 for session-sensitive chatbots. Increase only for stateless endpoints and available quota.
 max_concurrency = 1
+# Optional nonsecret identity for the chatbot deployment is supplied per run with --deployment-id.
 
 [runtime]
 # Set to false in production/non-interactive jobs.

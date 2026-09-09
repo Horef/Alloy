@@ -26,6 +26,8 @@ contradictory retrieval, correct retrieval ignored by generation, excessive answ
 and topic-specific weaknesses. Mention a pattern only when the supplied records support it.
 
 Important safeguards:
+- Absent context means missing telemetry, not evidence of failed retrieval.
+- Without the deployed prompt, do not claim a particular instruction was absent.
 - A likely cause is a hypothesis, not a proven causal claim. State uncertainty explicitly.
 - Do not infer sensitive attributes or repeat personal values from the data.
 - Use question IDs as examples; do not quote identifying personal details.
@@ -50,6 +52,10 @@ def _compact_record(record: EvaluationRecord) -> dict:
     return {
         "id": record.question.id,
         "topic": record.question.topic,
+        "expected_behavior": record.question.expected_behavior.value,
+        "question_form": record.question.question_form.value,
+        "context_available": bool(record.result.retrieved_context.strip()),
+        "source_evidence_available": bool(record.question.sources or record.question.supporting_quotes),
         "question": record.question.question[:700],
         "expected_answer": record.question.expected_answer[:900],
         "chatbot_answer": record.result.answer[:900],
@@ -84,24 +90,25 @@ def generate_insights(
         priority.get(record.outcome, 2), record.question.topic, record.question.id,
     ))
     compact: list[dict] = []
-    used = len(json.dumps(build_summary(records), ensure_ascii=False)) + len(INSIGHTS_PROMPT)
+    summary = json.dumps(build_summary(records), ensure_ascii=False)
+    def render(items):
+        coverage = {"analyzable_records": len(analyzable), "included_records": len(items),
+                    "omitted_records": len(analyzable) - len(items), "records": items}
+        return INSIGHTS_PROMPT.format(summary=summary, records=json.dumps(coverage, ensure_ascii=False))
     for record in ordered:
         item = _compact_record(record)
-        size = len(json.dumps(item, ensure_ascii=False))
-        if compact and used + size > max_prompt_chars:
-            continue
-        compact.append(item)
-        used += size
-    prompt = INSIGHTS_PROMPT.format(
-        summary=json.dumps(build_summary(records), ensure_ascii=False),
-        records=json.dumps(compact, ensure_ascii=False),
-    )
+        if len(render(compact + [item])) <= max_prompt_chars:
+            compact.append(item)
+    if not compact:
+        raise ValueError("max_prompt_chars cannot fit the summary and one complete evidence record")
+    prompt = render(compact)
     logger.info(
         "insight_generation_started record_count=%d included_count=%d model=%s",
         len(analyzable), len(compact), model,
     )
     insights = llm.generate(prompt, EvaluationInsights, model)
-    by_id = {record.question.id: record for record in analyzable}
+    included_ids = {item["id"] for item in compact}
+    by_id = {record.question.id: record for record in analyzable if record.question.id in included_ids}
     validated_issues = []
     seen_titles: set[str] = set()
     for issue in insights.issues[:6]:

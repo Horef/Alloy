@@ -1,11 +1,36 @@
+import json
+
+import pytest
+
 from chatbot_eval.cache import CorpusAnalysisCache
 from chatbot_eval.models import (
     ChatbotResult, EvaluationInsights, EvaluationRecord, Outcome, PromptPackage, SilverQuestion, TopicCandidate,
 )
+from chatbot_eval.prompt_policy import POLICY_VERSION, assemble_prompt
 
 
 def _topic() -> TopicCandidate:
     return TopicCandidate(name="זכאות", description="כללי זכאות", importance=5, source_ids=["policy.txt#chunk-1"])
+
+
+def _prompt_package(
+    *, instruction_profile: str = "guided", answer_policy: str = "balanced",
+) -> PromptPackage:
+    return PromptPackage(
+        system_prompt_hebrew=assemble_prompt(
+            "אתה תומי, עוזר לעובדים. ענה בעברית מקצועית ותמציתית בתחום הנהלים.",
+            instruction_profile,
+            answer_policy,
+        ),
+        corpus_scope_summary=["נהלים"],
+        assumptions_requiring_review=["קהל יעד"],
+        application_guardrails=["הרשאות"],
+        manager_review_checklist=["בדיקה"],
+        suggested_test_questions=["מה הנוהל?"],
+        instruction_profile=instruction_profile,
+        answer_policy=answer_policy,
+        policy_version=POLICY_VERSION,
+    )
 
 
 def test_corpus_cache_reuses_chunks_and_topics(tmp_path):
@@ -163,12 +188,7 @@ def test_insights_are_reused_for_identical_evaluation_records(tmp_path):
 
 
 def test_prompt_package_is_reused_for_identical_generation_evidence(tmp_path):
-    expected = PromptPackage(
-        system_prompt_hebrew="הנחיית מערכת מפורטת בעברית שנועדה לבדוק שמירת חבילת פרומפט במטמון המקומי.",
-        corpus_scope_summary=["נהלים"], assumptions_requiring_review=["קהל יעד"],
-        application_guardrails=["הרשאות"], manager_review_checklist=["בדיקה"],
-        suggested_test_questions=["מה הנוהל?"],
-    )
+    expected = _prompt_package()
     calls = 0
 
     def generate():
@@ -190,3 +210,75 @@ def test_prompt_package_is_reused_for_identical_generation_evidence(tmp_path):
     assert actual == expected
     assert calls == 1
     assert second.summary()["prompt_package"] == "hit"
+
+
+def test_prompt_package_cache_identity_includes_profile_and_model_deployment(tmp_path):
+    expected = _prompt_package()
+    calls = 0
+
+    def generate():
+        nonlocal calls
+        calls += 1
+        return expected
+
+    arguments = {
+        "chunk_key": "chunks-v1", "topics": [_topic()], "assistant_name": "תומי",
+        "audience": "עובדים", "previous_records": [], "previous_insights": None,
+        "current_prompt": "", "model": "model", "transport": "direct",
+        "document_context_chars": 100_000, "evaluation_context_chars": 60_000,
+        "auxiliary_context_chars": 30_000, "implementation_sha256": "v1", "generate": generate,
+    }
+    cache = CorpusAnalysisCache(tmp_path / "cache", model_identity={"deployment": "blue"})
+    cache.load_prompt_package(**arguments, instruction_profile="guided", answer_policy="balanced")
+    cache.load_prompt_package(**arguments, instruction_profile="guided", answer_policy="balanced")
+    cache.load_prompt_package(**arguments, instruction_profile="compact", answer_policy="balanced")
+    assert calls == 2
+
+    other_deployment = CorpusAnalysisCache(tmp_path / "cache", model_identity={"deployment": "green"})
+    other_deployment.load_prompt_package(
+        **arguments, instruction_profile="guided", answer_policy="balanced",
+    )
+    assert calls == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "stale_value"),
+    [
+        ("policy_version", "previous-policy-version"),
+        ("instruction_profile", "compact"),
+        ("answer_policy", "conservative"),
+        ("system_prompt_hebrew", "הנחיית תחום ישנה ללא מדיניות התגובה הקבועה הנדרשת בחבילת הפרומפט."),
+    ],
+)
+def test_prompt_package_cache_recomputes_stale_policy_payload(tmp_path, field, stale_value):
+    expected = _prompt_package()
+    calls = 0
+
+    def generate():
+        nonlocal calls
+        calls += 1
+        return expected
+
+    arguments = {
+        "chunk_key": "chunks-v1", "topics": [_topic()], "assistant_name": "תומי",
+        "audience": "עובדים", "previous_records": [], "previous_insights": None,
+        "current_prompt": "", "model": "model", "transport": "direct",
+        "document_context_chars": 100_000, "evaluation_context_chars": 60_000,
+        "auxiliary_context_chars": 30_000, "implementation_sha256": "v1", "generate": generate,
+        "instruction_profile": "guided", "answer_policy": "balanced",
+    }
+    cache_dir = tmp_path / "cache"
+    CorpusAnalysisCache(cache_dir).load_prompt_package(**arguments)
+    cache_file = next((cache_dir / "prompt_packages").glob("*.json"))
+    payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    payload["prompt_package"][field] = stale_value
+    cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    recovered = CorpusAnalysisCache(cache_dir)
+    actual = recovered.load_prompt_package(**arguments)
+
+    assert actual == expected
+    assert calls == 2
+    assert recovered.summary()["prompt_package"] == "miss"
+    repaired_payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert repaired_payload["prompt_package"] == expected.model_dump(mode="json")

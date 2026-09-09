@@ -9,6 +9,7 @@ from typing import Any, Callable
 from .artifacts import atomic_write_text, file_sha256
 from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
 from .models import EvaluationInsights, EvaluationRecord, PromptPackage, SilverQuestion, TopicCandidate, TopicMap
+from .prompt_policy import POLICY_VERSION, assemble_prompt, strip_policy
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ def _document_inventory(root: Path) -> list[dict[str, str]]:
 class CorpusAnalysisCache:
     """Content-addressed local cache for extracted chunks and discovered topic maps."""
 
-    def __init__(self, directory: Path, *, enabled: bool = True, refresh: bool = False):
+    def __init__(self, directory: Path, *, enabled: bool = True, refresh: bool = False, model_identity: dict | None = None):
+        self.model_identity = model_identity or {}
         self.directory = directory
         self.enabled = enabled
         self.refresh = refresh
@@ -97,7 +99,7 @@ class CorpusAnalysisCache:
             "topic_discovery_implementation_sha256": implementation_sha256,
             "chunk_key": chunk_key,
             "chunk_ids": [chunk.id for chunk in chunks],
-            "model": model,
+            "model": model, "model_identity": self.model_identity,
             "transport": transport,
             "batch_chunks": batch_chunks,
         })
@@ -146,7 +148,7 @@ class CorpusAnalysisCache:
             "schema_version": CACHE_SCHEMA_VERSION,
             "implementation_sha256": implementation_sha256,
             "questions": [{"id": q.id, "question": q.question} for q in questions],
-            "model": model, "transport": transport, "batch_size": batch_size,
+            "model": model, "model_identity": self.model_identity, "transport": transport, "batch_size": batch_size,
         })
         path = self.directory / "question_topics" / f"{key}.json"
         if self.enabled and not self.refresh:
@@ -180,7 +182,7 @@ class CorpusAnalysisCache:
         records_hash = _json_hash([record.model_dump(mode="json") for record in records])
         key = _json_hash({
             "schema_version": CACHE_SCHEMA_VERSION, "records_sha256": records_hash,
-            "implementation_sha256": implementation_sha256, "model": model,
+            "implementation_sha256": implementation_sha256, "model": model, "model_identity": self.model_identity,
             "transport": transport, "max_prompt_chars": max_prompt_chars,
         })
         path = self.directory / "insights" / f"{key}.json"
@@ -221,6 +223,7 @@ class CorpusAnalysisCache:
         auxiliary_context_chars: int,
         implementation_sha256: str,
         generate: Callable[[], PromptPackage],
+        instruction_profile: str = "guided", answer_policy: str = "balanced",
     ) -> PromptPackage:
         key = _json_hash({
             "schema_version": CACHE_SCHEMA_VERSION,
@@ -234,7 +237,8 @@ class CorpusAnalysisCache:
             ]),
             "previous_insights": previous_insights.model_dump(mode="json") if previous_insights else None,
             "current_prompt_sha256": _json_hash(current_prompt),
-            "model": model,
+            "instruction_profile": instruction_profile, "answer_policy": answer_policy,
+            "model": model, "model_identity": self.model_identity,
             "transport": transport,
             "document_context_chars": document_context_chars,
             "evaluation_context_chars": evaluation_context_chars,
@@ -245,12 +249,28 @@ class CorpusAnalysisCache:
             payload = self._read_payload(path, "prompt_package", key)
             if payload is not None:
                 try:
-                    package = PromptPackage.model_validate(payload["prompt_package"])
+                    raw_package = payload["prompt_package"]
+                    if not isinstance(raw_package, dict):
+                        raise TypeError("prompt_package must be an object")
+                    if raw_package.get("instruction_profile") != instruction_profile:
+                        raise ValueError("instruction profile mismatch")
+                    if raw_package.get("answer_policy") != answer_policy:
+                        raise ValueError("answer policy mismatch")
+                    if raw_package.get("policy_version") != POLICY_VERSION:
+                        raise ValueError("response policy version mismatch")
+                    package = PromptPackage.model_validate(raw_package)
+                    domain_prompt = strip_policy(package.system_prompt_hebrew)
+                    if not domain_prompt:
+                        raise ValueError("domain prompt is empty after removing response policy")
+                    if package.system_prompt_hebrew != assemble_prompt(
+                        domain_prompt, instruction_profile, answer_policy,
+                    ):
+                        raise ValueError("response policy assembly mismatch")
                     self.events["prompt_package"] = "hit"
                     logger.info("cache_hit kind=prompt_package key=%s path=%s", key[:12], path)
                     return package
-                except (KeyError, TypeError, ValueError):
-                    pass
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("cache_invalid kind=prompt_package path=%s error=%s", path, exc)
 
         package = generate()
         self.events["prompt_package"] = "refresh" if self.enabled and self.refresh else "miss"

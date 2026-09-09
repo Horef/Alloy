@@ -1,7 +1,10 @@
 import json
 
 from chatbot_eval.documents import Chunk
-from chatbot_eval.models import ChatbotResult, EvaluationRecord, Outcome, PromptPackage, SilverQuestion, TopicCandidate
+from chatbot_eval.models import (
+    ChatbotResult, EvaluationRecord, ExpectedBehavior, Outcome, PromptPackage,
+    PromptRegressionCase, PromptRevision, SilverQuestion, TopicCandidate,
+)
 from chatbot_eval.prompt_generator import (
     SystemPromptGenerator, _prompt_context, validate_prompt_package, write_prompt_package,
 )
@@ -56,6 +59,9 @@ def test_prompt_package_is_grounded_and_written(tmp_path):
     assert "תומי" in llm.prompt
     assert "תנאי שירות" in prompt_path.read_text(encoding="utf-8")
     assert json.loads(package_path.read_text(encoding="utf-8"))["application_guardrails"]
+    assert package.system_prompt_hebrew.count("<!-- Alloy response policy -->") == 1
+    assert package.instruction_profile == "guided"
+    assert package.answer_policy == "balanced"
     assert validate_prompt_package(package, "תומי") == []
 
 
@@ -85,6 +91,7 @@ def test_invalid_prompt_package_gets_one_repair_attempt():
     )
 
     assert llm.calls == 2
+    assert package.system_prompt_hebrew.count("<!-- Alloy response policy -->") == 1
     assert validate_prompt_package(package, "תומי") == []
 
 
@@ -99,6 +106,19 @@ def test_prompt_revision_uses_bounded_evidence_and_requires_traceability():
             package = super().generate(prompt, schema, model)
             package.revision_summary = ["חודדה החובה להסתמך על מקור"]
             package.revision_evidence_question_ids = ["Q1"]
+            package.revision_mappings = [PromptRevision(
+                observed_failure="התקבלה תשובה שאינה קשורה לשאלה",
+                included_evidence_question_ids=["Q1"],
+                changed_rule="לפני מענה יש לוודא שההקשר עונה ישירות לשאלה",
+                expected_observable_behavior="העוזר יימנע מתשובה כאשר ההקשר אינו רלוונטי",
+                non_prompt_limitation="יש לבדוק בנפרד את איכות האחזור",
+            )]
+            package.regression_cases = [PromptRegressionCase(
+                question="מהו הנוהל במקרה שאינו מתואר במקור?",
+                miniature_context="ההקשר מתאר נושא אחר בלבד.",
+                expected_behavior=ExpectedBehavior.ABSTAIN,
+                prohibited_content=["פרטי נוהל שאינם מופיעים בהקשר", "טענה שהאחזור נכשל"],
+            )]
             return package
 
     llm = RevisionLLM()
@@ -113,6 +133,8 @@ def test_prompt_revision_uses_bounded_evidence_and_requires_traceability():
     assert '"question_id": "Q1"' in llm.prompt
     assert "תומי עונה לפי המקורות" in llm.prompt
     assert package.revision_evidence_question_ids == ["Q1"]
+    assert package.revision_mappings[0].included_evidence_question_ids == ["Q1"]
+    assert package.suggested_regression_questions == [package.regression_cases[0].question]
     assert validate_prompt_package(
         package, "תומי", improvement_mode=True, valid_evidence_ids={"Q1"},
     ) == []
@@ -148,6 +170,17 @@ def test_prompt_revision_bounds_current_prompt_and_insights():
         def generate(self, prompt, schema, model):
             package = super().generate(prompt, schema, model)
             package.revision_summary = ["נשמרה ההתנהגות הקיימת"]
+            package.revision_mappings = [PromptRevision(
+                observed_failure="לא סופקה תוצאת הערכה; נבדקה רק עקביות ההנחיות",
+                changed_rule="נשמר כלל ההסתמכות על המקורות",
+                expected_observable_behavior="העוזר יענה רק כאשר ההקשר תומך בתשובה",
+                non_prompt_limitation="נדרשת הערכת התנהגות נפרדת כדי למדוד שיפור",
+            )]
+            package.regression_cases = [PromptRegressionCase(
+                question="מה אומר הנוהל?", miniature_context="אין מידע על הנוהל.",
+                expected_behavior=ExpectedBehavior.ABSTAIN,
+                prohibited_content=["נוהל מומצא"],
+            )]
             return package
 
     llm = RevisionLLM()
@@ -164,3 +197,55 @@ def test_prompt_revision_bounds_current_prompt_and_insights():
 
     assert "content omitted by Alloy prompt limit" in llm.prompt
     assert "א" * 1_100 not in llm.prompt
+
+
+def test_old_prompt_package_artifact_loads_without_structured_review_fields():
+    legacy = PromptPackage.model_validate({
+        "system_prompt_hebrew": "הנחיית מערכת מפורטת בעברית שנשמרה לפני הוספת שדות הביקורת המובנים.",
+        "corpus_scope_summary": ["נהלים"],
+        "assumptions_requiring_review": ["קהל יעד"],
+        "application_guardrails": ["הרשאות"],
+        "manager_review_checklist": ["בדיקה"],
+        "suggested_test_questions": ["מה הנוהל?"],
+        "revision_summary": ["חודד כלל"],
+        "revision_evidence_question_ids": ["Q1"],
+    })
+
+    assert legacy.revision_mappings == []
+    assert legacy.regression_cases == []
+    assert legacy.suggested_regression_questions == []
+
+
+def test_structured_revision_validation_checks_mapping_ids_and_regression_completeness(tmp_path):
+    package = FakeLLM().generate("ignored", PromptPackage, "model")
+    package.revision_summary = ["חודד כלל ההבהרה"]
+    package.revision_evidence_question_ids = ["Q1"]
+    package.revision_mappings = [PromptRevision(
+        observed_failure="העוזר ניחש כאשר חסר פרט מהותי",
+        included_evidence_question_ids=["Q1"],
+        changed_rule="יש לשאול שאלת הבהרה אחת כאשר חסר פרט מכריע",
+        expected_observable_behavior="תישאל שאלה ממוקדת לפני מתן תשובה",
+        non_prompt_limitation="איכות האחזור נבדקת מחוץ לפרומפט",
+    )]
+    package.regression_cases = [PromptRegressionCase(
+        question="אני זכאי?", miniature_context="הזכאות תלויה בסוג העובד שלא צוין.",
+        expected_behavior=ExpectedBehavior.CLARIFY,
+        prohibited_content=["קביעה שהמשתמש זכאי"],
+    )]
+    package.suggested_regression_questions = ["אני זכאי?"]
+
+    assert validate_prompt_package(
+        package, "תומי", improvement_mode=True, valid_evidence_ids={"Q1"},
+    ) == []
+    _, package_path = write_prompt_package(package, tmp_path)
+    artifact = json.loads(package_path.read_text(encoding="utf-8"))
+    assert artifact["revision_mappings"][0]["included_evidence_question_ids"] == ["Q1"]
+    assert artifact["regression_cases"][0]["expected_behavior"] == "clarify"
+
+    package.revision_mappings[0].included_evidence_question_ids = ["Q2"]
+    package.suggested_regression_questions = ["שאלה אחרת"]
+    failures = validate_prompt_package(
+        package, "תומי", improvement_mode=True, valid_evidence_ids={"Q1"},
+    )
+    assert any("unknown IDs" in failure for failure in failures)
+    assert any("every structured regression case" in failure for failure in failures)

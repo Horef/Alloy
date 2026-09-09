@@ -1,5 +1,5 @@
 from chatbot_eval.models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
-from chatbot_eval.report import build_comparison, build_summary, write_report
+from chatbot_eval.report import build_comparison, build_summary, compare_evaluation_contracts, write_report
 
 
 def test_hebrew_report_and_pipeline_statistics(tmp_path):
@@ -197,3 +197,80 @@ def test_report_aggregate_delta_requires_identical_benchmark():
 
     assert comparison["aggregate_comparable"] is True
     assert comparison["metrics"]["factual_answer_success_rate"]["delta"] == 1.0
+
+
+def test_metric_population_changes_suppress_quality_delta():
+    def record(identifier, outcome):
+        return EvaluationRecord(question=SilverQuestion(id=identifier, topic="x", question="q", expected_answer="a"), result=ChatbotResult(question_id=identifier, answer="a"), outcome=outcome)
+    old = [record("1", Outcome.CORRECT_ANSWER), record("2", Outcome.UNRELATED_ANSWER)]
+    new = [old[0], record("2", Outcome.JUDGE_ERROR)]
+    comparison = build_comparison(new, old)
+    metric = comparison["metrics"]["factual_answer_success_rate"]
+    assert comparison["aggregate_comparable"]
+    assert metric["current"] == 1 and metric["previous"] == .5
+    assert metric["delta"] is None and metric["favorable"] is None
+    assert metric["reason"] == "eligible_population_changed"
+    assert metric["current_denominator"] == 1
+    assert comparison["matched_outcomes"]["improved"] == 0
+    assert comparison["metrics"]["infrastructure_error_rate"]["delta"] == .5
+    swapped = [record("1", Outcome.JUDGE_ERROR), old[1]]
+    assert build_comparison(swapped, new)["metrics"]["factual_answer_success_rate"]["delta"] is None
+
+
+def test_all_task_false_claims_remain_visible():
+    judged = JudgeScores(claim_assessments=[], required_points_total=0, answer_points_addressed=0, answer_points_correct=0,
+        answer_false_claims=1, answer_unsupported_claims=2, answer_extraneous_claims=0,
+        retrieval_points_found=0, retrieved_chunks_total=0, retrieved_chunks_relevant=0,
+        retrieved_chunks_contradictory=0, answer_scope="exact", incorrect_type="hallucination",
+        response_is_abstention=False, explanation="x", missing_or_wrong="x", retrieval_explanation="x")
+    record = EvaluationRecord(question=SilverQuestion(id="1", topic="x", question="q", expected_answer="a",
+        answerable=False, expected_behavior=ExpectedBehavior.ABSTAIN),
+        result=ChatbotResult(question_id="1", answer="false"), scores=judged, outcome=Outcome.MISLEADING_HALLUCINATION)
+    summary = build_summary([record])
+    assert summary["answer_claim_metrics"]["false_claims_total"] == 0
+    assert summary["all_response_claim_violations"]["false_claims_total"] == 1
+    assert summary["factual_risk_rate"] == 1
+
+
+def test_retrieval_population_tracks_missing_context():
+    from test_evaluator import scores
+    old = EvaluationRecord(question=SilverQuestion(id="1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="1", answer="a", retrieved_context="source"),
+        scores=scores(), outcome=Outcome.CORRECT_ANSWER)
+    new = old.model_copy(deep=True)
+    new.result.retrieved_context = ""
+    comparison = build_comparison([new], [old])
+    assert comparison["metrics"]["good_retrieval_rate"]["reason"] == "eligible_population_changed"
+    assert comparison["metrics"]["factual_answer_success_rate"]["delta"] == 0
+
+
+def test_evaluation_contract_comparison_discloses_only_changed_field_names(tmp_path):
+    previous = {"judge_model": "SECRET_PREVIOUS_VALUE", "limits": {"answer": 100, "context": 200}}
+    current = {"judge_model": "SECRET_CURRENT_VALUE", "limits": {"answer": 100, "context": 300}}
+
+    contract = compare_evaluation_contracts(current, previous)
+
+    assert contract == {
+        "status": "incompatible",
+        "changed_fields": ["judge_model", "limits.context"],
+    }
+    assert "SECRET_PREVIOUS_VALUE" not in str(contract)
+    assert "SECRET_CURRENT_VALUE" not in str(contract)
+    assert compare_evaluation_contracts(current, current)["status"] == "compatible"
+    assert compare_evaluation_contracts(current, None) == {"status": "unknown", "changed_fields": []}
+
+    record = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="Q1", answer="a"), outcome=Outcome.CORRECT_ANSWER,
+    )
+    summary_path, report_path = write_report(
+        [record], tmp_path, previous_records=[record],
+        current_contract=current, previous_contract=previous,
+    )
+    summary = __import__("json").loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["comparison"]["evaluation_contract_compatibility"] == "incompatible"
+    assert summary["comparison"]["evaluation_contract_changed_fields"] == ["judge_model", "limits.context"]
+    rendered = report_path.read_text(encoding="utf-8")
+    assert "judge_model" in rendered and "limits.context" in rendered
+    assert "SECRET_PREVIOUS_VALUE" not in rendered
+    assert "SECRET_CURRENT_VALUE" not in rendered

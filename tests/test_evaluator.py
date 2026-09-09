@@ -1,23 +1,26 @@
-from chatbot_eval.evaluator import Evaluator, apply_fixed_claims, classify, looks_like_abstention
+from chatbot_eval.evaluator import Evaluator, apply_fixed_claims, classify
 from chatbot_eval.models import ChatbotResult, ClaimAssessment, ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
 
 
-def scores(required=2, addressed=2, correct=2, abstention=False, scope="exact", incorrect_type="not_applicable", false_claims=0):
+def scores(
+    required=2, addressed=2, correct=2, abstention=False, clarification=False,
+    scope="exact", incorrect_type="not_applicable", false_claims=0, unsupported_claims=0,
+):
     return JudgeScores(
         claim_assessments=[],
         required_points_total=required, answer_points_addressed=addressed,
         answer_points_correct=correct, answer_false_claims=false_claims,
-        answer_unsupported_claims=0, answer_extraneous_claims=0,
+        answer_unsupported_claims=unsupported_claims, answer_extraneous_claims=0,
         retrieval_points_found=required, retrieved_chunks_total=2,
         retrieved_chunks_relevant=2, retrieved_chunks_contradictory=0,
         answer_scope=scope, incorrect_type=incorrect_type,
         response_is_abstention=abstention, explanation="הסבר", missing_or_wrong="",
-        retrieval_explanation="הסבר אחזור",
+        response_is_clarification=clarification, retrieval_explanation="הסבר אחזור",
     )
 
 
 def question(answerable=True):
-    return SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a", answerable=answerable)
+    return SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a", answerable=answerable, expected_behavior=ExpectedBehavior.ANSWER if answerable else ExpectedBehavior.ABSTAIN)
 
 
 def test_outcome_matrix():
@@ -31,12 +34,6 @@ def test_outcome_matrix():
     assert classify(question(True), scores(addressed=1, correct=0, incorrect_type="hallucination", false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
 
 
-def test_abstention_detection_in_english_and_hebrew():
-    assert looks_like_abstention("I don't have enough information to answer.")
-    assert looks_like_abstention("אין לי מספיק מידע")
-    assert not looks_like_abstention("The policy allows 30 days.")
-
-
 def test_clarification_is_a_distinct_expected_behavior():
     item = question(True)
     item.expected_behavior = ExpectedBehavior.CLARIFY
@@ -45,6 +42,39 @@ def test_clarification_is_a_distinct_expected_behavior():
 
     assert classify(item, clarification) == Outcome.CORRECT_CLARIFICATION
     assert classify(item, scores()) == Outcome.MISSING_CLARIFICATION
+
+
+def test_response_behavior_truth_table_requires_matching_safe_whole_response():
+    import pytest
+
+    answer = question(True)
+    clarify = question(True)
+    clarify.expected_behavior = ExpectedBehavior.CLARIFY
+    abstain = question(False)
+
+    cases = [
+        (answer, scores(), Outcome.CORRECT_ANSWER),
+        (answer, scores(abstention=True), Outcome.INCORRECT_ABSTENTION),
+        # A whole-response clarification cannot earn full answer credit, even when the
+        # judge also reports that every supplied reference claim was correct.
+        (answer, scores(clarification=True), Outcome.PARTIAL_TOO_LITTLE),
+        (answer, scores(addressed=0, correct=0, clarification=True), Outcome.INCORRECT_ABSTENTION),
+        (clarify, scores(clarification=True), Outcome.CORRECT_CLARIFICATION),
+        (clarify, scores(abstention=True), Outcome.MISSING_CLARIFICATION),
+        (abstain, scores(abstention=True), Outcome.CORRECT_ABSTENTION),
+        (abstain, scores(clarification=True), Outcome.SHOULD_HAVE_ABSTAINED),
+    ]
+    for item, judged, expected in cases:
+        assert classify(item, judged) == expected
+
+    for item, flag in ((clarify, "clarification"), (abstain, "abstention")):
+        kwargs = {flag: True, "false_claims": 1}
+        assert classify(item, scores(**kwargs)) == Outcome.MISLEADING_HALLUCINATION
+        kwargs = {flag: True, "unsupported_claims": 1}
+        assert classify(item, scores(**kwargs)) == Outcome.MISLEADING_HALLUCINATION
+
+    with pytest.raises(ValueError, match="flags conflict"):
+        classify(answer, scores(abstention=True, clarification=True))
 
 
 def test_fixed_claims_determine_answer_counts():
@@ -125,3 +155,45 @@ def test_concurrent_evaluation_preserves_input_order():
     records = Evaluator(Adapter(), object(), "judge", max_concurrency=2).evaluate(items)
 
     assert [record.question.id for record in records] == [item.id for item in items]
+
+
+def test_nonanswer_false_claims_are_risky_and_conflicting_flags_fail():
+    import pytest
+    for behavior in (ExpectedBehavior.CLARIFY, ExpectedBehavior.ABSTAIN):
+        item = question(behavior != ExpectedBehavior.ABSTAIN)
+        item.expected_behavior = behavior
+        judged = scores(false_claims=1)
+        judged.response_is_clarification = behavior == ExpectedBehavior.CLARIFY
+        judged.response_is_abstention = behavior == ExpectedBehavior.ABSTAIN
+        assert classify(item, judged) == Outcome.MISLEADING_HALLUCINATION
+    judged.response_is_clarification = judged.response_is_abstention = True
+    with pytest.raises(ValueError, match="flags conflict"):
+        classify(item, judged)
+
+
+def test_judge_results_boundary_validation_and_no_adapter_mutation():
+    import pytest
+    from chatbot_eval.response_errors import SUMMARY_GENERATION_FAILURE
+    adapter = object()
+    evaluator = Evaluator(adapter, object(), "judge")
+    item = question()
+    for answer in ("   ", SUMMARY_GENERATION_FAILURE):
+        result = ChatbotResult(question_id=item.id, answer=answer)
+        assert evaluator.judge_results([(item, result)])[0].outcome == Outcome.CHATBOT_ERROR
+        assert result.error == ""
+        assert evaluator.chatbot is adapter
+    with pytest.raises(ValueError, match="does not match"):
+        evaluator.judge_results([(item, ChatbotResult(question_id="wrong", answer="a"))])
+    with pytest.raises(ValueError, match="Duplicate"):
+        evaluator.judge_results([(item, ChatbotResult(question_id=item.id, answer="a"))] * 2)
+
+
+def test_limited_gap_language_does_not_override_judge():
+    class Judge:
+        def generate(self, prompt, schema, model):
+            judged = scores(required=1, addressed=1, correct=1)
+            judged.claim_assessments = [ClaimAssessment(claim_id="C001", addressed=True, correct=True)]
+            return judged
+    evaluator = Evaluator(object(), Judge(), "judge")
+    for answer in ('30 days; attachment not provided', '30 ימים; אין מספיק מידע על הנספח', 'Policy quotes "cannot answer"; 30 days.'):
+        assert evaluator.judge_results([(question(), ChatbotResult(question_id="Q1", answer=answer))])[0].outcome == Outcome.CORRECT_ANSWER

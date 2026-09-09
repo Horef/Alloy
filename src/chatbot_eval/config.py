@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,9 +50,15 @@ class Settings:
     progress_enabled: bool
     log_file: str
     log_level: str
+    prompt_instruction_profile: str = "guided"
+    prompt_answer_policy: str = "balanced"
 
     def validate(self) -> "Settings":
         errors: list[str] = []
+        if self.prompt_instruction_profile not in {"compact", "guided"}:
+            errors.append("generation.prompt_instruction_profile must be compact or guided")
+        if self.prompt_answer_policy not in {"balanced", "conservative"}:
+            errors.append("generation.prompt_answer_policy must be balanced or conservative")
         if self.gemini_transport not in {"direct", "apigee"}:
             errors.append("gemini.transport must be direct or apigee")
         if self.gemini_transport == "apigee" and not (
@@ -94,7 +101,7 @@ class Settings:
         unknown_types = sorted(set(self.question_type_targets) - allowed_types)
         if unknown_types:
             errors.append(f"generation.question_type_targets has unsupported types: {unknown_types}")
-        if any(value < 0 for value in self.question_type_targets.values()):
+        if any(not math.isfinite(value) or value < 0 for value in self.question_type_targets.values()):
             errors.append("generation.question_type_targets values must be non-negative")
         if self.question_type_targets and abs(sum(self.question_type_targets.values()) - 1.0) > 0.001:
             errors.append("generation.question_type_targets values must sum to 1")
@@ -104,7 +111,7 @@ class Settings:
             errors.append("evaluation.max_retries must be non-negative")
         if self.chatbot_max_retries < 0:
             errors.append("evaluation.chatbot_max_retries must be non-negative")
-        if self.chatbot_retry_base_seconds < 0 or self.chatbot_pacing_seconds < 0:
+        if any(not math.isfinite(value) or value < 0 for value in (self.chatbot_retry_base_seconds, self.chatbot_pacing_seconds)):
             errors.append("chatbot retry and pacing durations must be non-negative")
         if self.chatbot_max_response_bytes < 1024:
             errors.append("evaluation.chatbot_max_response_bytes must be at least 1024")
@@ -204,4 +211,6 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         progress_enabled=_as_bool(_get(data, "runtime", "progress_enabled", True), "runtime.progress_enabled"),
         log_file=str(_get(data, "runtime", "log_file", "")),
         log_level=str(_get(data, "runtime", "log_level", "INFO")),
+        prompt_instruction_profile=str(_get(data, "generation", "prompt_instruction_profile", "guided")),
+        prompt_answer_policy=str(_get(data, "generation", "prompt_answer_policy", "balanced")),
     ).validate()
