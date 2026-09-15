@@ -15,7 +15,7 @@ from .artifacts import (
 from .cache import CorpusAnalysisCache
 from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
-from .generator import GenerationOptions, SilverSetGenerator, topic_discovery_fingerprint
+from .generator import GenerationOptions, SilverSetGenerator, reground_fingerprint, topic_discovery_fingerprint
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
     read_evaluation_contract, read_evaluation_records,
@@ -150,6 +150,17 @@ def build_parser() -> argparse.ArgumentParser:
     review_merge.add_argument("--canonical", type=Path, required=True, help="Original silver JSONL/CSV that holds all technical columns")
     review_merge.add_argument("--review", type=Path, required=True, help="Edited questions_for_review.csv")
     review_merge.add_argument("--output", type=Path, default=Path("outputs/questions-reviewed"), help="Destination for the merged silver CSV/JSONL")
+
+    reground = commands.add_parser(
+        "reground",
+        help="Regenerate only the grounding (sources, quotes, reference claims) for human-edited questions against the documents",
+    )
+    reground.add_argument("--questions", type=Path, required=True, help="Silver CSV/JSONL containing questions to re-ground")
+    reground.add_argument("--documents", type=Path, required=True, help="Document root the questions were generated from")
+    reground.add_argument("--output", type=Path, default=Path("outputs/questions-regrounded"), help="Destination for the regrounded silver CSV/JSONL")
+    reground.add_argument("--all", action="store_true", help="Re-ground every answerable question, not only those marked needs_reground")
+    reground.add_argument("--evidence-limit", type=int, default=12, help="Maximum candidate chunks offered to the model per question")
+    _add_cache_arguments(reground)
 
     report = commands.add_parser("report", help="Regenerate a report from completed Alloy evaluation JSONL")
     report.add_argument("--results", type=Path, required=True, help="Current output directory or evaluation_details.jsonl")
@@ -446,6 +457,71 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Generated a reviewable system prompt across {len(topics)} discovered topics.")
         print(f"System prompt: {prompt_path}\nReview package: {package_path}")
         logger.info("command_completed command=generate-prompt topic_count=%d output=%s", len(topics), args.output)
+        return 0
+
+    if args.command == "reground":
+        all_questions = read_questions(args.questions)
+        if args.all:
+            targets = [q for q in all_questions if q.answerable and q.expected_behavior.value == "answer"]
+        else:
+            targets = [q for q in all_questions if q.review_status.lower() == "needs_reground"]
+        if not targets:
+            selector = "answerable answer-task" if args.all else "needs_reground"
+            raise SystemExit(f"No {selector} questions found in {args.questions}; nothing to re-ground.")
+        cache = _analysis_cache(args, settings)
+        with RunManifest(
+            args.output, command=args.command, settings=settings,
+            inputs=[args.questions, args.documents],
+            parameters={
+                "target_count": len(targets), "total_questions": len(all_questions),
+                "reground_all": args.all, "evidence_limit": args.evidence_limit,
+                "reground_fingerprint": reground_fingerprint(),
+                "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
+            },
+        ) as manifest:
+            chunks, _ = cache.load_chunks(
+                args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled,
+            )
+            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+            target_ids = {q.id for q in targets}
+            regrounded_count = 0
+            failures: list[dict] = []
+            merged: list[SilverQuestion] = []
+            for question in all_questions:
+                if question.id not in target_ids:
+                    merged.append(question)
+                    continue
+                updated, reason = generator.reground_one(question, chunks, evidence_limit=args.evidence_limit)
+                if updated is not None:
+                    merged.append(updated)
+                    regrounded_count += 1
+                else:
+                    # Keep the original row untouched; record why it could not be regrounded.
+                    merged.append(question)
+                    failures.append({"id": question.id, "reason": reason})
+                    logger.warning("reground_failed id=%s reason=%s", question.id, reason)
+            csv_path, jsonl_path = write_questions(merged, args.output)
+            manifest.complete(
+                question_count=len(merged), regrounded=regrounded_count,
+                failed=len(failures), failures=failures[:50],
+                reground_fingerprint=reground_fingerprint(),
+                cache=cache.summary(),
+                outputs=input_inventory([csv_path, jsonl_path]),
+            )
+        print(
+            f"Re-grounded {regrounded_count}/{len(targets)} targeted questions.\n"
+            f"Silver CSV: {csv_path}\nProvenance JSONL: {jsonl_path}"
+        )
+        if failures:
+            print(
+                f"{len(failures)} question(s) could not be re-grounded and were left unchanged "
+                "(still marked needs_reground). See run_manifest.json for reasons."
+            )
+        print(
+            "Re-grounded questions were reset to review_status=pending; review and approve them "
+            "before evaluating with --approved-only."
+        )
+        logger.info("command_completed command=reground regrounded=%d output=%s", regrounded_count, args.output)
         return 0
 
     if args.command == "generate":

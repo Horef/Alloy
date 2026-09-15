@@ -3,7 +3,7 @@ from chatbot_eval.generator import (
     GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate, _render_chunks,
     allocate_quotas, allocate_type_targets, validate_candidate,
 )
-from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, TopicCandidate, TopicMap, VariationBatch
+from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, SourceRef, TopicCandidate, TopicMap, VariationBatch
 
 
 def test_quota_allocation_respects_total_and_cap():
@@ -307,3 +307,101 @@ def test_requested_topic_also_scopes_boundary_questions():
     )
 
     assert {question.topic for question in questions} == {"נושא א"}
+
+
+def _answerable_question():
+    return SilverQuestion(
+        id="Q0001", topic="נושא", question="מהו הסכום?", expected_answer="הסכום הוא 100 שקלים",
+        question_type=QuestionType.BASIC_KNOWLEDGE,
+        reference_claims=["ישן"],
+        supporting_quotes=[EvidenceQuote(source_id="stale#1", quote="ישן")],
+        sources=[SourceRef(source_id="stale#1", file="stale.md", location="document", excerpt="ישן")],
+        review_status="needs_reground",
+    )
+
+
+def test_reground_one_regenerates_grounding_and_resets_status():
+    chunks = [Chunk("a.md#chunk-1", "a.md", "document", "הסכום הוא 100 שקלים לכל חייל.")]
+
+    class RegroundLLM:
+        def generate(self, prompt, schema, model, *, required_fields=None):
+            assert schema is QuestionBatch
+            assert "מהו הסכום?" in prompt  # fixed question is injected
+            return QuestionBatch(questions=[GeneratedQuestion(
+                question="מהו הסכום?", expected_answer="הסכום הוא 100 שקלים",
+                answerable=True, difficulty="medium", rationale="",
+                source_ids=["a.md#chunk-1"],
+                question_type=QuestionType.BASIC_KNOWLEDGE,
+                reference_claims=["הסכום הוא 100 שקלים"],
+                supporting_quotes=[EvidenceQuote(source_id="a.md#chunk-1", quote="הסכום הוא 100 שקלים")],
+            )])
+
+    generator = SilverSetGenerator(RegroundLLM(), "model")
+    updated, reason = generator.reground_one(_answerable_question(), chunks)
+    assert reason is None
+    assert updated.sources[0].source_id == "a.md#chunk-1"
+    assert updated.reference_claims == ["הסכום הוא 100 שקלים"]
+    assert updated.supporting_quotes[0].source_id == "a.md#chunk-1"
+    # Regrounded rows require a fresh human approval.
+    assert updated.review_status == "pending"
+    # Fixed identity is preserved.
+    assert updated.id == "Q0001"
+    assert updated.question == "מהו הסכום?"
+
+
+def test_reground_one_rejects_non_verbatim_quote():
+    chunks = [Chunk("a.md#chunk-1", "a.md", "document", "הסכום הוא 100 שקלים.")]
+
+    class BadQuoteLLM:
+        def generate(self, prompt, schema, model, *, required_fields=None):
+            return QuestionBatch(questions=[GeneratedQuestion(
+                question="מהו הסכום?", expected_answer="הסכום הוא 100 שקלים",
+                answerable=True, difficulty="medium", rationale="",
+                source_ids=["a.md#chunk-1"],
+                question_type=QuestionType.BASIC_KNOWLEDGE,
+                reference_claims=["הסכום הוא 100 שקלים"],
+                supporting_quotes=[EvidenceQuote(source_id="a.md#chunk-1", quote="ציטוט שלא קיים במקור")],
+            )])
+
+    generator = SilverSetGenerator(BadQuoteLLM(), "model")
+    updated, reason = generator.reground_one(_answerable_question(), chunks)
+    assert updated is None
+    assert reason == "quote_not_verbatim"
+
+
+def test_reground_one_rejects_altered_question_text():
+    chunks = [Chunk("a.md#chunk-1", "a.md", "document", "הסכום הוא 100 שקלים.")]
+
+    class AlteringLLM:
+        def generate(self, prompt, schema, model, *, required_fields=None):
+            return QuestionBatch(questions=[GeneratedQuestion(
+                question="שאלה אחרת לגמרי", expected_answer="הסכום הוא 100 שקלים",
+                answerable=True, difficulty="medium", rationale="",
+                source_ids=["a.md#chunk-1"],
+                question_type=QuestionType.BASIC_KNOWLEDGE,
+                reference_claims=["הסכום הוא 100 שקלים"],
+                supporting_quotes=[EvidenceQuote(source_id="a.md#chunk-1", quote="הסכום הוא 100 שקלים")],
+            )])
+
+    generator = SilverSetGenerator(AlteringLLM(), "model")
+    updated, reason = generator.reground_one(_answerable_question(), chunks)
+    assert updated is None
+    assert reason == "model_altered_question"
+
+
+def test_reground_one_skips_clarification_task():
+    chunks = [Chunk("a.md#chunk-1", "a.md", "document", "טקסט")]
+
+    class NeverCalledLLM:
+        def generate(self, prompt, schema, model, *, required_fields=None):
+            raise AssertionError("clarification tasks must not reach the model")
+
+    clarify = SilverQuestion(
+        id="Q0002", topic="נושא", question="איזה?", expected_answer="לאיזו אוכלוסייה?",
+        question_form=QuestionForm.AMBIGUOUS, expected_behavior=ExpectedBehavior.CLARIFY,
+        review_status="needs_reground",
+    )
+    generator = SilverSetGenerator(NeverCalledLLM(), "model")
+    updated, reason = generator.reground_one(clarify, chunks)
+    assert updated is None
+    assert reason == "not_an_answerable_answer_task"

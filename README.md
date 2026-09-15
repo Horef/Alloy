@@ -6,10 +6,12 @@ helps managers bootstrap chatbot instructions. It supports these workflows:
 1. `generate`: create a representative, evidence-backed silver question set from local documents.
 2. `review-export` / `review-merge`: export a small, human-readable review file and merge the
    reviewer's edits back onto the full technical set without losing provenance.
-3. `evaluate`: send reviewed questions to a JSON-over-HTTP chatbot and judge its answers.
-4. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
-5. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
-6. `report`: regenerate a report from completed results, optionally compared with a previous run.
+3. `reground`: regenerate the grounding (sources, quotes, reference claims) for questions whose text
+   a reviewer edited, so their evidence matches the new wording.
+4. `evaluate`: send reviewed questions to a JSON-over-HTTP chatbot and judge its answers.
+5. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
+6. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
+7. `report`: regenerate a report from completed results, optionally compared with a previous run.
 
 Gemini provides structured question generation, answer judging, optional topic inference, and
 optional cross-result insights. The module does not require the existing chatbot fleet; integration
@@ -488,12 +490,13 @@ Merge rules, chosen to preserve as much technical information as possible:
   status is downgraded to `needs_reground`, because the stored grounding may no longer match the new
   text.
 
-`needs_reground` is a signal, not an automatic action. `review_status` affects evaluation in exactly
-one way: `evaluate --approved-only` keeps only rows whose status is `approved`, so a `needs_reground`
-row is excluded there and included (with its stale grounding) in a plain `evaluate` run. Nothing in
-the evaluation pipeline regenerates grounding — sources, supporting quotes, and reference claims are
-produced only by `generate` against your documents. To re-ground a flagged question, re-run
-`generate` for it or edit its claims/sources by hand, then set the status back to `approved`.
+`needs_reground` is a signal, not an automatic action during evaluation. `review_status` affects
+evaluation in exactly one way: `evaluate --approved-only` keeps only rows whose status is `approved`,
+so a `needs_reground` row is excluded there and included (with its stale grounding) in a plain
+`evaluate` run. Nothing in the evaluation pipeline regenerates grounding on its own. To refresh the
+grounding of flagged questions, use the dedicated `reground` command (Workflow 3 below), which
+regenerates their sources, supporting quotes, and reference claims from the documents and resets them
+to `pending` for a fresh approval.
 - **Rows with an `id` not in the canonical set** are rejected. New questions cannot be grounded from
   the review file; generate them instead. Duplicate `id`s in the review file are also rejected.
 
@@ -501,7 +504,45 @@ A `merge_diagnostics` block (removed / edited / factual-edit counts, unknown IDs
 recorded in `run_manifest.json`. The merged `silver_questions.csv`/`.jsonl` flows directly into
 `evaluate` or `evaluate --approved-only`.
 
-## Workflow 3: evaluate a live chatbot
+## Workflow 3: re-ground human-edited questions
+
+When a reviewer edits a question or its expected answer, `review-merge` flags the row
+`needs_reground` because the stored sources, supporting quotes, and reference claims may no longer
+match the new text. `reground` refreshes only that grounding — it never rewrites the question or
+answer. It reuses the same evidence selection and the same deterministic validation as `generate`
+(verbatim-quote checks, source-ID existence, per-type document/cross-document constraints), so a
+regrounded question is grounded to the same standard as a freshly generated one.
+
+```bash
+chatbot-eval --config config.toml reground \
+  --questions ./outputs/questions-reviewed/silver_questions.jsonl \
+  --documents ./knowledge_base \
+  --output ./outputs/questions-regrounded
+```
+
+For each targeted question the model receives the fixed question and expected answer plus candidate
+document chunks (ranked by overlap with the edited text, and always including any previously cited
+sources), and must return fresh `source_ids`, verbatim `supporting_quotes`, and `reference_claims`
+for that exact question. The model is required to echo the fixed text unchanged; if it alters the
+question or answer, or if the grounding fails validation, the row is left untouched and the reason is
+recorded. Successfully regrounded rows are reset to `review_status=pending` so a human re-approves
+them before evaluation.
+
+| Option | Required/default | Meaning |
+|---|---|---|
+| `--questions PATH` | required | Silver CSV/JSONL containing the questions to re-ground. |
+| `--documents DIR` | required | Document root the questions were generated from. |
+| `--output DIR` | `outputs/questions-regrounded` | Destination for the regrounded silver CSV/JSONL. |
+| `--all` | off | Re-ground every answerable answer-task question, not only those marked `needs_reground`. |
+| `--evidence-limit N` | `12` | Maximum candidate chunks offered to the model per question. Raise it when the true evidence is not ranked into the default window. |
+| `--cache-dir DIR` / `--refresh-cache` / `--no-cache` | config value | Shared document-analysis cache controls (chunking is cached and reused). |
+
+Only answerable answer-task questions can be regrounded. Clarification, abstention, and unanswerable
+questions have no factual claims and are skipped with a recorded reason. A `run_manifest.json`
+records how many were regrounded, how many failed, and why. Questions that could not be regrounded
+keep their `needs_reground` status so they remain visible.
+
+## Workflow 4: evaluate a live chatbot
 
 The generic adapter sends one sequential HTTP `POST` per question. Defaults:
 
@@ -579,7 +620,7 @@ denominators. The generic adapter retries only transient failures with bounded e
 honors `Retry-After`, and supports optional pacing. Production fleet adapters should still own
 authentication, idempotency, sessions, and organization-specific formats.
 
-## Workflow 4: evaluate a premade Q&A file
+## Workflow 5: evaluate a premade Q&A file
 
 This workflow never contacts the chatbot. It reads saved rows, preserves recognizable API failures
 as `chatbot_error`, and sends usable rows to the same judge used for live evaluation.
@@ -674,7 +715,7 @@ import fails until the corresponding explicit `--*-column` mapping selects one, 
 chosen silently. Parent values refer to external IDs in the imported file and unresolved parents are
 cleared while the original value is retained in result metadata.
 
-## Workflow 5: generate a system prompt from documents
+## Workflow 6: generate a system prompt from documents
 
 This optional component helps a chatbot manager create a strong starting prompt without copying
 domain rules by hand. It reuses the document loader and topic discovery, then asks Gemini for a
@@ -755,7 +796,7 @@ remove unsupported rules, decide approved fallback/escalation behavior, and impl
 application guardrails outside the model. The prompt generator itself does not deploy or modify a
 chatbot.
 
-## Workflow 6: regenerate and compare reports
+## Workflow 7: regenerate and compare reports
 
 The `report` command creates JSON/HTML from completed Alloy evaluation JSONL without contacting the
 chatbot or Gemini. It accepts either an output directory or its `evaluation_details.jsonl` file and
