@@ -830,10 +830,14 @@ use, because human review routinely adds, edits, or removes questions between ru
 But strictness is sometimes too conservative. After a deliberate review pass or a model upgrade, you
 may still want a directional read of how the chatbot moved on the questions that stayed the same.
 `--soft-compare` provides that. It keeps every warning visible but frames them as informational, and
-it computes an **approximate** delta for each metric over the intersection of matched questions
-(same ID and identical material fields) that are eligible for that metric. These soft deltas are
-rendered with a `≈` marker and the count of matched questions they are based on, so they read as an
-estimate rather than a measured KPI change. When the benchmark and contract are identical,
+it computes an **approximate** delta for each metric over the questions that are matched (same ID and
+identical material fields) **and eligible for that metric in both runs**. Using that shared
+intersection as the denominator means the soft delta is defined even when the strict delta was
+suppressed only because a few questions errored in one run but not the other (the common
+`eligible_population_changed` case). Soft deltas are rendered with a `≈` marker and the count of
+matched questions they are based on, so they read as an estimate rather than a measured KPI change.
+A metric still shows no soft delta only when there is genuinely no matched question eligible for it in
+both runs. When the benchmark and contract are identical and no error populations shifted,
 `--soft-compare` changes nothing: the exact deltas are already shown.
 
 | Option | Required/default | Meaning |

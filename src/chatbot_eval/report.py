@@ -322,19 +322,40 @@ def build_comparison(
     metric_definitions["factual_risk_rate"] = ("טענות שגויות או לא מבוססות", True)
     metric_definitions["behavior_failure_rate"] = ("כשל במדיניות המענה", True)
 
-    def soft_rate(by_id: dict, key: str) -> tuple[float | None, int, int]:
-        """Metric rate over a like-for-like subset, restricted to eligible records.
-
-        ``by_id`` maps the shared question IDs to a single record per run.
-        """
-        eligible_here = eligible(list(by_id.values()), key)
-        selected = [by_id[identifier] for identifier in eligible_here if identifier in by_id]
-        hits = sum(_metric_hit(record, key) for record in selected)
-        return _rate(hits, len(selected)), hits, len(selected)
-
     matched_id_set = set(matched_ids)
     current_matched = {identifier: current_by_id[identifier] for identifier in matched_id_set}
     previous_matched = {identifier: previous_by_id[identifier] for identifier in matched_id_set}
+
+    def soft_metric(key: str) -> dict:
+        """Approximate like-for-like value on the matched questions.
+
+        The population is the set of matched questions (same ID and identical material
+        fields) that are eligible for this metric in BOTH runs. Using that intersection as
+        a shared denominator means the two rates are always directly comparable, so the
+        soft delta is defined whenever at least one such question exists. This deliberately
+        excludes questions that errored in only one run, since those cannot contribute a
+        like-for-like point.
+        """
+        shared = eligible(list(current_matched.values()), key) & eligible(list(previous_matched.values()), key)
+        current_hits = sum(_metric_hit(current_matched[identifier], key) for identifier in shared)
+        previous_hits = sum(_metric_hit(previous_matched[identifier], key) for identifier in shared)
+        current_rate = _rate(current_hits, len(shared))
+        previous_rate = _rate(previous_hits, len(shared))
+        soft_delta = current_rate - previous_rate if current_rate is not None and previous_rate is not None else None
+        soft_favorable = None
+        if soft_delta:
+            lower_is_better = metric_definitions[key][1]
+            soft_favorable = soft_delta < 0 if lower_is_better else soft_delta > 0
+        return {
+            "soft_current": current_rate,
+            "soft_previous": previous_rate,
+            "soft_current_numerator": current_hits,
+            "soft_previous_numerator": previous_hits,
+            "soft_denominator": len(shared),
+            "soft_delta": soft_delta,
+            "soft_favorable": soft_favorable,
+        }
+
     metrics = {}
     for key, (label, lower_is_better) in metric_definitions.items():
         current = current_summary.get(key)
@@ -349,30 +370,11 @@ def build_comparison(
         favorable = None
         if delta:
             favorable = delta < 0 if lower_is_better else delta > 0
-        # Approximate like-for-like value on matched questions, always computed so callers
-        # can opt into showing it. It restricts each metric to the questions whose money
-        # fields are identical across the runs and that are eligible for that metric.
-        soft_current, soft_current_hits, soft_current_denominator = soft_rate(current_matched, key)
-        soft_previous, soft_previous_hits, soft_previous_denominator = soft_rate(previous_matched, key)
-        soft_delta = (
-            soft_current - soft_previous
-            if soft_current is not None and soft_previous is not None and soft_current_denominator == soft_previous_denominator
-            else None
-        )
-        soft_favorable = None
-        if soft_delta:
-            soft_favorable = soft_delta < 0 if lower_is_better else soft_delta > 0
         metrics[key] = {
             "label": label,
             "comparable": metric_comparable,
             "reason": reason,
-            "soft_current": soft_current,
-            "soft_previous": soft_previous,
-            "soft_current_numerator": soft_current_hits,
-            "soft_previous_numerator": soft_previous_hits,
-            "soft_denominator": soft_current_denominator,
-            "soft_delta": soft_delta,
-            "soft_favorable": soft_favorable,
+            **soft_metric(key),
             "current_denominator": len(current_ids),
             "previous_denominator": len(previous_ids),
             "current_numerator": round(current * len(current_ids)) if current is not None else 0,

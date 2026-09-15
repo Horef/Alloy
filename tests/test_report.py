@@ -337,3 +337,32 @@ def test_strict_compare_still_hides_delta_without_soft_flag(tmp_path):
 
     assert "מצב השוואה רכה פעיל" not in rendered
     assert "לא בר השוואה" in rendered
+
+
+def test_soft_compare_bridges_eligible_population_change_from_errors():
+    # Same benchmark in both runs (aggregate comparable), but Q2 errored only in the
+    # current run. That makes factual_answer_success_rate's eligible population differ, so
+    # the strict delta is suppressed. Soft mode should still report a delta over the
+    # questions eligible in both runs (Q1, Q3).
+    previous = [
+        _answer_record("Q1", "שאלה", "תשובה", Outcome.CORRECT_ANSWER),
+        _answer_record("Q2", "שאלה2", "תשובה", Outcome.UNRELATED_ANSWER),
+        _answer_record("Q3", "שאלה3", "תשובה", Outcome.UNRELATED_ANSWER),
+    ]
+    current = [
+        _answer_record("Q1", "שאלה", "תשובה", Outcome.CORRECT_ANSWER),
+        _answer_record("Q2", "שאלה2", "", Outcome.CHATBOT_ERROR),
+        _answer_record("Q3", "שאלה3", "תשובה", Outcome.CORRECT_ANSWER),
+    ]
+
+    comparison = build_comparison(current, previous, soft_compare=True)
+    assert comparison["aggregate_comparable"] is True
+    metric = comparison["metrics"]["factual_answer_success_rate"]
+    # Strict delta is still suppressed because the eligible population changed.
+    assert metric["reason"] == "eligible_population_changed"
+    assert metric["delta"] is None
+    # Soft delta is computed over the two questions eligible in both runs (Q1, Q3):
+    # previous 1/2 = 50%, current 2/2 = 100%, so +50%.
+    assert metric["soft_denominator"] == 2
+    assert metric["soft_delta"] == 0.5
+    assert metric["soft_favorable"] is True
