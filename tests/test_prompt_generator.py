@@ -14,7 +14,7 @@ class FakeLLM:
     def __init__(self):
         self.prompt = ""
 
-    def generate(self, prompt, schema, model):
+    def generate(self, prompt, schema, model, *, required_fields=None):
         self.prompt = prompt
         assert schema is PromptPackage
         return PromptPackage(
@@ -71,7 +71,7 @@ def test_invalid_prompt_package_gets_one_repair_attempt():
     class RepairingLLM:
         calls = 0
 
-        def generate(self, prompt, schema, model):
+        def generate(self, prompt, schema, model, *, required_fields=None):
             self.calls += 1
             if self.calls == 1:
                 return PromptPackage(
@@ -102,7 +102,7 @@ def test_prompt_revision_uses_bounded_evidence_and_requires_traceability():
     )
 
     class RevisionLLM(FakeLLM):
-        def generate(self, prompt, schema, model):
+        def generate(self, prompt, schema, model, *, required_fields=None):
             package = super().generate(prompt, schema, model)
             package.revision_summary = ["חודדה החובה להסתמך על מקור"]
             package.revision_evidence_question_ids = ["Q1"]
@@ -167,7 +167,7 @@ def test_prompt_document_context_is_bounded_and_covers_topics():
 
 def test_prompt_revision_bounds_current_prompt_and_insights():
     class RevisionLLM(FakeLLM):
-        def generate(self, prompt, schema, model):
+        def generate(self, prompt, schema, model, *, required_fields=None):
             package = super().generate(prompt, schema, model)
             package.revision_summary = ["נשמרה ההתנהגות הקיימת"]
             package.revision_mappings = [PromptRevision(

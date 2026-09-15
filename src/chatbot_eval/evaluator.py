@@ -297,7 +297,17 @@ class Evaluator:
         for question, result in pairs:
             if question.id != result.question_id:
                 raise ValueError(f"Result question_id {result.question_id!r} does not match {question.id!r}")
+        logger.info("premade_judging_started result_count=%d judge_model=%s", len(pairs), self.judge_model)
         if self.max_concurrency == 1:
-            return [self._judge_one(question, result, on_record) for question, result in pairs]
-        with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
-            return list(executor.map(lambda pair: self._judge_one(*pair, on_record), pairs))
+            iterator = (self._judge_one(question, result, on_record) for question, result in pairs)
+            records = list(track(
+                iterator, enabled=self.progress_enabled, description="Judging premade answers", total=len(pairs),
+            ))
+        else:
+            with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
+                iterator = executor.map(lambda pair: self._judge_one(*pair, on_record), pairs)
+                records = list(track(
+                    iterator, enabled=self.progress_enabled, description="Judging premade answers", total=len(pairs),
+                ))
+        logger.info("premade_judging_completed record_count=%d", len(records))
+        return records

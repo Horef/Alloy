@@ -103,6 +103,14 @@ PROMPT_REPAIR_PROMPT = """Repair the structured prompt package below so it satis
 deterministic validation failure. Preserve grounded scope and do not invent domain rules, tools,
 permissions, contacts, or authority. Return a complete PromptPackage in Hebrew.
 
+Return the COMPLETE package. Fix only the listed failures and carry every other field over
+unchanged. Never drop, empty, or shorten fields that are not named in the failures. In particular,
+when improvement context is supplied you must keep populated revision_mappings, regression_cases,
+and revision_evidence_question_ids: each revision mapping states an observed failure, the supplied
+evidence IDs it used, the exact rule changed, the expected observable behavior, and the non-prompt
+limitation; each regression case has a question, a small synthetic retrieved context, the expected
+answer/clarify/abstain behavior, and a non-empty list of content the answer must not contain.
+
 VALIDATION FAILURES:
 {failures}
 
@@ -348,7 +356,17 @@ class SystemPromptGenerator:
             )
         generation_prompt += "\n\nFIXED RESPONSE POLICY (will be assembled by code; do not repeat it):\n" + response_policy(self.instruction_profile, self.answer_policy)
         generation_prompt += "\nProduce compatible domain/role/tone guidance. Use concrete failure patterns, not stronger adjectives. Missing runtime context is unknown telemetry, not proven failed retrieval. Reference evidence is not runtime context. Truncated/omitted content cannot prove absence. Do not copy benchmark facts or examples into operational policy."
-        package = self.llm.generate(generation_prompt, PromptPackage, self.model)
+        # In improvement mode the validator requires these structured fields, but Pydantic marks
+        # them optional (they carry list defaults), so the model is free to omit them. Promote them
+        # to schema-level required with a minimum item count so the structured output includes them.
+        required_fields = (
+            {"revision_mappings": 1, "regression_cases": 1, "revision_summary": 1}
+            if improvement_mode
+            else None
+        )
+        package = self.llm.generate(
+            generation_prompt, PromptPackage, self.model, required_fields=required_fields,
+        )
         _populate_legacy_review_fields(package)
         package.system_prompt_hebrew = assemble_prompt(
             package.system_prompt_hebrew, self.instruction_profile, self.answer_policy,
@@ -359,6 +377,7 @@ class SystemPromptGenerator:
         )
         if failures:
             logger.warning("system_prompt_validation_repair failures=%s", failures)
+            pre_repair = package
             package = self.llm.generate(
                 PROMPT_REPAIR_PROMPT.format(
                     failures=json.dumps(failures, ensure_ascii=False),
@@ -375,7 +394,9 @@ class SystemPromptGenerator:
                 ),
                 PromptPackage,
                 self.model,
+                required_fields=required_fields,
             )
+            _carry_forward_review_fields(package, pre_repair)
             _populate_legacy_review_fields(package)
             package.system_prompt_hebrew = assemble_prompt(
                 package.system_prompt_hebrew, self.instruction_profile, self.answer_policy,
@@ -410,6 +431,24 @@ def _bounded_context(value: str, maximum: int) -> str:
     return value[:beginning] + marker + (value[-tail:] if tail else "")
 
 
+def _carry_forward_review_fields(package: PromptPackage, previous: PromptPackage) -> None:
+    """Preserve improvement-mode review fields that a repair pass dropped.
+
+    A repair regenerates the whole PromptPackage, and the model sometimes empties structured
+    fields it was not asked to change (revision_mappings, regression_cases, and the evidence IDs).
+    When the repaired package left one of these empty but the pre-repair package had it, carry the
+    earlier value forward so a partial repair does not regress previously valid output.
+    """
+    if not package.revision_mappings and previous.revision_mappings:
+        package.revision_mappings = previous.revision_mappings
+    if not package.regression_cases and previous.regression_cases:
+        package.regression_cases = previous.regression_cases
+    if not package.revision_evidence_question_ids and previous.revision_evidence_question_ids:
+        package.revision_evidence_question_ids = previous.revision_evidence_question_ids
+    if not package.revision_summary and previous.revision_summary:
+        package.revision_summary = previous.revision_summary
+
+
 def _populate_legacy_review_fields(package: PromptPackage) -> None:
     """Keep additive structured output consumable by older artifact readers."""
     if package.revision_mappings:
@@ -423,8 +462,21 @@ def _populate_legacy_review_fields(package: PromptPackage) -> None:
         package.revision_evidence_question_ids = sorted(
             set(package.revision_evidence_question_ids) | mapped_ids,
         )
-    if package.regression_cases and not package.suggested_regression_questions:
-        package.suggested_regression_questions = [case.question for case in package.regression_cases]
+    if package.regression_cases:
+        # suggested_regression_questions is a compatibility view of regression_cases. The model
+        # may populate both and leave them inconsistent, so derive it here rather than trusting
+        # the model to keep them in sync. Every case question must be present; preserve any extra
+        # questions the model supplied, and drop duplicates while keeping first-seen order.
+        derived = [case.question for case in package.regression_cases]
+        derived.extend(package.suggested_regression_questions)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for question in derived:
+            normalized = " ".join(question.casefold().split())
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique.append(question)
+        package.suggested_regression_questions = unique
 
 
 def validate_prompt_package(

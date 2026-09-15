@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import time
@@ -16,7 +17,34 @@ logger = logging.getLogger(__name__)
 
 
 class StructuredLLM(Protocol):
-    def generate(self, prompt: str, schema: type[T], model: str) -> T: ...
+    def generate(
+        self, prompt: str, schema: type[T], model: str,
+        *, required_fields: dict[str, int] | None = None,
+    ) -> T: ...
+
+
+def _augment_required(json_schema: dict, required_fields: dict[str, int] | None) -> dict:
+    """Promote conditionally-required fields to schema-level ``required``.
+
+    Pydantic omits fields that have defaults (``default_factory=list``) from ``required``, which
+    lets structured-output models drop them. When a caller knows a field must be present for this
+    request (e.g. improvement-mode regression cases), it can pass the field name mapped to the
+    minimum number of list items. This mutates a copy so the model class schema is untouched.
+    """
+    if not required_fields:
+        return json_schema
+    schema = copy.deepcopy(json_schema)
+    properties = schema.get("properties", {})
+    required = list(schema.get("required", []))
+    for field, minimum in required_fields.items():
+        if field not in properties:
+            continue
+        if field not in required:
+            required.append(field)
+        if minimum > 0 and properties[field].get("type") == "array":
+            properties[field]["minItems"] = max(minimum, properties[field].get("minItems", 0))
+    schema["required"] = required
+    return schema
 
 
 class GeminiStructuredLLM:
@@ -102,9 +130,13 @@ class GeminiStructuredLLM:
             headers.get(f"x-quota-{metric}-remaining"),
         )
 
-    def generate(self, prompt: str, schema: type[T], model: str) -> T:
+    def generate(
+        self, prompt: str, schema: type[T], model: str,
+        *, required_fields: dict[str, int] | None = None,
+    ) -> T:
         started = time.perf_counter()
         last_error: Exception | None = None
+        response_json_schema = _augment_required(schema.model_json_schema(), required_fields)
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._client.models.generate_content(
@@ -112,7 +144,7 @@ class GeminiStructuredLLM:
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        response_json_schema=schema.model_json_schema(),
+                        response_json_schema=response_json_schema,
                         # This pipeline never exposes tools to the model. Disable AFC explicitly
                         # so the SDK does not initialize its function-calling loop or log its
                         # default maximum-remote-calls message.
