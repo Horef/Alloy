@@ -28,6 +28,7 @@ from .models import ChatbotResult, Outcome, SilverQuestion
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .prompt_policy import POLICY_VERSION
 from .report import write_report
+from .review import MergeDiagnostics, merge_review_file, write_review_file
 from .results_io import ImportDiagnostics, ResultColumns, read_premade_results
 from .contracts import model_identity, records_hash
 from .topics import infer_topics, topic_inference_fingerprint
@@ -98,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
     evaluate.add_argument("--compare-with", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl to compare in the report")
+    evaluate.add_argument("--soft-compare", action="store_true", help="Show approximate deltas on matched questions even when the benchmark or evaluation contract changed; warnings remain but are informational")
     evaluate.add_argument("--retry-errors", action="store_true", help="Retry checkpointed chatbot/judge errors while preserving successes")
     evaluate.add_argument("--max-concurrency", type=int, help="Concurrent chatbot/judge workers; default is config value 1")
     _add_cache_arguments(evaluate)
@@ -129,9 +131,25 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--resume", action="store_true", help="Resume completed rows from a compatible checkpoint")
     evaluate_file.add_argument("--checkpoint", type=Path, help="Checkpoint JSONL path; defaults inside the output directory")
     evaluate_file.add_argument("--compare-with", type=Path, help="Previous Alloy output directory or evaluation_details.jsonl to compare in the report")
+    evaluate_file.add_argument("--soft-compare", action="store_true", help="Show approximate deltas on matched questions even when the benchmark or evaluation contract changed; warnings remain but are informational")
     evaluate_file.add_argument("--retry-errors", action="store_true", help="Retry checkpointed judge errors while preserving other rows")
     evaluate_file.add_argument("--max-concurrency", type=int, help="Concurrent judge workers; default is config value 1")
     _add_cache_arguments(evaluate_file)
+
+    review_export = commands.add_parser(
+        "review-export", help="Export a human-readable review file from a generated silver question set",
+    )
+    review_export.add_argument("--questions", type=Path, required=True, help="Silver CSV or JSONL to export for review")
+    review_export.add_argument("--output", type=Path, default=Path("outputs/review"), help="Destination for questions_for_review.csv/.md")
+    review_export.add_argument("--hebrew-columns", action="store_true", help="Write Hebrew column headers for reviewers (the 'id' column stays English); review-merge reads either language")
+
+    review_merge = commands.add_parser(
+        "review-merge",
+        help="Merge an edited human review file back onto the canonical silver set, preserving technical columns",
+    )
+    review_merge.add_argument("--canonical", type=Path, required=True, help="Original silver JSONL/CSV that holds all technical columns")
+    review_merge.add_argument("--review", type=Path, required=True, help="Edited questions_for_review.csv")
+    review_merge.add_argument("--output", type=Path, default=Path("outputs/questions-reviewed"), help="Destination for the merged silver CSV/JSONL")
 
     report = commands.add_parser("report", help="Regenerate a report from completed Alloy evaluation JSONL")
     report.add_argument("--results", type=Path, required=True, help="Current output directory or evaluation_details.jsonl")
@@ -139,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--compare-with", type=Path, help="Previous output directory or evaluation_details.jsonl")
     report.add_argument("--insights", type=Path, help="Optional evaluation_insights.json or its output directory")
     report.add_argument("--hide-correct-answer-metrics", action="store_true")
+    report.add_argument("--soft-compare", action="store_true", help="Show approximate deltas on matched questions even when the benchmark or evaluation contract changed; warnings remain but are informational")
     return parser
 
 
@@ -271,7 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "generate" and args.resume and args.refresh_cache:
         raise ValueError("generate --resume cannot be combined with --refresh-cache; start a fresh run instead")
     _ensure_config(args.config)
-    settings = load_settings(args.config, require_api_key=args.command != "report")
+    offline_commands = {"report", "review-export", "review-merge"}
+    settings = load_settings(args.config, require_api_key=args.command not in offline_commands)
     log_path = args.log_file or (Path(settings.log_file) if settings.log_file else None)
     configure_logging(log_path, args.log_level or settings.log_level)
     progress_enabled = settings.progress_enabled and not args.no_progress
@@ -288,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             parameters={
                 "compare_with": bool(args.compare_with),
                 "show_correct_answer_metrics": not args.hide_correct_answer_metrics,
+                "soft_compare": args.soft_compare,
             },
         ) as manifest:
             summary_json, report_html = write_report(
@@ -295,11 +316,59 @@ def main(argv: list[str] | None = None) -> int:
                 show_correct_answer_metrics=not args.hide_correct_answer_metrics,
                 previous_records=previous_records,
                 current_contract=current_contract, previous_contract=previous_contract,
+                soft_compare=args.soft_compare,
             )
             manifest.complete(record_count=len(records), outputs=input_inventory([summary_json, report_html]))
         print(f"Generated report from {len(records)} completed records.\nSummary: {summary_json}\nReport: {report_html}")
         if previous_records:
             print(f"Compared with {len(previous_records)} previous records.")
+        return 0
+
+    if args.command == "review-export":
+        questions = read_questions(args.questions)
+        with RunManifest(
+            args.output, command=args.command, settings=settings, inputs=[args.questions],
+            parameters={"question_count": len(questions), "hebrew_columns": args.hebrew_columns},
+        ) as manifest:
+            review_csv, review_md = write_review_file(questions, args.output, hebrew_columns=args.hebrew_columns)
+            manifest.complete(
+                question_count=len(questions),
+                outputs=input_inventory([review_csv, review_md]),
+            )
+        print(
+            f"Exported {len(questions)} questions for human review.\n"
+            f"Edit this file: {review_csv}\nRead-only view: {review_md}\n"
+            "After review, run 'review-merge' with the original silver file to rebuild the full technical set."
+        )
+        logger.info("command_completed command=review-export question_count=%d output=%s", len(questions), args.output)
+        return 0
+
+    if args.command == "review-merge":
+        canonical = read_questions(args.canonical)
+        merge_diagnostics = MergeDiagnostics()
+        merged = merge_review_file(canonical, args.review, diagnostics=merge_diagnostics)
+        with RunManifest(
+            args.output, command=args.command, settings=settings, inputs=[args.canonical, args.review],
+            parameters={"merge_diagnostics": merge_diagnostics.as_dict()},
+        ) as manifest:
+            csv_path, jsonl_path = write_questions(merged, args.output)
+            manifest.complete(
+                question_count=len(merged),
+                merge_diagnostics=merge_diagnostics.as_dict(),
+                outputs=input_inventory([csv_path, jsonl_path]),
+            )
+        print(
+            f"Merged {len(merged)} reviewed questions from {merge_diagnostics.canonical_total} canonical.\n"
+            f"Reviewer removed {merge_diagnostics.deleted_by_reviewer}; edited {merge_diagnostics.content_edited}; "
+            f"{merge_diagnostics.factual_edits_flagged} factual edits flagged for re-grounding.\n"
+            f"Reviewed silver CSV: {csv_path}\nProvenance JSONL: {jsonl_path}"
+        )
+        if merge_diagnostics.factual_edits_flagged:
+            print(
+                "Note: questions whose question/expected_answer text was edited had their approval "
+                "downgraded to 'needs_reground' because stored sources and claims may no longer match."
+            )
+        logger.info("command_completed command=review-merge merged=%d output=%s", len(merged), args.output)
         return 0
 
     llm = GeminiStructuredLLM(
@@ -495,7 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             parameters={
                 "sheet": args.sheet, "infer_topics": args.infer_topics, "import_diagnostics": import_diagnostics.as_dict(),
                 "generate_insights": args.generate_insights, "resume": args.resume, "strict": args.strict,
-                "compare_with": bool(args.compare_with), "retry_errors": args.retry_errors,
+                "compare_with": bool(args.compare_with), "soft_compare": args.soft_compare, "retry_errors": args.retry_errors,
                 "max_concurrency": concurrency,
             },
         ) as manifest:
@@ -535,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                 show_correct_answer_metrics=not args.hide_correct_answer_metrics,
                 previous_records=previous_records,
                 current_contract=contract, previous_contract=previous_contract,
+                soft_compare=args.soft_compare,
             )
             output_paths = [details_csv, details_jsonl, summary_json, report_html, checkpoint_path, args.output / "evaluation_insights_status.json"]
             if insights_path:
@@ -577,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
             "question_field": args.question_field, "answer_field": args.answer_field,
             "context_field": args.context_field, "approved_only": args.approved_only,
             "generate_insights": args.generate_insights, "resume": args.resume,
-            "compare_with": bool(args.compare_with), "retry_errors": args.retry_errors,
+            "compare_with": bool(args.compare_with), "soft_compare": args.soft_compare, "retry_errors": args.retry_errors,
             "max_concurrency": concurrency,
         },
     ) as manifest:
@@ -618,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
             show_correct_answer_metrics=not args.hide_correct_answer_metrics,
             previous_records=previous_records,
             current_contract=contract, previous_contract=previous_contract,
+            soft_compare=args.soft_compare,
         )
         output_paths = [details_csv, details_jsonl, summary_json, report_html, checkpoint_path, args.output / "evaluation_insights_status.json"]
         if insights_path:

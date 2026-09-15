@@ -274,3 +274,66 @@ def test_evaluation_contract_comparison_discloses_only_changed_field_names(tmp_p
     assert "judge_model" in rendered and "limits.context" in rendered
     assert "SECRET_PREVIOUS_VALUE" not in rendered
     assert "SECRET_CURRENT_VALUE" not in rendered
+
+
+def _answer_record(identifier, question, answer, outcome):
+    return EvaluationRecord(
+        question=SilverQuestion(id=identifier, topic="נושא", question=question, expected_answer="תשובה"),
+        result=ChatbotResult(question_id=identifier, answer=answer), outcome=outcome,
+    )
+
+
+def test_soft_compare_shows_approximate_delta_when_benchmark_changed(tmp_path):
+    previous = [
+        _answer_record("Q1", "שאלה אחת", "תשובה", Outcome.UNRELATED_ANSWER),
+        _answer_record("Q2", "שאלה שתיים", "תשובה", Outcome.CORRECT_ANSWER),
+    ]
+    current = [
+        _answer_record("Q1", "שאלה אחת", "תשובה", Outcome.CORRECT_ANSWER),
+        _answer_record("Q2", "שאלה שתיים", "תשובה", Outcome.CORRECT_ANSWER),
+        _answer_record("Q3", "שאלה חדשה", "תשובה", Outcome.CORRECT_ANSWER),
+    ]
+
+    # Adding Q3 makes the benchmark non-comparable, so the strict delta is suppressed.
+    strict = build_comparison(current, previous)
+    assert strict["aggregate_comparable"] is False
+    assert strict["metrics"]["factual_answer_success_rate"]["delta"] is None
+
+    soft = build_comparison(current, previous, soft_compare=True)
+    metric = soft["metrics"]["factual_answer_success_rate"]
+    assert soft["soft_compare"] is True
+    # On the two matched questions, success went from 1/2 to 2/2 = +50%.
+    assert metric["soft_delta"] == 0.5
+    assert metric["soft_denominator"] == 2
+    assert metric["soft_favorable"] is True
+
+
+def test_soft_compare_downgrades_warnings_and_renders_approximate_delta(tmp_path):
+    previous = [_answer_record("Q1", "שאלה", "תשובה", Outcome.UNRELATED_ANSWER)]
+    current = [
+        _answer_record("Q1", "שאלה", "תשובה", Outcome.CORRECT_ANSWER),
+        _answer_record("Q2", "שאלה חדשה", "תשובה", Outcome.CORRECT_ANSWER),
+    ]
+
+    _, report_path = write_report(current, tmp_path, previous_records=previous, soft_compare=True)
+    rendered = report_path.read_text(encoding="utf-8")
+
+    assert "מצב השוואה רכה פעיל" in rendered
+    # Approximate marker is present and the hard "not comparable" text is not used for this metric.
+    assert "≈" in rendered
+    # The soft banner and softened notes should not use the warn styling for the aggregate note.
+    assert "מקורב" in rendered
+
+
+def test_strict_compare_still_hides_delta_without_soft_flag(tmp_path):
+    previous = [_answer_record("Q1", "שאלה", "תשובה", Outcome.UNRELATED_ANSWER)]
+    current = [
+        _answer_record("Q1", "שאלה", "תשובה", Outcome.CORRECT_ANSWER),
+        _answer_record("Q2", "שאלה חדשה", "תשובה", Outcome.CORRECT_ANSWER),
+    ]
+
+    _, report_path = write_report(current, tmp_path, previous_records=previous)
+    rendered = report_path.read_text(encoding="utf-8")
+
+    assert "מצב השוואה רכה פעיל" not in rendered
+    assert "לא בר השוואה" in rendered

@@ -1,13 +1,15 @@
 # Chatbot Evaluation Module
 
 This standalone Python module builds and runs evaluation sets for internal knowledge chatbots and
-helps managers bootstrap chatbot instructions. It supports five workflows:
+helps managers bootstrap chatbot instructions. It supports these workflows:
 
 1. `generate`: create a representative, evidence-backed silver question set from local documents.
-2. `evaluate`: send reviewed questions to a JSON-over-HTTP chatbot and judge its answers.
-3. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
-4. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
-5. `report`: regenerate a report from completed results, optionally compared with a previous run.
+2. `review-export` / `review-merge`: export a small, human-readable review file and merge the
+   reviewer's edits back onto the full technical set without losing provenance.
+3. `evaluate`: send reviewed questions to a JSON-over-HTTP chatbot and judge its answers.
+4. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
+5. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
+6. `report`: regenerate a report from completed results, optionally compared with a previous run.
 
 Gemini provides structured question generation, answer judging, optional topic inference, and
 optional cross-result insights. The module does not require the existing chatbot fleet; integration
@@ -192,7 +194,8 @@ Alloy configures the Google GenAI SDK in Vertex-compatible mode with an SDK plac
 sends the real credential only in the `x-apikey` header. The base URL must use HTTPS and include the
 AI Gateway client path. Unified quota response headers are recorded at `INFO` level as metric,
 request usage, daily usage, limit, and remaining allowance; no API key or response content is logged.
-The offline `report` command does not initialize either Gemini transport.
+The offline `report`, `review-export`, and `review-merge` commands do not initialize either Gemini
+transport and need no API key.
 
 ### Global CLI parameters
 
@@ -410,7 +413,95 @@ Reviewers should confirm the user need, reference answer, sources, and quotation
 then set `review_status` to `approved` or `rejected`. Keep rejected/deleted questions in an exclusion
 file if they must not reappear. Do not rename required CSV columns if the module will read the file.
 
-## Workflow 2: evaluate a live chatbot
+Editing `silver_questions.csv` directly is possible but noisy: it carries provenance JSON,
+verbatim supporting quotes, atomic reference claims, and CSV-escape metadata that a reviewer does
+not need and can accidentally break. The review workflow below is the recommended path when a human
+will read and edit the set.
+
+## Workflow 2: human review round-trip
+
+This workflow separates *reviewing* from *storing*. `review-export` writes a small, readable file
+with only the columns a reviewer changes; `review-merge` reapplies those edits onto the original
+technical set so no provenance is lost.
+
+```text
+silver_questions.jsonl (canonical, all technical columns)
+        |
+        v   review-export
+questions_for_review.csv   (editable: readable columns only)
+questions_for_review.md    (read-only pretty view)
+        |   humans edit, delete rows, set review_status/reviewer_notes
+        v   review-merge  (canonical + edited review file)
+silver_questions.csv/.jsonl (full technical set, reviewer decisions applied)  -> evaluate
+```
+
+### Why a sidecar instead of editing the canonical file
+
+The canonical JSONL stays the single source of truth for every technical field, so the review file
+never has to reconstruct provenance. Rows are matched by the stable `id`, which the reviewer must
+not edit. On merge, the canonical record is copied and only the reviewer-editable fields are
+overlaid.
+
+### review-export
+
+```bash
+chatbot-eval --config config.toml review-export \
+  --questions ./outputs/questions/silver_questions.jsonl \
+  --output ./outputs/review
+```
+
+`questions_for_review.csv` contains `id`, `topic`, `question`, `expected_answer`, `answerable`,
+`question_form`, `expected_behavior`, `difficulty`, two read-only reference columns
+(`sources_readable`, `supporting_quotes_readable`), and the decision columns `review_status` and
+`reviewer_notes`. `questions_for_review.md` is a formatted, read-only view for reading only.
+
+| Option | Required/default | Meaning |
+|---|---|---|
+| `--questions PATH` | required | Silver CSV or JSONL to export for review. |
+| `--output DIR` | `outputs/review` | Destination for `questions_for_review.csv` and `.md`. |
+| `--hebrew-columns` | off | Write Hebrew column headers for Hebrew-speaking reviewers. The `id` column keeps its English name because it is the machine join key. `review-merge` reads either language, so this choice is purely cosmetic. |
+
+### review-merge
+
+```bash
+chatbot-eval --config config.toml review-merge \
+  --canonical ./outputs/questions/silver_questions.jsonl \
+  --review ./outputs/review/questions_for_review.csv \
+  --output ./outputs/questions-reviewed
+```
+
+| Option | Required/default | Meaning |
+|---|---|---|
+| `--canonical PATH` | required | Original silver JSONL/CSV that holds all technical columns. |
+| `--review PATH` | required | The edited `questions_for_review.csv`. |
+| `--output DIR` | `outputs/questions-reviewed` | Destination for the merged silver CSV/JSONL. |
+
+Merge rules, chosen to preserve as much technical information as possible:
+
+- **Status/notes and light content edits** (`topic`, `question`, `expected_answer`, `answerable`,
+  `question_form`, `expected_behavior`, `difficulty`) are overlaid onto the canonical record. All
+  other technical columns are kept verbatim.
+- **Rows the reviewer removed** from the review file are treated as intentional deletions and
+  dropped from the merged set.
+- **Rows whose `question` or `expected_answer` text was edited** keep their stored sources, quotes,
+  and claims (nothing is discarded), but the row is flagged: a note is appended and an `approved`
+  status is downgraded to `needs_reground`, because the stored grounding may no longer match the new
+  text.
+
+`needs_reground` is a signal, not an automatic action. `review_status` affects evaluation in exactly
+one way: `evaluate --approved-only` keeps only rows whose status is `approved`, so a `needs_reground`
+row is excluded there and included (with its stale grounding) in a plain `evaluate` run. Nothing in
+the evaluation pipeline regenerates grounding — sources, supporting quotes, and reference claims are
+produced only by `generate` against your documents. To re-ground a flagged question, re-run
+`generate` for it or edit its claims/sources by hand, then set the status back to `approved`.
+- **Rows with an `id` not in the canonical set** are rejected. New questions cannot be grounded from
+  the review file; generate them instead. Duplicate `id`s in the review file are also rejected.
+
+A `merge_diagnostics` block (removed / edited / factual-edit counts, unknown IDs) is printed and
+recorded in `run_manifest.json`. The merged `silver_questions.csv`/`.jsonl` flows directly into
+`evaluate` or `evaluate --approved-only`.
+
+## Workflow 3: evaluate a live chatbot
 
 The generic adapter sends one sequential HTTP `POST` per question. Defaults:
 
@@ -443,6 +534,7 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 | `--resume` | off | Reuse completed records from a compatible checkpoint. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 | `--compare-with PATH` | unset | Previous Alloy output directory or `evaluation_details.jsonl`; adds aggregate and matched-question comparison to the report. |
+| `--soft-compare` | off | Show approximate deltas on matched questions even when the benchmark or evaluation contract changed. Warnings still appear but are framed as informational. Requires `--compare-with`. |
 | `--retry-errors` | off | With `--resume`, retry prior `chatbot_error` and `judge_error` rows while preserving successful rows. |
 | `--max-concurrency N` | config value (`1`) | Opt-in concurrent chatbot/judge workers; output order remains the question-file order. |
 | `--cache-dir DIR` | config value | Cache location used for optional insights. |
@@ -487,7 +579,7 @@ denominators. The generic adapter retries only transient failures with bounded e
 honors `Retry-After`, and supports optional pacing. Production fleet adapters should still own
 authentication, idempotency, sessions, and organization-specific formats.
 
-## Workflow 3: evaluate a premade Q&A file
+## Workflow 4: evaluate a premade Q&A file
 
 This workflow never contacts the chatbot. It reads saved rows, preserves recognizable API failures
 as `chatbot_error`, and sends usable rows to the same judge used for live evaluation.
@@ -547,6 +639,7 @@ Explicit mappings are recommended for stable production jobs.
 | `--resume` | off | Reuse completed rows whose imported inputs still match. |
 | `--checkpoint PATH` | `<output>/evaluation_checkpoint.jsonl` | Append-only per-question checkpoint. |
 | `--compare-with PATH` | unset | Previous Alloy output directory or `evaluation_details.jsonl`; adds comparison to the report. |
+| `--soft-compare` | off | Show approximate deltas on matched questions even when the benchmark or evaluation contract changed. Warnings still appear but are framed as informational. Requires `--compare-with`. |
 | `--retry-errors` | off | With `--resume`, retry prior judge errors while preserving imported chatbot errors and successful rows. |
 | `--max-concurrency N` | config value (`1`) | Opt-in concurrent judge workers; final row order remains stable. |
 | `--cache-dir DIR` | config value | Shared cache for inferred topics and optional insights. |
@@ -581,7 +674,7 @@ import fails until the corresponding explicit `--*-column` mapping selects one, 
 chosen silently. Parent values refer to external IDs in the imported file and unresolved parents are
 cleared while the original value is retained in result metadata.
 
-## Workflow 4: generate a system prompt from documents
+## Workflow 5: generate a system prompt from documents
 
 This optional component helps a chatbot manager create a strong starting prompt without copying
 domain rules by hand. It reuses the document loader and topic discovery, then asks Gemini for a
@@ -662,7 +755,7 @@ remove unsupported rules, decide approved fallback/escalation behavior, and impl
 application guardrails outside the model. The prompt generator itself does not deploy or modify a
 chatbot.
 
-## Workflow 5: regenerate and compare reports
+## Workflow 6: regenerate and compare reports
 
 The `report` command creates JSON/HTML from completed Alloy evaluation JSONL without contacting the
 chatbot or Gemini. It accepts either an output directory or its `evaluation_details.jsonl` file and
@@ -684,6 +777,39 @@ instead of silently overwriting one another. Aggregate KPI deltas are calculated
 runs contain the same unique benchmark; otherwise the two absolute values remain visible but the
 delta is marked non-comparable. Matched outcomes still show improvements, regressions, persistent
 successes/failures, and topic-level movement.
+
+### Why the default is strict, and when to relax it
+
+The strictness is deliberate. Suppressing deltas when the question set or the evaluation contract
+changed prevents a composition change (added, removed, or edited questions) or a configuration
+change (a different judge model, transport, or judge input limits) from being read as a change in
+chatbot performance. This is the right default, and it matters more once the review round-trip is in
+use, because human review routinely adds, edits, or removes questions between runs.
+
+But strictness is sometimes too conservative. After a deliberate review pass or a model upgrade, you
+may still want a directional read of how the chatbot moved on the questions that stayed the same.
+`--soft-compare` provides that. It keeps every warning visible but frames them as informational, and
+it computes an **approximate** delta for each metric over the intersection of matched questions
+(same ID and identical material fields) that are eligible for that metric. These soft deltas are
+rendered with a `≈` marker and the count of matched questions they are based on, so they read as an
+estimate rather than a measured KPI change. When the benchmark and contract are identical,
+`--soft-compare` changes nothing: the exact deltas are already shown.
+
+| Option | Required/default | Meaning |
+|---|---|---|
+| `--results PATH` | required | Current output directory or `evaluation_details.jsonl`. |
+| `--compare-with PATH` | unset | Previous output directory or `evaluation_details.jsonl`. |
+| `--insights PATH` | unset | Optional `evaluation_insights.json` or its output directory. |
+| `--hide-correct-answer-metrics` | off | Hide correctness indicators in the HTML; underlying data is preserved. |
+| `--soft-compare` | off | Show approximate matched-question deltas even when the benchmark or contract changed; warnings stay but are informational. Requires `--compare-with`. |
+
+```bash
+chatbot-eval --config config.toml report \
+  --results ./outputs/run-002 \
+  --compare-with ./outputs/run-001 \
+  --soft-compare \
+  --output ./outputs/run-002-comparison
+```
 
 ## Judging logic and outcomes
 

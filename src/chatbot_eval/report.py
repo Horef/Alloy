@@ -73,6 +73,40 @@ def _paired_variant_metrics(records: list[EvaluationRecord]) -> dict:
     }
 
 
+BEHAVIOR_FAILURE_OUTCOMES = {
+    Outcome.MISSING_CLARIFICATION, Outcome.INCORRECT_ABSTENTION, Outcome.SHOULD_HAVE_ABSTAINED,
+}
+
+
+def _metric_hit(record: EvaluationRecord, key: str) -> bool:
+    """Whether a single record counts toward a metric's numerator.
+
+    The record is assumed to already belong to the metric's eligible population, so this
+    only decides the success/failure classification. It mirrors the numerator definitions
+    used in ``build_summary`` so soft, matched-question comparisons stay consistent with
+    the headline metrics.
+    """
+    if key == "infrastructure_error_rate":
+        return record.outcome in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}
+    if key == "factual_answer_success_rate":
+        return record.outcome in ANSWER_SUCCESS
+    if key == "useful_answer_rate_on_answerable":
+        return record.outcome in ANSWER_USEFUL
+    if key == "clarification_success_rate":
+        return record.outcome == Outcome.CORRECT_CLARIFICATION
+    if key == "abstention_success_rate":
+        return record.outcome == Outcome.CORRECT_ABSTENTION
+    if key == "good_retrieval_rate":
+        return _retrieval_good(record)
+    if key == "risky_misinformation_rate":
+        return record.outcome in RISKY
+    if key == "factual_risk_rate":
+        return bool(record.scores and (record.scores.answer_false_claims or record.scores.answer_unsupported_claims))
+    if key == "behavior_failure_rate":
+        return record.outcome in BEHAVIOR_FAILURE_OUTCOMES
+    return False
+
+
 def _retrieval_good(record: EvaluationRecord) -> bool:
     return bool(
         record.scores
@@ -221,6 +255,7 @@ def build_comparison(
     *,
     current_contract: dict | None = None,
     previous_contract: dict | None = None,
+    soft_compare: bool = False,
 ) -> dict:
     """Compare whole-run KPIs and like-for-like question outcomes."""
     current_summary = build_summary(current_records)
@@ -286,6 +321,20 @@ def build_comparison(
 
     metric_definitions["factual_risk_rate"] = ("טענות שגויות או לא מבוססות", True)
     metric_definitions["behavior_failure_rate"] = ("כשל במדיניות המענה", True)
+
+    def soft_rate(by_id: dict, key: str) -> tuple[float | None, int, int]:
+        """Metric rate over a like-for-like subset, restricted to eligible records.
+
+        ``by_id`` maps the shared question IDs to a single record per run.
+        """
+        eligible_here = eligible(list(by_id.values()), key)
+        selected = [by_id[identifier] for identifier in eligible_here if identifier in by_id]
+        hits = sum(_metric_hit(record, key) for record in selected)
+        return _rate(hits, len(selected)), hits, len(selected)
+
+    matched_id_set = set(matched_ids)
+    current_matched = {identifier: current_by_id[identifier] for identifier in matched_id_set}
+    previous_matched = {identifier: previous_by_id[identifier] for identifier in matched_id_set}
     metrics = {}
     for key, (label, lower_is_better) in metric_definitions.items():
         current = current_summary.get(key)
@@ -300,10 +349,30 @@ def build_comparison(
         favorable = None
         if delta:
             favorable = delta < 0 if lower_is_better else delta > 0
+        # Approximate like-for-like value on matched questions, always computed so callers
+        # can opt into showing it. It restricts each metric to the questions whose money
+        # fields are identical across the runs and that are eligible for that metric.
+        soft_current, soft_current_hits, soft_current_denominator = soft_rate(current_matched, key)
+        soft_previous, soft_previous_hits, soft_previous_denominator = soft_rate(previous_matched, key)
+        soft_delta = (
+            soft_current - soft_previous
+            if soft_current is not None and soft_previous is not None and soft_current_denominator == soft_previous_denominator
+            else None
+        )
+        soft_favorable = None
+        if soft_delta:
+            soft_favorable = soft_delta < 0 if lower_is_better else soft_delta > 0
         metrics[key] = {
             "label": label,
             "comparable": metric_comparable,
             "reason": reason,
+            "soft_current": soft_current,
+            "soft_previous": soft_previous,
+            "soft_current_numerator": soft_current_hits,
+            "soft_previous_numerator": soft_previous_hits,
+            "soft_denominator": soft_current_denominator,
+            "soft_delta": soft_delta,
+            "soft_favorable": soft_favorable,
             "current_denominator": len(current_ids),
             "previous_denominator": len(previous_ids),
             "current_numerator": round(current * len(current_ids)) if current is not None else 0,
@@ -345,6 +414,7 @@ def build_comparison(
     comparable = matched - states["not_comparable"]
     contract_comparison = compare_evaluation_contracts(current_contract, previous_contract)
     return {
+        "soft_compare": soft_compare,
         "evaluation_contract_compatibility": contract_comparison["status"],
         "evaluation_contract_changed_fields": contract_comparison["changed_fields"],
         "current_total": len(current_records),
@@ -453,16 +523,25 @@ def _pct_count_ci(rate: float | None, count: int, denominator: int, interval: li
 def _comparison_block(comparison: dict | None, show_correct_answer_metrics: bool = True) -> str:
     if not comparison:
         return ""
+    soft_compare = comparison.get("soft_compare", False)
     metric_rows = []
     for key, metric in comparison["metrics"].items():
         if not show_correct_answer_metrics and key == "factual_answer_success_rate":
             continue
         delta = metric["delta"]
-        delta_text = (
-            "לא בר השוואה" if not metric.get("comparable", comparison["aggregate_comparable"]) else
-            "לא זמין" if delta is None else f"{delta:+.1%}"
-        )
-        delta_class = "neutral" if metric["favorable"] is None else ("good" if metric["favorable"] else "bad")
+        comparable = metric.get("comparable", comparison["aggregate_comparable"])
+        soft_delta = metric.get("soft_delta")
+        if comparable and delta is not None:
+            delta_text = f"{delta:+.1%}"
+            delta_class = "neutral" if metric["favorable"] is None else ("good" if metric["favorable"] else "bad")
+        elif soft_compare and soft_delta is not None:
+            # Approximate like-for-like delta on the matched questions.
+            denominator = metric.get("soft_denominator", 0)
+            delta_text = f"≈{soft_delta:+.1%}<small>מקורב · {denominator} שאלות תואמות</small>"
+            delta_class = "neutral" if metric.get("soft_favorable") is None else ("good" if metric["soft_favorable"] else "bad")
+        else:
+            delta_text = "לא בר השוואה" if not comparable else "לא זמין"
+            delta_class = "neutral"
         metric_rows.append(
             f'<tr><td>{_esc(metric["label"])}</td><td>{_pct(metric["previous"])} ({metric.get("previous_numerator", "?")}/{metric.get("previous_denominator", "?")})</td>'
             f'<td>{_pct(metric["current"])} ({metric.get("current_numerator", "?")}/{metric.get("current_denominator", "?")})</td><td class="delta {delta_class}">{delta_text}</td></tr>'
@@ -474,8 +553,16 @@ def _comparison_block(comparison: dict | None, show_correct_answer_metrics: bool
         f'<td>{data["unchanged_failure"]}</td></tr>'
         for topic, data in comparison["by_topic"].items()
     )
+    # In soft mode the same discrepancies are surfaced, but framed as informational because
+    # the reviewer explicitly asked to see approximate deltas anyway.
+    note_class = "note" if soft_compare else "note warn"
+    soft_banner = (
+        '<div class="note">מצב השוואה רכה פעיל: מוצגים שינויים מקורבים על השאלות התואמות בלבד '
+        '(מסומנים ב-≈), גם כאשר מערך הבדיקה או חוזה ההערכה השתנו. יש להתייחס אליהם כאומדן ולא כמדידה מדויקת.</div>'
+        if soft_compare else ""
+    )
     conflict_note = "" if not comparison["id_conflicts"] else (
-        f'<div class="note warn">{len(comparison["id_conflicts"])} מזהים הופיעו בשני הדוחות אך לפחות שדה מהותי '
+        f'<div class="{note_class}">{len(comparison["id_conflicts"])} מזהים הופיעו בשני הדוחות אך לפחות שדה מהותי '
         'בשאלת הכסף השתנה, ולכן הם לא נכללו בהשוואה הישירה.</div>'
     )
     duplicate_count = len(comparison["current_duplicate_ids"]) + len(comparison["previous_duplicate_ids"])
@@ -486,11 +573,14 @@ def _comparison_block(comparison: dict | None, show_correct_answer_metrics: bool
     aggregate_note = (
         '<div class="note">מערך הבדיקה זהה בשתי הריצות; שינויי המדדים הכוללים ניתנים להשוואה ישירה.</div>'
         if comparison["aggregate_comparable"] else
-        '<div class="note warn">מערכי הבדיקה אינם זהים לחלוטין. הערכים הכוללים מוצגים לתיאור בלבד, '
-        'אך שינוייהם הוסתרו כדי שלא להציג שינוי בהרכב המדגם כשינוי בביצועים.</div>'
+        f'<div class="{note_class}">מערכי הבדיקה אינם זהים לחלוטין. הערכים הכוללים מוצגים לתיאור בלבד'
+        + (', והשינויים המדויקים מוסתרים; במקומם מוצג אומדן מקורב על השאלות התואמות.'
+           if soft_compare else
+           ', אך שינוייהם הוסתרו כדי שלא להציג שינוי בהרכב המדגם כשינוי בביצועים.')
+        + '</div>'
     )
     no_match_note = "" if comparison["matched_questions"] else (
-        '<div class="note warn">לא נמצאו שאלות זהות להשוואה ישירה. ערכי המדדים הכוללים עדיין מוצגים, '
+        f'<div class="{note_class}">לא נמצאו שאלות זהות להשוואה ישירה. ערכי המדדים הכוללים עדיין מוצגים, '
         'אך שינוייהם אינם מוצגים אלא אם מערכי הבדיקה זהים.</div>'
     )
     contract_status = comparison.get("evaluation_contract_compatibility", "unknown")
@@ -500,7 +590,7 @@ def _comparison_block(comparison: dict | None, show_correct_answer_metrics: bool
     elif contract_status == "incompatible":
         fields = ", ".join(_esc(field) for field in changed_contract_fields)
         contract_note = (
-            '<div class="note warn">חוזי ההערכה המתועדים שונים. יש לפרש את שינויי הביצועים '
+            f'<div class="{note_class}">חוזי ההערכה המתועדים שונים. יש לפרש את שינויי הביצועים '
             f'ביחס לשינויי החוזה. שדות שהשתנו: {fields}.</div>'
         )
     else:
@@ -511,7 +601,7 @@ def _comparison_block(comparison: dict | None, show_correct_answer_metrics: bool
     return f'''<div class="panel comparison"><h2>השוואה לריצה הקודמת</h2>
 <div class="note">השוואת שאלות מותאמות דורשת אותו מזהה ואת כל שדות המשימה המהותיים, כולל נוסח, תשובת ייחוס, טענות, ראיות, סוג, צורה, נושא והתנהגות מצופה. הצלחה ישירה פירושה תשובה נכונה, הימנעות נכונה או הבהרה נכונה בהתאם למשימה.</div>
 <div class="cards"><div class="card">שאלות מותאמות<b>{comparison["matched_questions"]}</b><small>{comparison["comparable_questions"]} ניתנות להשוואת הצלחה</small></div><div class="card">השתפרו<b>{matched["improved"]}</b></div><div class="card">נסוגו<b>{matched["regressed"]}</b></div><div class="card">שיפור נטו<b>{matched["net_improvement"]:+d}</b><small>השתפרו פחות נסוגו</small></div><div class="card">חדשות / הוסרו<b>{comparison["current_only"]} / {comparison["previous_only"]}</b></div></div>
-{contract_note}{conflict_note}{duplicate_note}{no_match_note}{aggregate_note}
+{soft_banner}{contract_note}{conflict_note}{duplicate_note}{no_match_note}{aggregate_note}
 <h3>שינוי במדדים הכוללים</h3><table><thead><tr><th>מדד</th><th>קודם</th><th>עכשיו</th><th>שינוי</th></tr></thead><tbody>{''.join(metric_rows)}</tbody></table>
 {('<h3>שינוי בשאלות מותאמות לפי נושא</h3><table><thead><tr><th>נושא</th><th>מותאמות</th><th>השתפרו</th><th>נסוגו</th><th>הצלחה נשמרה</th><th>כשל נשאר</th></tr></thead><tbody>' + topic_rows + '</tbody></table>') if topic_rows else ''}</div>'''
 
@@ -575,12 +665,14 @@ def write_report(
     previous_records: list[EvaluationRecord] | None = None,
     current_contract: dict | None = None,
     previous_contract: dict | None = None,
+    soft_compare: bool = False,
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = build_summary(records)
     comparison = build_comparison(
         records, previous_records,
         current_contract=current_contract, previous_contract=previous_contract,
+        soft_compare=soft_compare,
     ) if previous_records else None
     if comparison:
         summary["comparison"] = comparison
