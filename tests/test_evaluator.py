@@ -67,11 +67,16 @@ def test_response_behavior_truth_table_requires_matching_safe_whole_response():
     for item, judged, expected in cases:
         assert classify(item, judged) == expected
 
+    # A contradicted (false) claim is genuine misinformation on any task and stays a hallucination.
     for item, flag in ((clarify, "clarification"), (abstain, "abstention")):
         kwargs = {flag: True, "false_claims": 1}
         assert classify(item, scores(**kwargs)) == Outcome.MISLEADING_HALLUCINATION
-        kwargs = {flag: True, "unsupported_claims": 1}
-        assert classify(item, scores(**kwargs)) == Outcome.MISLEADING_HALLUCINATION
+
+    # An unsupported (not contradicted) claim is NOT misinformation: it must not override the
+    # behavior verdict. A clarify task that instead answered is a missing clarification; an abstain
+    # task that correctly declined is a correct abstention even if it added harmless extra detail.
+    assert classify(clarify, scores(clarification=False, unsupported_claims=1)) == Outcome.MISSING_CLARIFICATION
+    assert classify(abstain, scores(abstention=True, unsupported_claims=1)) == Outcome.CORRECT_ABSTENTION
 
     with pytest.raises(ValueError, match="flags conflict"):
         classify(answer, scores(abstention=True, clarification=True))
@@ -169,6 +174,22 @@ def test_nonanswer_false_claims_are_risky_and_conflicting_flags_fail():
     judged.response_is_clarification = judged.response_is_abstention = True
     with pytest.raises(ValueError, match="flags conflict"):
         classify(item, judged)
+
+
+def test_unsupported_elaboration_does_not_become_hallucination():
+    """A correct answer with one extra true-but-unsupported detail is not misinformation.
+
+    This guards against the regression where any unsupported claim forced
+    MISLEADING_HALLUCINATION, which mislabeled ~70% of reported hallucinations in real runs.
+    """
+    item = question(True)
+    # All required points correct, one harmless unsupported elaboration, judge says not a hallucination.
+    assert classify(item, scores(unsupported_claims=1, incorrect_type="not_applicable")) == Outcome.CORRECT_ANSWER
+    # Same, but the extra detail also broadened the scope: still not a hallucination, just partial.
+    assert classify(item, scores(unsupported_claims=1, scope="too_much")) == Outcome.PARTIAL_TOO_MUCH
+    # Genuine misinformation is still caught: a contradicted claim, or the judge's own verdict.
+    assert classify(item, scores(false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
+    assert classify(item, scores(addressed=1, correct=0, incorrect_type="hallucination")) == Outcome.MISLEADING_HALLUCINATION
 
 
 def test_judge_results_boundary_validation_and_no_adapter_mutation():
