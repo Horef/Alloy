@@ -98,6 +98,8 @@ def _metric_hit(record: EvaluationRecord, key: str) -> bool:
         return record.outcome == Outcome.CORRECT_ABSTENTION
     if key == "good_retrieval_rate":
         return _retrieval_good(record)
+    if key == "misinformation_rate":
+        return record.outcome == Outcome.MISLEADING_HALLUCINATION
     if key == "risky_misinformation_rate":
         return record.outcome in RISKY
     if key == "factual_risk_rate":
@@ -125,7 +127,16 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
     abstention_tasks = [r for r in evaluable if r.question.expected_behavior == ExpectedBehavior.ABSTAIN]
     retrieval_scored = [r for r in answer_tasks if r.scores and r.scores.retrieved_chunks_total > 0 and bool(r.result.retrieved_context.strip())]
     good_retrieval = [r for r in retrieval_scored if _retrieval_good(r)]
-    generation_failures = [r for r in good_retrieval if r.outcome not in PIPELINE_SUCCESS]
+    # A generation failure is a case where retrieval supplied every required point yet the answer
+    # was NOT useful (wrong, unrelated, hallucinated, or a wrong behavior). A partial answer that is
+    # still useful (partial_too_little / partial_too_much / correct_clarification) is deliberately
+    # excluded here so this count is not inflated by answers that were partially helpful; those are
+    # reported separately as generation_partials_despite_good_retrieval.
+    generation_failures = [r for r in good_retrieval if r.outcome not in ANSWER_USEFUL and r.outcome not in PIPELINE_SUCCESS]
+    generation_partials = [
+        r for r in good_retrieval
+        if r.outcome not in PIPELINE_SUCCESS and r.outcome in ANSWER_USEFUL
+    ]
     pipeline = Counter()
     for record in answer_tasks:
         if not record.scores or record.scores.retrieved_chunks_total == 0 or not record.result.retrieved_context.strip():
@@ -193,6 +204,8 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "infrastructure_error_rate": _rate(infrastructure_errors, len(records)),
         "correct_answer_rate_on_answerable": _rate(sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks)),
         "factual_answer_success_rate": _rate(sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks)),
+        "factual_answer_success_denominator": len(answer_tasks),
+        "factual_answer_success_scope": "answer tasks only (excludes clarification and abstention tasks)",
         "factual_answer_success_interval_95": _wilson_interval(
             sum(r.outcome in ANSWER_SUCCESS for r in answer_tasks), len(answer_tasks),
         ),
@@ -203,11 +216,16 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "abstention_success_rate": _rate(
             sum(r.outcome == Outcome.CORRECT_ABSTENTION for r in abstention_tasks), len(abstention_tasks),
         ),
+        "misinformation_rate": _rate(sum(r.outcome == Outcome.MISLEADING_HALLUCINATION for r in evaluable), len(evaluable)),
+        "misinformation_count": sum(r.outcome == Outcome.MISLEADING_HALLUCINATION for r in evaluable),
+        "misinformation_denominator": len(evaluable),
         "risky_misinformation_rate": _rate(sum(r.outcome in RISKY for r in evaluable), len(evaluable)),
         "retrieval_evaluated": len(retrieval_scored),
         "good_retrieval_rate": _rate(len(good_retrieval), len(retrieval_scored)),
         "generation_failures_despite_good_retrieval": len(generation_failures),
         "generation_failure_question_ids": [r.question.id for r in generation_failures],
+        "generation_partials_despite_good_retrieval": len(generation_partials),
+        "generation_partial_question_ids": [r.question.id for r in generation_partials],
         "outcomes": dict(counts),
         "factual_risk_count": factual_risk,
         "factual_risk_rate": _rate(factual_risk, len(all_scored)),
@@ -215,7 +233,10 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "behavior_failure_count": behavior_failures,
         "behavior_failure_rate": _rate(behavior_failures, len(evaluable)),
         "behavior_failure_denominator": len(evaluable),
-        "risky_misinformation_scope": "legacy outcome-based composite including missing clarification",
+        "risky_misinformation_scope": (
+            "legacy composite: misleading hallucination + should-have-abstained + missing clarification. "
+            "Prefer misinformation_rate (hallucination only) and behavior_failure_rate for a clean split."
+        ),
         "all_response_claim_violations": {
             "scored_responses": len(all_scored),
             "responses_with_violations": factual_risk,
@@ -297,7 +318,8 @@ def build_comparison(
         "clarification_success_rate": ("הבהרות מתאימות", False),
         "abstention_success_rate": ("הימנעות נכונה", False),
         "good_retrieval_rate": ("אחזור איכותי", False),
-        "risky_misinformation_rate": ("סיכון למידע מטעה", True),
+        "misinformation_rate": ("מידע מטעה (הזיות)", True),
+        "risky_misinformation_rate": ("סיכון למידע מטעה (מורכב)", True),
         "infrastructure_error_rate": ("שגיאות תשתית", True),
     }
     def eligible(values, key):
@@ -740,12 +762,12 @@ def write_report(
     document = f'''<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>דוח הערכת צ׳אטבוט</title>
 <style>:root{{--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:15px Arial,"Noto Sans Hebrew",sans-serif}}main{{max-width:1500px;margin:auto;padding:28px}}h1{{margin:0 0 4px}}h2{{margin-top:0}}.subtitle{{color:var(--muted);margin-bottom:24px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}}.card,.panel{{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px #1e293b0a}}.card{{padding:18px}}.card b{{display:block;font-size:25px;margin-top:7px}}.card small,small{{color:var(--muted);display:block;margin-top:3px}}.sample-warning{{color:#b45309;font-weight:bold}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:16px}}.panel{{padding:20px;overflow:auto;margin-bottom:16px}}.comparison{{border-top:4px solid #2563eb}}.delta{{font-weight:bold;direction:ltr;text-align:right}}.delta.good{{color:#15803d}}.delta.bad{{color:#b91c1c}}.delta.neutral{{color:var(--muted)}}.bar-row,.score-row{{display:grid;grid-template-columns:minmax(145px,1.3fr) 3fr 45px 48px;gap:9px;align-items:center;margin:10px 0}}.score-row{{grid-template-columns:minmax(170px,1.3fr) 3fr 68px minmax(95px,auto)}}.track{{height:12px;background:#e8edf4;border-radius:10px;overflow:hidden}}.track i{{height:100%;display:block;border-radius:10px}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}}th{{background:#eef3f8;position:sticky;top:0}}.note{{background:#f8fafc;border-right:4px solid #2563eb;padding:12px 14px;margin:12px 0;border-radius:6px;line-height:1.55}}.insights{{margin-bottom:16px;border-top:4px solid #7c3aed}}.insights .lead{{font-size:17px}}.insight-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:14px 0}}.insight{{border:1px solid var(--line);border-radius:10px;padding:15px;background:#fcfcff}}.insight h3{{margin:12px 0 6px}}.filters{{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}}input,select{{border:1px solid #bcc8d8;border-radius:8px;padding:10px;background:white;min-width:190px}}input{{flex:1}}.result{{background:white;border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden}}summary{{display:grid;grid-template-columns:90px 150px 1fr auto;gap:10px;align-items:center;padding:13px;cursor:pointer}}summary:hover{{background:#f8fafc}}.id,.topic{{color:var(--muted)}}.badge{{color:white;padding:5px 9px;border-radius:999px;font-size:12px;white-space:nowrap}}.detail-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 16px}}section{{padding:8px 16px}}h4{{margin:8px 0;color:#334155}}p,pre{{white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}}pre{{max-height:260px;overflow:auto;background:#f8fafc;padding:12px;border-radius:8px;font:13px Arial}}.scores{{display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px}}.scores span{{background:#eef4ff;padding:7px;border-radius:7px}}.warn{{color:#b91c1c}}.hidden{{display:none}}@media(max-width:700px){{main{{padding:14px}}.grid{{grid-template-columns:1fr}}summary{{grid-template-columns:1fr}}.detail-grid{{grid-template-columns:1fr}}.score-row{{grid-template-columns:1fr}}}}</style></head>
 <body><main><h1>דוח הערכת ביצועי הצ׳אטבוט</h1><div class="subtitle">ניתוח איכות התשובות, האחזור והכשלים לאורך צינור ה-RAG</div>
-<div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מענה נכון, חלקי מועיל או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">טענות שגויות או לא מבוססות<b>{_pct(summary["factual_risk_rate"])}</b><small>{summary["factual_risk_count"]}/{summary["factual_risk_denominator"]} תשובות עם ציוני שופט; בכל סוגי המשימות</small></div><div class="card">כשל במדיניות המענה<b>{_pct(summary["behavior_failure_rate"])}</b><small>{summary["behavior_failure_count"]}/{summary["behavior_failure_denominator"]} תשובות שנבדקו</small></div><div class="card">סיכון למידע מטעה<b>{_pct(summary['risky_misinformation_rate'])}</b><small>הזיות, מענה במקום הימנעות או ללא בירור נדרש</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>{summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע נמצא אך התשובה לא הייתה נכונה</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']} ({_pct(summary['infrastructure_error_rate'])})</b><small>מתוך כלל השאלות; לא נכללו במדדי האיכות</small></div></div>
+<div class="cards"><div class="card">סה״כ שאלות<b>{summary['total']}</b><small>{summary['evaluable']} ניתנות להערכה (ללא שגיאות תשתית)</small></div>{correct_answer_card}<div class="card">שיעור תשובות שימושיות<b>{_pct(summary['useful_answer_rate_on_answerable'])}</b><small>מתוך {summary['answerable_questions']} שאלות שניתנות למענה. נספרות: תשובה נכונה, תשובה חלקית עם מידע נכון, או שאלת הבהרה מתאימה</small></div>{behavior_cards}<div class="card">מידע מטעה (הזיות)<b>{_pct(summary['misinformation_rate'])}</b><small>{summary['misinformation_count']}/{summary['misinformation_denominator']} מהתשובות שנבדקו. תשובות שגויות או סותרות שעלולות להטעות את המשתמש. זהו מדד הבטיחות העיקרי</small></div><div class="card">טענות שגויות או לא מבוססות<b>{_pct(summary["factual_risk_rate"])}</b><small>{summary["factual_risk_count"]}/{summary["factual_risk_denominator"]} תשובות עם ציוני שופט (בכל סוגי המשימות) שהכילו לפחות טענה אחת שגויה או לא מבוססת</small></div><div class="card">כשל במדיניות המענה<b>{_pct(summary["behavior_failure_rate"])}</b><small>{summary["behavior_failure_count"]}/{summary["behavior_failure_denominator"]} תשובות. ההתנהגות לא תאמה למשימה: מענה במקום הימנעות, הימנעות במקום מענה, או היעדר בירור נדרש</small></div><div class="card">סיכון למידע מטעה (מדד מורכב)<b>{_pct(summary['risky_misinformation_rate'])}</b><small>מדד מורכב ישן: הזיות יחד עם כשלי התנהגות. לפירוק נקי השתמשו במדדי "מידע מטעה" ו"כשל במדיניות" הנפרדים</small></div><div class="card">אחזור איכותי<b>{_pct(summary['good_retrieval_rate'])}</b><small>מתוך {summary['retrieval_evaluated']} שאלות מענה עם נתוני אחזור. כל הפרטים הנדרשים נמצאו ללא מקטע סותר</small></div><div class="card">כשל יצירה למרות אחזור טוב<b>{summary['generation_failures_despite_good_retrieval']}</b><small>המידע הנדרש נמצא באחזור אך התשובה לא הייתה שימושית. בנוסף {summary['generation_partials_despite_good_retrieval']} תשובות חלקיות מועילות (אינן נספרות ככשל)</small></div><div class="card">שגיאות תשתית<b>{summary['infrastructure_errors']} ({_pct(summary['infrastructure_error_rate'])})</b><small>מתוך כלל השאלות; שגיאות צ׳אטבוט או שופט שלא נכללו במדדי האיכות</small></div></div>
 {comparison_html}
-<div class="grid"><div class="panel"><h2>התפלגות תוצאות</h2>{outcome_bars}<div class="note"><b>תשובה שימושית</b> היא תשובה נכונה, תשובה חלקית שיש בה מידע נכון או שאלת הבהרה מתאימה כשחסר פרט מהותי. <b>סיכון למידע מטעה</b> כולל הזיה שנשמעת סבירה, מענה לשאלה שהיה נכון להימנע ממנה או תשובה החלטית כשנדרש תחילה בירור.</div></div><div class="panel"><h2>אבחון צינור האחזור והיצירה</h2>{pipeline_bars}<div class="note"><b>אחזור טוב</b> פירושו שכל הפרטים הנדרשים נמצאו, ללא מקטע שסותר את תשובת הייחוס. <b>אחזור חלש</b> פירושו שחסר לפחות פרט נדרש אחד או שנמצא מקטע סותר. אחזור טוב עם תשובה לא תקינה מצביע על כשל בשלב יצירת התשובה.</div></div></div>
+<div class="grid"><div class="panel"><h2>התפלגות תוצאות</h2>{outcome_bars}<div class="note"><b>תשובה שימושית</b> היא תשובה נכונה, תשובה חלקית שיש בה מידע נכון או שאלת הבהרה מתאימה כשחסר פרט מהותי. <b>מידע מטעה (הזיה)</b> הוא תשובה שגויה או סותרת שעלולה להטעות — זהו מדד הבטיחות העיקרי. המדד המורכב <b>סיכון למידע מטעה</b> מצרף להזיות גם כשלי התנהגות (מענה במקום הימנעות, היעדר בירור נדרש); לניתוח נקי מומלץ להפריד בין השניים.</div></div><div class="panel"><h2>אבחון צינור האחזור והיצירה</h2>{pipeline_bars}<div class="note"><b>אחזור טוב</b> פירושו שכל הפרטים הנדרשים נמצאו, ללא מקטע שסותר את תשובת הייחוס. <b>אחזור חלש</b> פירושו שחסר לפחות פרט נדרש אחד או שנמצא מקטע סותר. אחזור טוב עם תשובה לא תקינה מצביע על כשל בשלב יצירת התשובה.</div></div></div>
 <div class="grid"><div class="panel"><h2>מדדי מידע בתשובות</h2>{answer_scores}<div class="note"><b>כיסוי</b> הוא שיעור הפרטים הנדרשים שנענו נכון. <b>דיוק בפרטים שנענו</b> בודק כמה מהפרטים שהצ׳אטבוט ניסה לענות עליהם היו נכונים. בנוסף נמצאו בסך הכול: {answer_metrics['false_claims_total']} טענות שגויות, {answer_metrics['unsupported_claims_total']} טענות לא מבוססות ו-{answer_metrics['extraneous_claims_total']} טענות עודפות.</div></div><div class="panel"><h2>מדדי מידע באחזור</h2>{retrieval_scores}<div class="note"><b>כיסוי המידע</b> הוא מספר הפרטים הנדרשים שנמצאו במקטעים. <b>שיעור מקטעים רלוונטיים</b> מראה כמה מהמקטעים תרמו למענה. נמצאו {retrieval_metrics['irrelevant_chunks_total']} מקטעים לא רלוונטיים ו-{retrieval_metrics['contradictory_chunks_total']} מקטעים סותרים. המדדים מחושבים רק עבור שאלות שבהן סופקו מקטעים. היעדר מקטעים הוא היעדר נתוני אחזור, ואינו הוכחה לכשל אחזור.</div></div></div>
 {paired_panel}
-<div class="panel"><h2>ביצועים לפי נושא</h2><div class="note">כל מדדי הביצוע מוצגים בפורמט <b>אחוז (מונה/מכנה)</b> עם רווח סמך וילסון של 95%. נושאים עם פחות מ-{summary['minimum_topic_sample']} תוצאות מסומנים כמדגם קטן. מדד התשובות הנכונות כולל רק משימות שבהן נדרש מענה עובדתי; הבהרה והימנעות נמדדות בנפרד.</div><table><thead><tr><th>נושא</th><th>שאלות</th>{correct_topic_header}<th>תשובות שימושיות</th><th>סיכון למידע מטעה</th><th>אחזור טוב</th></tr></thead><tbody>{topic_rows}</tbody></table></div>
+<div class="panel"><h2>ביצועים לפי נושא</h2><div class="note">כל מדדי הביצוע מוצגים בפורמט <b>אחוז (מונה/מכנה)</b> עם רווח סמך וילסון של 95%. נושאים עם פחות מ-{summary['minimum_topic_sample']} תוצאות מסומנים כמדגם קטן. מדד התשובות הנכונות כולל רק משימות שבהן נדרש מענה עובדתי; הבהרה והימנעות נמדדות בנפרד. עמודת <b>סיכון למידע מטעה</b> היא המדד המורכב (הזיות יחד עם כשלי התנהגות).</div><table><thead><tr><th>נושא</th><th>שאלות</th>{correct_topic_header}<th>תשובות שימושיות</th><th>סיכון למידע מטעה</th><th>אחזור טוב</th></tr></thead><tbody>{topic_rows}</tbody></table></div>
 {insights_html}
 <div class="panel" style="margin-top:16px"><h2>פירוט לפי שאלה</h2><div class="filters"><input id="search" placeholder="חיפוש בשאלה, בתשובה או במזהה"><select id="topic"><option value="">כל הנושאים</option>{topic_options}</select><select id="outcome"><option value="">כל התוצאות</option>{outcome_options}</select></div><div id="visibleCount"></div>{details}</div></main>
 <script>const rows=[...document.querySelectorAll('.result')],q=document.getElementById('search'),t=document.getElementById('topic'),o=document.getElementById('outcome'),c=document.getElementById('visibleCount');function f(){{const s=q.value.trim().toLocaleLowerCase('he');let n=0;rows.forEach(r=>{{const show=(!s||r.dataset.search.includes(s))&&(!t.value||r.dataset.topic===t.value)&&(!o.value||r.dataset.outcome===o.value);r.classList.toggle('hidden',!show);if(show)n++}});c.textContent='מוצגות '+n+' מתוך '+rows.length+' שאלות'}}[q,t,o].forEach(x=>x.addEventListener('input',f));f();</script></body></html>'''

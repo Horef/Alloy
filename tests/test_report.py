@@ -28,6 +28,64 @@ def test_hebrew_report_and_pipeline_statistics(tmp_path):
     assert "המידע הנכון נמצא במקטעים" in report
 
 
+def _judged(**kwargs):
+    base = dict(
+        claim_assessments=[], required_points_total=2, answer_points_addressed=2,
+        answer_points_correct=2, answer_false_claims=0, answer_unsupported_claims=0,
+        answer_extraneous_claims=0, retrieval_points_found=2, retrieved_chunks_total=1,
+        retrieved_chunks_relevant=1, retrieved_chunks_contradictory=0, answer_scope="exact",
+        incorrect_type="not_applicable", response_is_abstention=False,
+        explanation="x", missing_or_wrong="x", retrieval_explanation="x",
+    )
+    base.update(kwargs)
+    return JudgeScores(**base)
+
+
+def test_misinformation_rate_excludes_behavior_failures():
+    """The clean misinformation_rate counts only hallucinations; the legacy composite adds
+    behavior failures. A missing clarification must not inflate the misinformation metric."""
+    hallucination = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="Q1", answer="wrong"),
+        outcome=Outcome.MISLEADING_HALLUCINATION,
+        scores=_judged(answer_points_correct=0, answer_false_claims=1, incorrect_type="hallucination"),
+    )
+    missing_clarification = EvaluationRecord(
+        question=SilverQuestion(
+            id="Q2", topic="x", question="q", expected_answer="?",
+            question_form=QuestionForm.AMBIGUOUS, expected_behavior=ExpectedBehavior.CLARIFY,
+        ),
+        result=ChatbotResult(question_id="Q2", answer="direct answer"),
+        outcome=Outcome.MISSING_CLARIFICATION,
+    )
+    summary = build_summary([hallucination, missing_clarification])
+    # Clean metric: 1 of 2 evaluable is misinformation.
+    assert summary["misinformation_rate"] == 0.5
+    assert summary["misinformation_count"] == 1
+    # Legacy composite folds in the missing clarification too.
+    assert summary["risky_misinformation_rate"] == 1.0
+
+
+def test_generation_failure_excludes_useful_partials():
+    """With good retrieval, a not-useful answer is a generation failure, but a useful partial
+    is reported separately and not counted as an outright failure."""
+    def rec(identifier, outcome):
+        return EvaluationRecord(
+            question=SilverQuestion(id=identifier, topic="x", question="q", expected_answer="a"),
+            result=ChatbotResult(question_id=identifier, answer="ans", retrieved_context="ctx"),
+            outcome=outcome,
+            scores=_judged(),  # retrieval_points_found == required_points_total -> good retrieval
+        )
+    failure = rec("Q1", Outcome.MISLEADING_HALLUCINATION)
+    partial = rec("Q2", Outcome.PARTIAL_TOO_MUCH)
+    correct = rec("Q3", Outcome.CORRECT_ANSWER)
+    summary = build_summary([failure, partial, correct])
+    assert summary["generation_failures_despite_good_retrieval"] == 1
+    assert summary["generation_failure_question_ids"] == ["Q1"]
+    assert summary["generation_partials_despite_good_retrieval"] == 1
+    assert summary["generation_partial_question_ids"] == ["Q2"]
+
+
 def test_report_can_hide_correct_answer_metrics(tmp_path):
     record = EvaluationRecord(
         question=SilverQuestion(id="Q1", topic="זכויות", question="מה הסכום?", expected_answer="100"),
