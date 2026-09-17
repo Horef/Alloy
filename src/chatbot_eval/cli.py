@@ -65,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--ambiguous-variation-share", type=float, help="Share of user variations that should require clarification")
     generate.add_argument("--sequential-ids", action="store_true", help="Use legacy Q0001-style run-local IDs")
     generate.add_argument(
+        "--verify-answer-completeness", dest="verify_answer_completeness", action="store_true", default=None,
+        help="Re-check each generated reference answer against question-targeted evidence to catch answers made incomplete by topic-driven chunk selection (one extra model call per answerable question)",
+    )
+    generate.add_argument(
+        "--no-verify-answer-completeness", dest="verify_answer_completeness", action="store_false",
+        help="Disable answer-completeness verification even if enabled in config",
+    )
+    generate.add_argument(
         "--exclude-questions", type=Path,
         help="Existing silver CSV/JSONL whose questions must not be generated again",
     )
@@ -551,6 +559,10 @@ def main(argv: list[str] | None = None) -> int:
                 "ambiguous_variation_share": ambiguous_share,
                 "stable_question_ids": settings.stable_question_ids and not args.sequential_ids,
                 "question_type_targets": settings.question_type_targets,
+                "verify_answer_completeness": (
+                    settings.verify_answer_completeness if args.verify_answer_completeness is None
+                    else args.verify_answer_completeness
+                ),
                 "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
                 "resume": args.resume,
             },
@@ -572,6 +584,11 @@ def main(argv: list[str] | None = None) -> int:
                 question_type_targets=tuple(settings.question_type_targets.items()),
                 requested_topic=args.topic, requested_topic_count=args.topic_count,
                 excluded_questions=excluded_questions,
+                verify_answer_completeness=(
+                    settings.verify_answer_completeness if args.verify_answer_completeness is None
+                    else args.verify_answer_completeness
+                ),
+                completeness_evidence_limit=settings.completeness_evidence_limit,
             )
             generation_signature = hashlib.sha256(json.dumps({
                 "chunk_key": chunk_key,

@@ -24,6 +24,11 @@ stable_question_ids = true
 question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, document_wide = 0.10, cross_document = 0.10 }
 min_topic_questions = 1
 max_topic_share = 0.35
+# Re-check each generated reference answer against evidence re-selected for that specific question
+# (not just its topic), to catch answers left incomplete or wrong by narrow topic-driven chunk
+# selection. Costs one extra model call per answerable canonical candidate. Off by default.
+verify_answer_completeness = false
+completeness_evidence_limit = 16
 # Independent prompt-generation budgets keep large corpora and prior runs from creating unbounded calls.
 prompt_max_document_chars = 100000
 prompt_max_evaluation_chars = 60000

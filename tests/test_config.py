@@ -124,3 +124,27 @@ max_concurrency = 0
 
     with pytest.raises(ValueError, match="character limits.*insights.*timeout.*concurrency"):
         load_settings(path, require_api_key=False)
+
+
+def test_answer_completeness_verification_defaults_off_and_is_configurable(tmp_path):
+    default_path = tmp_path / "default.toml"
+    default_path.write_text("", encoding="utf-8")
+    default_settings = load_settings(default_path, require_api_key=False)
+    assert default_settings.verify_answer_completeness is False
+    assert default_settings.completeness_evidence_limit == 16
+
+    enabled_path = tmp_path / "enabled.toml"
+    enabled_path.write_text(
+        "[generation]\nverify_answer_completeness = true\ncompleteness_evidence_limit = 24\n",
+        encoding="utf-8",
+    )
+    enabled_settings = load_settings(enabled_path, require_api_key=False)
+    assert enabled_settings.verify_answer_completeness is True
+    assert enabled_settings.completeness_evidence_limit == 24
+
+
+def test_configuration_rejects_nonpositive_completeness_evidence_limit(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[generation]\ncompleteness_evidence_limit = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="completeness_evidence_limit"):
+        load_settings(path, require_api_key=False)

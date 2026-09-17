@@ -30,6 +30,8 @@ class Settings:
     question_type_targets: dict[str, float]
     min_topic_questions: int
     max_topic_share: float
+    verify_answer_completeness: bool
+    completeness_evidence_limit: int
     prompt_max_document_chars: int
     prompt_max_evaluation_chars: int
     prompt_max_auxiliary_chars: int
@@ -79,6 +81,8 @@ class Settings:
             errors.append("generation.min_topic_questions must be non-negative")
         if not 0 < self.max_topic_share <= 1:
             errors.append("generation.max_topic_share must be in (0, 1]")
+        if self.completeness_evidence_limit < 1:
+            errors.append("generation.completeness_evidence_limit must be positive")
         if min(
             self.prompt_max_document_chars,
             self.prompt_max_evaluation_chars,
@@ -188,6 +192,11 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         },
         min_topic_questions=int(_get(data, "generation", "min_topic_questions", 1)),
         max_topic_share=float(_get(data, "generation", "max_topic_share", 0.35)),
+        verify_answer_completeness=_as_bool(
+            _get(data, "generation", "verify_answer_completeness", False),
+            "generation.verify_answer_completeness",
+        ),
+        completeness_evidence_limit=int(_get(data, "generation", "completeness_evidence_limit", 16)),
         prompt_max_document_chars=int(_get(data, "generation", "prompt_max_document_chars", 100_000)),
         prompt_max_evaluation_chars=int(_get(data, "generation", "prompt_max_evaluation_chars", 60_000)),
         prompt_max_auxiliary_chars=int(_get(data, "generation", "prompt_max_auxiliary_chars", 30_000)),

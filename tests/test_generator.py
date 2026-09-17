@@ -405,3 +405,132 @@ def test_reground_one_skips_clarification_task():
     updated, reason = generator.reground_one(clarify, chunks)
     assert updated is None
     assert reason == "not_an_answerable_answer_task"
+
+
+def test_completeness_verification_accepts_complete_answer():
+    from chatbot_eval.models import AnswerCompletenessReview
+
+    class ReviewLLM:
+        def generate(self, prompt, schema, model):
+            assert schema is AnswerCompletenessReview
+            return AnswerCompletenessReview(verdict="complete")
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    candidate = _candidate()
+    updated, valid, verdict = SilverSetGenerator(ReviewLLM(), "model").verify_candidate_completeness(
+        candidate, chunks, chunks,
+    )
+    assert verdict == "complete"
+    assert updated is candidate
+    assert valid == chunks
+
+
+def test_completeness_verification_replaces_incomplete_answer_with_validated_correction():
+    from chatbot_eval.models import AnswerCompletenessReview, EvidenceQuote as EQ
+
+    class ReviewLLM:
+        def generate(self, prompt, schema, model):
+            return AnswerCompletenessReview(
+                verdict="incomplete",
+                reasoning="הראיה כוללת גם את מועד הסיום",
+                corrected_answer="המדיניות חלה מחר ומסתיימת בעוד שבוע",
+                corrected_reference_claims=["המדיניות חלה מחר", "המדיניות מסתיימת בעוד שבוע"],
+                corrected_source_ids=["a#1"],
+                corrected_supporting_quotes=[EQ(source_id="a#1", quote="חלה מחר ומסתיימת בעוד שבוע")],
+            )
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר ומסתיימת בעוד שבוע על כולם")]
+    candidate = _candidate()
+    updated, valid, verdict = SilverSetGenerator(ReviewLLM(), "model").verify_candidate_completeness(
+        candidate, [chunks[0]], chunks,
+    )
+    assert verdict == "corrected"
+    assert updated.expected_answer == "המדיניות חלה מחר ומסתיימת בעוד שבוע"
+    assert updated.reference_claims == ["המדיניות חלה מחר", "המדיניות מסתיימת בעוד שבוע"]
+    assert valid == [chunks[0]]
+
+
+def test_completeness_verification_rejects_when_correction_is_missing_or_invalid():
+    from chatbot_eval.models import AnswerCompletenessReview, EvidenceQuote as EQ
+
+    class NoCorrectionLLM:
+        def generate(self, prompt, schema, model):
+            return AnswerCompletenessReview(verdict="contradicted", reasoning="סותר")
+
+    class BadQuoteLLM:
+        def generate(self, prompt, schema, model):
+            return AnswerCompletenessReview(
+                verdict="incomplete", corrected_answer="תשובה מתוקנת",
+                corrected_reference_claims=["טענה"], corrected_source_ids=["a#1"],
+                corrected_supporting_quotes=[EQ(source_id="a#1", quote="ציטוט שלא קיים במקור")],
+            )
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    candidate = _candidate()
+
+    updated, valid, verdict = SilverSetGenerator(NoCorrectionLLM(), "model").verify_candidate_completeness(
+        candidate, chunks, chunks,
+    )
+    assert verdict == "rejected:completeness_contradicted_no_correction"
+    assert updated is candidate
+
+    updated, valid, verdict = SilverSetGenerator(BadQuoteLLM(), "model").verify_candidate_completeness(
+        candidate, chunks, chunks,
+    )
+    assert verdict == "rejected:completeness_incomplete_invalid_correction"
+
+
+def test_generate_runs_completeness_pass_and_records_diagnostics():
+    from chatbot_eval.models import AnswerCompletenessReview
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is TopicMap:
+                return TopicMap(topics=[TopicCandidate(name="נושא", description="", importance=5, source_ids=["a#1"])])
+            if schema is QuestionBatch:
+                return QuestionBatch(questions=[_candidate()])
+            if schema is AnswerCompletenessReview:
+                return AnswerCompletenessReview(
+                    verdict="incomplete",
+                    corrected_answer="המדיניות חלה מחר על כל המשרתים",
+                    corrected_reference_claims=["המדיניות חלה מחר על כל המשרתים"],
+                    corrected_source_ids=["a#1"],
+                    corrected_supporting_quotes=[EvidenceQuote(source_id="a#1", quote="חלה מחר על כל המשרתים")],
+                )
+            raise AssertionError(schema)
+
+    generator = SilverSetGenerator(FakeLLM(), "model")
+    questions, _ = generator.generate(
+        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כל המשרתים בשירות")],
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, verify_answer_completeness=True,
+        ),
+    )
+
+    assert len(questions) == 1
+    assert questions[0].expected_answer == "המדיניות חלה מחר על כל המשרתים"
+    diagnostics = generator.last_generation_diagnostics["answer_completeness_verification"]
+    assert diagnostics["enabled"] is True
+    assert diagnostics["outcomes"].get("corrected") == 1
+
+
+def test_generate_completeness_pass_off_by_default_makes_no_review_call():
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is TopicMap:
+                return TopicMap(topics=[TopicCandidate(name="נושא", description="", importance=5, source_ids=["a#1"])])
+            if schema is QuestionBatch:
+                return QuestionBatch(questions=[_candidate()])
+            raise AssertionError(f"unexpected schema {schema}")
+
+    generator = SilverSetGenerator(FakeLLM(), "model")
+    questions, _ = generator.generate(
+        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0,
+        ),
+    )
+    assert len(questions) == 1
+    assert generator.last_generation_diagnostics["answer_completeness_verification"] == {"enabled": False}

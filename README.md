@@ -104,6 +104,8 @@ stable_question_ids = true
 question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, document_wide = 0.10, cross_document = 0.10 }
 min_topic_questions = 1
 max_topic_share = 0.35
+verify_answer_completeness = false
+completeness_evidence_limit = 16
 
 [cache]
 enabled = true
@@ -151,6 +153,8 @@ log_level = "INFO"
 | `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
+| `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
+| `generation.completeness_evidence_limit` | `16` | Maximum candidate chunks re-selected per question during answer-completeness verification. Larger values widen the recall check at higher cost. |
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
 | `generation.prompt_max_evaluation_chars` | `60000` | Maximum prior-evaluation evidence characters supplied to prompt revision. |
 | `generation.prompt_max_auxiliary_chars` | `30000` | Independent maximum for the current prompt and generated-insights context. |
@@ -229,6 +233,11 @@ Generation is staged rather than performed with one unconstrained prompt:
 7. **Generate structured candidates** containing the question, answer, difficulty, type, rationale,
    exact source IDs, and verbatim supporting quotations.
 8. **Validate provenance and enforce the configured answerable question-type targets** deterministically.
+   When `verify_answer_completeness` is enabled, each accepted answerable canonical candidate is then
+   re-checked against evidence re-selected for that specific question (rather than only its topic), so
+   a reference answer left incomplete or wrong by narrow topic-driven chunk selection is either
+   corrected against the broader evidence or rejected. The verification outcomes are recorded in the
+   generation diagnostics.
 9. **Remove near-duplicates**, including matches from an optional previous silver set.
 10. **Derive realistic user variations** from accepted canonical questions. Natural variants retain
     the same expected answer; deliberately ambiguous variants expect one focused follow-up question.
@@ -341,6 +350,7 @@ Rejection counts are written to operational logs at `INFO` level and to the revi
 | `--user-variation-ratio R` | config value | Share of the total budget used for derived user variants; `[0, 1)`. Set to `0` for canonical-only generation. |
 | `--ambiguous-variation-share R` | config value | Share of variants expected to trigger clarification; `[0, 1]`. |
 | `--sequential-ids` | off | Use legacy `Q0001`-style run-local IDs instead of content-derived stable IDs. |
+| `--verify-answer-completeness` / `--no-verify-answer-completeness` | config value | Enable or disable the per-question answer-completeness verification pass for this run, overriding `generation.verify_answer_completeness`. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
 | `--resume` | off | Replay successful structured calls from a compatible generation checkpoint, then continue after the interrupted call. |
 | `--checkpoint PATH` | `<output>/generation_checkpoint.jsonl` | Durable structured-call journal used by generation resume. |

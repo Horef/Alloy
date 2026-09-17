@@ -67,6 +67,23 @@ class QuestionBatch(BaseModel):
     questions: list[GeneratedQuestion]
 
 
+class AnswerCompletenessReview(BaseModel):
+    """Second-pass verification of a generated reference answer against broader, question-targeted
+    evidence. ``verdict`` is ``complete`` when the answer fully and correctly reflects the evidence,
+    ``incomplete`` when the evidence contains required information the answer omits, and
+    ``contradicted`` when the evidence contradicts the answer. When the verdict is not ``complete``
+    and the evidence supports a fix, the model returns a corrected answer with fresh grounding;
+    otherwise the corrected fields are left empty and the candidate is rejected.
+    """
+
+    verdict: Literal["complete", "incomplete", "contradicted"]
+    reasoning: str = ""
+    corrected_answer: str = ""
+    corrected_reference_claims: list[str] = Field(default_factory=list)
+    corrected_source_ids: list[str] = Field(default_factory=list)
+    corrected_supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
+
+
 class GeneratedVariation(BaseModel):
     source_question_id: str
     question: str
