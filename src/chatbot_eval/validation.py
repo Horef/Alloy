@@ -2,9 +2,39 @@ from __future__ import annotations
 
 from collections import Counter
 import json
+import re
 from typing import Any
 
 from .models import ExpectedBehavior, QuestionForm, SilverQuestion
+
+# Sentence terminators used to derive atomic claims when a question supplies none.
+# A period is only treated as a terminator when it is NOT between two digits, so numbers
+# like "250,000" or "5.5" and rate markers are not split. Hebrew has no distinct sentence
+# punctuation, so the same ASCII terminators plus explicit line breaks are used.
+_CLAIM_TERMINATORS = re.compile(r"(?<!\d)[.!?;](?!\d)|\n+")
+_BULLET_PREFIX = re.compile(r"^\s*(?:[-*•·]|\d+[.)]|[א-ת][.)])\s*")
+
+
+def derive_reference_claims(expected_answer: str) -> list[str]:
+    """Derive deterministic atomic claims from a reference answer.
+
+    Used only when a question provides no explicit ``reference_claims`` (typically premade
+    imports). Splitting the reference answer into per-sentence/per-line claims gives the judge
+    finer, claim-level scoring instead of a single all-or-nothing claim, so premade sets are
+    scored at a granularity closer to generated silver sets. This never changes the reference
+    answer itself; it only produces evaluation units. Falls back to the whole answer as one
+    claim when it cannot be meaningfully split.
+    """
+    pieces: list[str] = []
+    for raw in _CLAIM_TERMINATORS.split(expected_answer):
+        if raw is None:
+            continue
+        cleaned = " ".join(_BULLET_PREFIX.sub("", raw).split())
+        # Ignore fragments with no letters/digits (stray punctuation, empty bullets).
+        if cleaned and re.search(r"[^\W_]", cleaned, re.UNICODE):
+            pieces.append(cleaned)
+    unique = list(dict.fromkeys(pieces))
+    return unique or [" ".join(expected_answer.split())]
 
 
 def parse_bool(value: Any, default: bool = True) -> bool:
@@ -43,9 +73,11 @@ def normalize_question_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_question_set(questions: list[SilverQuestion]) -> list[SilverQuestion]:
     """Validate and normalize questions at every external input boundary.
 
-    Older silver files did not contain ``reference_claims``. For answer tasks, their
-    complete reference answer becomes one stable coarse-grained claim. Newly generated
-    files contain reviewable atomic claims.
+    Older silver files and premade imports may not contain ``reference_claims``. For answer
+    tasks that supply none, atomic claims are derived deterministically from the reference
+    answer (see ``derive_reference_claims``) so scoring is claim-level rather than a single
+    all-or-nothing claim. Newly generated files already contain reviewable atomic claims and
+    are left untouched.
     """
     if not questions:
         return questions
@@ -68,7 +100,7 @@ def validate_question_set(questions: list[SilverQuestion]) -> list[SilverQuestio
             if not question.answerable:
                 errors.append(f"{prefix} expects an answer but answerable=false")
             claims = [" ".join(claim.split()) for claim in question.reference_claims if claim.strip()]
-            question.reference_claims = list(dict.fromkeys(claims)) or [" ".join(question.expected_answer.split())]
+            question.reference_claims = list(dict.fromkeys(claims)) or derive_reference_claims(question.expected_answer)
         elif question.expected_behavior == ExpectedBehavior.CLARIFY:
             if not question.answerable or question.question_form != QuestionForm.AMBIGUOUS:
                 errors.append(f"{prefix} expects clarification but is not an answerable ambiguous question")

@@ -86,6 +86,33 @@ def test_generation_failure_excludes_useful_partials():
     assert summary["generation_partial_question_ids"] == ["Q2"]
 
 
+def test_retrieval_population_uses_context_presence_not_judge_chunk_count():
+    """Retrieval eligibility is gated on genuine retrieval telemetry, not the judge's chunk count.
+
+    An empty-container context ("[]") is treated as no retrieval (retrieval_unavailable),
+    while a record with real context text but a judge-reported zero chunk count stays in the
+    retrieval population as poor retrieval instead of being silently dropped.
+    """
+    empty_container = EvaluationRecord(
+        question=SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="Q1", answer="a", retrieved_context="[]"),
+        outcome=Outcome.CORRECT_ANSWER,
+        scores=_judged(retrieved_chunks_total=0, retrieved_chunks_relevant=0, retrieval_points_found=0),
+    )
+    real_context_zero_chunks = EvaluationRecord(
+        question=SilverQuestion(id="Q2", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="Q2", answer="a", retrieved_context="מסמך כלשהו עם טקסט אמיתי"),
+        outcome=Outcome.CORRECT_ANSWER,
+        scores=_judged(retrieved_chunks_total=0, retrieved_chunks_relevant=0, retrieval_points_found=0),
+    )
+    summary = build_summary([empty_container, real_context_zero_chunks])
+    # Only the record with genuine context text is evaluated for retrieval; the "[]" record is not.
+    assert summary["retrieval_evaluated"] == 1
+    assert summary["pipeline"]["retrieval_unavailable"] == 1
+    # The evaluated one has 0 found points -> poor retrieval, not good.
+    assert summary["good_retrieval_rate"] == 0.0
+
+
 def test_report_can_hide_correct_answer_metrics(tmp_path):
     record = EvaluationRecord(
         question=SilverQuestion(id="Q1", topic="זכויות", question="מה הסכום?", expected_answer="100"),
@@ -123,7 +150,10 @@ def test_report_shows_infrastructure_error_count_and_percentage(tmp_path):
 
     assert summary["infrastructure_errors"] == 1
     assert summary["infrastructure_error_rate"] == 0.5
-    assert "1 (50.0%)" in report_path.read_text(encoding="utf-8")
+    # Infra-errors card is now percentage-first with an absolute (num/denom) caption.
+    rendered = report_path.read_text(encoding="utf-8")
+    assert "50.0%" in rendered
+    assert "(1/2)" in rendered
 
 
 def test_clarification_is_not_in_factual_answer_denominator():
