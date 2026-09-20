@@ -17,7 +17,7 @@ from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
 from .generator import GenerationOptions, SilverSetGenerator, reground_fingerprint
 from .graph import GraphBundle, derive_topic_clusters
-from .graph_build import GraphBuilder, graph_build_fingerprint, group_chunks_by_document
+from .graph_build import GraphBuilder, graph_build_fingerprint, group_chunks_by_document, signals_fingerprint
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
     read_evaluation_contract, read_evaluation_records,
@@ -228,7 +228,7 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
         chunks_by_document,
         model=settings.generation_model, transport=settings.gemini_transport,
         batch_chunks=settings.graph_extraction_batch_chunks,
-        implementation_sha256=graph_build_fingerprint(),
+        implementation_sha256=signals_fingerprint(),
         extract=lambda document, doc_chunks: builder.extract_document_signals(
             document, doc_chunks, settings.graph_extraction_batch_chunks,
         ),

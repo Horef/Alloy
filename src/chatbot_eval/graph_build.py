@@ -31,9 +31,27 @@ from .progress import track
 logger = logging.getLogger(__name__)
 
 
-def graph_build_fingerprint() -> str:
-    """Nonsecret identity of the graph-building implementation, for cache invalidation."""
+def signals_fingerprint() -> str:
+    """Identity of the per-document signal-extraction implementation (this module only).
+
+    Node-signal extraction depends on the extraction prompt and batching here, not on graph
+    assembly or clustering, so keying signal caches on this alone means a clustering change does not
+    force expensive re-extraction of unchanged documents.
+    """
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def graph_build_fingerprint() -> str:
+    """Identity of the graph assembly + clustering implementation, for graph-cache invalidation.
+
+    Hashes both this module and ``graph.py`` so a change to edge building, entity normalization, or
+    topic clustering invalidates cached graphs. The graph cache is cheap to rebuild from already
+    cached node signals, so being conservative here never serves a stale graph.
+    """
+    from . import graph as _graph_module
+
+    combined = Path(__file__).read_bytes() + Path(_graph_module.__file__).read_bytes()
+    return hashlib.sha256(combined).hexdigest()
 
 
 SIGNALS_PROMPT = """You are indexing an internal knowledge base to build a topic graph. For EACH
