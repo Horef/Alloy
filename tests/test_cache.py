@@ -317,6 +317,23 @@ def test_node_signals_are_extracted_per_document_and_reused_incrementally(tmp_pa
     assert calls == ["b.md"]
 
 
+def test_node_signals_concurrent_extraction_is_deterministic(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    by_doc = {f"doc{i}.md": [Chunk(f"doc{i}#1", f"doc{i}.md", "d", f"text {i}")] for i in range(12)}
+
+    def extract(document, chunks):
+        return [NodeSignals(chunk_id=c.id, entities=[document]) for c in chunks]
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, implementation_sha256="impl1", extract=extract)
+    sequential = CorpusAnalysisCache(tmp_path / "seq", enabled=True).load_node_signals(by_doc, **kwargs)
+    concurrent = CorpusAnalysisCache(tmp_path / "conc", enabled=True).load_node_signals(by_doc, max_concurrency=6, **kwargs)
+
+    assert {k: v.entities for k, v in sequential.items()} == {k: v.entities for k, v in concurrent.items()}
+    assert len(concurrent) == 12
+
+
 def test_node_signals_reextract_when_implementation_changes(tmp_path):
     from chatbot_eval.documents import Chunk
     from chatbot_eval.models import NodeSignals

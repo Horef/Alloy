@@ -80,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--resume", action="store_true", help="Resume successful structured generation calls")
     generate.add_argument("--checkpoint", type=Path, help="Generation-call checkpoint; defaults inside output")
+    generate.add_argument("--max-concurrency", type=int, help="Concurrent workers for per-document knowledge-graph signal extraction; default is config value 1")
     _add_cache_arguments(generate)
 
     generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
@@ -211,12 +212,14 @@ def _analysis_cache(args, settings) -> CorpusAnalysisCache:
     return _workflow_cache(args, settings, args.documents)
 
 
-def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled) -> GraphBundle:
+def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_concurrency: int = 1) -> GraphBundle:
     """Build (or reuse) the corpus knowledge graph and its labeled topics.
 
     Node signals are extracted incrementally per document (unchanged documents reuse cached
     signals); the assembled graph and its topic labels are then cached as a unit. This is the
     single entry point both ``generate`` and ``generate-prompt`` use so they share one graph.
+    Per-document signal extraction is the parallelizable step: with ``max_concurrency > 1`` the
+    cache extracts cache-missed documents in a thread pool.
     """
     builder = GraphBuilder(llm, settings.generation_model, progress_enabled)
     chunks_by_document = group_chunks_by_document(chunks)
@@ -228,6 +231,7 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled) -> Graph
         extract=lambda document, doc_chunks: builder.extract_document_signals(
             document, doc_chunks, settings.graph_extraction_batch_chunks,
         ),
+        max_concurrency=max_concurrency,
     )
 
     def build() -> GraphBundle:
@@ -624,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
                     settings.verify_answer_completeness if args.verify_answer_completeness is None
                     else args.verify_answer_completeness
                 ),
+                "max_concurrency": settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
                 "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
                 "resume": args.resume,
             },
@@ -655,7 +660,12 @@ def main(argv: list[str] | None = None) -> int:
             # The knowledge graph is built (incrementally) before the question-generation calls, and
             # is not part of the checkpointed generation calls: its own per-document signal cache and
             # graph cache already make it cheap to reuse across runs.
-            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled)
+            graph_concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
+            if graph_concurrency < 1:
+                raise ValueError("--max-concurrency must be positive")
+            bundle = _build_graph_bundle(
+                chunks, cache, settings, llm, progress_enabled, max_concurrency=graph_concurrency,
+            )
             generation_signature = hashlib.sha256(json.dumps({
                 "chunk_key": chunk_key,
                 "options": options.__dict__,

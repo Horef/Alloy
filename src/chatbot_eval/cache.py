@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -145,6 +146,7 @@ class CorpusAnalysisCache:
         batch_chunks: int,
         implementation_sha256: str,
         extract: Callable[[str, list[Chunk]], list[NodeSignals]],
+        max_concurrency: int = 1,
     ) -> dict[str, NodeSignals]:
         """Return per-chunk signals, extracting only documents whose content changed.
 
@@ -154,9 +156,17 @@ class CorpusAnalysisCache:
         added or edited documents miss and are extracted; deleted documents simply stop being
         requested, so their stale entries are ignored (content-addressed, never overwritten).
         Returns a flat ``chunk_id -> NodeSignals`` map across all documents.
+
+        Cache-missed documents are independent, so with ``max_concurrency > 1`` they are extracted
+        in a thread pool. Results are still merged deterministically in sorted document order, and
+        each document's cache file is written by its own worker, so concurrency never affects the
+        cached content or the returned mapping.
         """
-        signals: dict[str, NodeSignals] = {}
-        hits = misses = 0
+        keys: dict[str, str] = {}
+        cache_paths: dict[str, Path] = {}
+        missed: list[str] = []
+        hits = 0
+        cached_signals: dict[str, list[NodeSignals]] = {}
         for document, chunks in sorted(chunks_by_document.items()):
             key = _json_hash({
                 "schema_version": CACHE_SCHEMA_VERSION,
@@ -166,24 +176,40 @@ class CorpusAnalysisCache:
                 "model": model, "model_identity": self.model_identity,
                 "transport": transport, "batch_chunks": batch_chunks,
             })
-            path = self.directory / "node_signals" / f"{key}.json"
-            cached = None
-            if self.enabled and not self.refresh:
-                cached = self._read_node_signals(path, key)
+            keys[document] = key
+            cache_paths[document] = self.directory / "node_signals" / f"{key}.json"
+            cached = self._read_node_signals(cache_paths[document], key) if (self.enabled and not self.refresh) else None
             if cached is not None:
                 hits += 1
-                for signal in cached:
-                    signals[signal.chunk_id] = signal
-                continue
-            misses += 1
-            document_signals = extract(document, chunks)
-            for signal in document_signals:
-                signals[signal.chunk_id] = signal
+                cached_signals[document] = cached
+            else:
+                missed.append(document)
+
+        def _extract_and_store(document: str) -> tuple[str, list[NodeSignals]]:
+            document_signals = extract(document, chunks_by_document[document])
             if self.enabled:
-                atomic_write_text(path, json.dumps({
-                    "schema_version": CACHE_SCHEMA_VERSION, "kind": "node_signals", "key": key,
+                atomic_write_text(cache_paths[document], json.dumps({
+                    "schema_version": CACHE_SCHEMA_VERSION, "kind": "node_signals", "key": keys[document],
                     "signals": [signal.model_dump(mode="json") for signal in document_signals],
                 }, ensure_ascii=False, separators=(",", ":")))
+            return document, document_signals
+
+        extracted: dict[str, list[NodeSignals]] = {}
+        if missed and max_concurrency > 1:
+            with ThreadPoolExecutor(max_workers=min(max_concurrency, len(missed))) as executor:
+                for document, document_signals in executor.map(_extract_and_store, missed):
+                    extracted[document] = document_signals
+        else:
+            for document in missed:
+                _, document_signals = _extract_and_store(document)
+                extracted[document] = document_signals
+
+        # Merge in deterministic (sorted) document order regardless of extraction order.
+        signals: dict[str, NodeSignals] = {}
+        for document in sorted(chunks_by_document):
+            for signal in cached_signals.get(document, extracted.get(document, [])):
+                signals[signal.chunk_id] = signal
+        misses = len(missed)
         if not self.enabled:
             self.events["node_signals"] = "disabled"
         else:
