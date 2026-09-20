@@ -153,9 +153,9 @@ log_level = "INFO"
 | `gemini.generation_model` | `gemini-2.5-flash` | Topic-discovery and question-generation model. The example config explicitly selects another model. |
 | `gemini.judge_model` | `gemini-2.5-flash` | Answer-judging, topic-inference, and insights model. |
 | `generation.max_questions` | `30` | Maximum requested questions. This is a ceiling, not a guaranteed count. |
-| `generation.chunk_chars` | `12000` | Maximum normalized characters in one document chunk. |
-| `generation.chunk_overlap_chars` | `800` | Overlap between consecutive chunks; must be smaller than `chunk_chars`. |
-| `generation.batch_chunks` | `8` | Chunks per topic-discovery call. Smaller values make more calls; larger values provide more context per call. |
+| `generation.chunk_chars` | `12000` | Maximum normalized characters in one document chunk. The shipped example and corpus configs use `2000` (~500 tokens): smaller chunks give each document multiple knowledge-graph nodes (enabling `document_wide` questions and finer edges) and are easier for smaller models to process, while staying large enough to keep a typical rule intact. |
+| `generation.chunk_overlap_chars` | `800` | Overlap between consecutive chunks; must be smaller than `chunk_chars`. The example/corpus configs use `200` to match the smaller chunk size. |
+| `generation.batch_chunks` | `8` | Legacy batching hint retained for compatibility; knowledge-graph signal extraction uses `graph_extraction_batch_chunks`. |
 | `generation.unanswerable_ratio` | `0.10` | Fraction of the total budget reserved for realistic unanswerable questions; valid range `[0, 1)`. |
 | `generation.user_variation_ratio` | `0.30` | Fraction of the total budget reserved for natural/ambiguous variants derived from canonical questions. Set to `0` to disable variants. The sum with `unanswerable_ratio` must be below `1`. |
 | `generation.ambiguous_variation_share` | `0.33` | Fraction of the variation budget that should require clarification; valid range `[0, 1]`. The remainder is natural but answerable wording. |

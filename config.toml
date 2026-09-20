@@ -10,8 +10,10 @@ judge_model = "gemini-3.7-flash"
 
 [generation]
 max_questions = 30
-chunk_chars = 12000
-chunk_overlap_chars = 800
+# Moderate chunk size (~500 tokens): small enough for reliable per-chunk signal extraction and to
+# give each document multiple knowledge-graph nodes, large enough to keep a rule/procedure intact.
+chunk_chars = 2000
+chunk_overlap_chars = 200
 batch_chunks = 8
 unanswerable_ratio = 0.10
 # Share of the total set derived from canonical questions using natural user phrasing.
@@ -23,6 +25,14 @@ stable_question_ids = true
 question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, document_wide = 0.10, cross_document = 0.10 }
 min_topic_questions = 1
 max_topic_share = 0.35
+# Knowledge-graph generation (v1.0+). Node signals are extracted per document and cached.
+graph_extraction_batch_chunks = 8
+keyphrase_overlap_threshold = 0.3
+max_graph_topics = 12
+min_cluster_nodes = 1
+max_cluster_nodes = 12
+min_cluster_edge_weight = 2.0
+max_cluster_size = 40
 
 [evaluation]
 request_timeout_seconds = 60

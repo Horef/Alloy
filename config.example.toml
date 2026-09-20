@@ -10,8 +10,10 @@ judge_model = "gemini-3.7-flash"
 
 [generation]
 max_questions = 30
-chunk_chars = 12000
-chunk_overlap_chars = 800
+# Moderate chunk size (~500 tokens): reliable for per-chunk signal extraction and gives each
+# document multiple knowledge-graph nodes, while keeping a typical rule/procedure within one chunk.
+chunk_chars = 2000
+chunk_overlap_chars = 200
 batch_chunks = 8
 unanswerable_ratio = 0.10
 # Share of the total set derived from canonical questions using natural user phrasing.
