@@ -78,6 +78,27 @@ def test_weak_single_hub_link_does_not_fuse_clusters():
     assert not any(len(c) == 2 for c in clusters)  # not fused by the single shared "צבא"
 
 
+def test_dense_corpus_neither_collapses_nor_explodes():
+    """A densely interconnected corpus (many nodes glued by weak hub links, with cohesive strong
+    sub-groups) must split into bounded topics -- not one giant 'other' and not a swarm of
+    singletons. Nodes 0-5 form a strong sub-cluster (share 3 entities); the rest are weakly linked
+    singletons via a common hub entity."""
+    nodes = []
+    for i in range(6):  # strong cohesive core
+        nodes.append(GraphNode(f"core{i}", "f.md", "d", "x", entities=["hub", "e1", "e2", "e3"]))
+    for i in range(20):  # weakly-linked periphery (only the hub entity in common)
+        nodes.append(GraphNode(f"p{i}", "f.md", "d", "x", entities=["hub", f"u{i}"]))
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_topic_clusters(graph, max_topics=5, min_cluster_edge_weight=2.0, max_cluster_size=8)
+    sizes = sorted((len(c) for c in clusters), reverse=True)
+    assert sizes[0] <= 8                       # no giant cluster
+    assert len(clusters) <= 10                 # not exploded into ~26 singletons
+    assert sum(sizes) == 26                    # every node covered exactly once
+    # The strong core stays together in one cluster.
+    core = next(c for c in clusters if "core0" in c)
+    assert all(f"core{i}" in core for i in range(6))
+
+
 def test_oversized_cluster_is_split_by_weakest_edge_removal():
     # A chain a-b-c-d fully connected by 2-entity links is one component; capping size forces a split.
     nodes = [

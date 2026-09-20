@@ -309,34 +309,35 @@ def _components_from_edges(node_ids: list[str], edges: list[GraphEdge]) -> list[
 
 
 def _split_oversized(cluster: list[str], edges: list[GraphEdge], max_size: int) -> list[list[str]]:
-    """Split a cluster that exceeds ``max_size`` by repeatedly dropping its weakest internal edges.
+    """Split a cluster that exceeds ``max_size`` into smaller, more strongly-connected groups.
 
-    This is a lightweight, dependency-free edge-removal community split (in the spirit of
-    Girvan-Newman): remove the lowest-weight internal edge, recompute components, and recurse into
-    any part still too large. Deterministic and quasi-linear for the small clusters Alloy produces.
+    Dense knowledge-graph clusters (e.g. a corpus where nearly every document shares a few hub
+    entities) do not disconnect when a single weak edge is removed, so a naive Girvan-Newman step
+    stalls. Instead this progressively raises the internal edge-weight threshold -- keeping only the
+    strongest links -- until the component fragments, then recurses into any part still too large.
+    Because higher shared-entity weight means more entities in common, the surviving groups are the
+    most semantically cohesive sub-topics. Deterministic; the small node counts Alloy produces keep
+    this cheap even though the graph can be edge-dense.
     """
     if len(cluster) <= max_size:
         return [cluster]
     members = set(cluster)
-    internal = sorted(
-        (e for e in edges if e.source_id in members and e.target_id in members),
-        key=lambda e: (e.weight, e.source_id, e.target_id),
-    )
+    internal = [e for e in edges if e.source_id in members and e.target_id in members]
     if not internal:
         return [cluster]
-    kept = internal[1:]  # drop the single weakest internal edge
-    parts = _components_from_edges(cluster, kept)
-    if len(parts) == 1:
-        # Removing one edge did not disconnect anything; drop the whole weakest weight band.
-        weakest = internal[0].weight
-        kept = [e for e in internal if e.weight > weakest]
+    weights = sorted({e.weight for e in internal})
+    # Raise the threshold one weight band at a time; stop at the first threshold that fragments the
+    # component (or leaves isolated nodes), so we split at the weakest join rather than shattering.
+    for cutoff in weights:
+        kept = [e for e in internal if e.weight > cutoff]
         parts = _components_from_edges(cluster, kept)
-        if len(parts) == 1:
-            return [cluster]  # cannot split further; accept as-is
-    result: list[list[str]] = []
-    for part in parts:
-        result.extend(_split_oversized(part, edges, max_size))
-    return result
+        if len(parts) > 1:
+            result: list[list[str]] = []
+            for part in parts:
+                result.extend(_split_oversized(part, edges, max_size))
+            return result
+    # Every edge has the same weight and forms one clique-like block: cannot split by weight.
+    return [cluster]
 
 
 def derive_topic_clusters(
@@ -351,10 +352,12 @@ def derive_topic_clusters(
 
     Clusters are connected components over *strong* semantic edges (weight >=
     ``min_cluster_edge_weight``), which avoids the hairball where one hub entity fuses the whole
-    corpus. Oversized clusters are split by weakest-edge removal so no single topic dominates. The
-    smallest components are then merged into an "other" cluster so every node is covered exactly
-    once and the topic count stays within ``max_topics``. Prevalence (cluster size) drives ordering
-    and, later, importance -- preserving Alloy's quota philosophy.
+    corpus. Oversized clusters are split by raising the internal edge-weight threshold until they
+    fragment, so no single topic dominates. When splitting yields more than ``max_topics`` groups,
+    the largest are kept as distinct topics and the remaining small ones are bin-packed into a
+    bounded number of "other" buckets (each under ``max_cluster_size``), so a dense corpus neither
+    collapses into one giant topic nor explodes into many singletons. Prevalence (cluster size)
+    drives ordering and, later, importance -- preserving Alloy's quota philosophy.
     """
     node_ids = [node.chunk_id for node in graph.nodes]
     if not node_ids:
@@ -369,9 +372,26 @@ def derive_topic_clusters(
     kept = [c for c in components if len(c) >= min_cluster_nodes] or components
     if len(kept) <= max_topics:
         return kept
+    # Too many clusters: keep the largest (most prevalent) as distinct topics and combine the
+    # remaining small ones into a bounded number of "other" buckets. Bin-packing the tail (rather
+    # than fusing it into one lump) keeps each residual topic under max_cluster_size, so a densely
+    # connected corpus does not collapse back into a single giant "other" topic nor explode into
+    # dozens of singleton topics.
     head = kept[: max_topics - 1]
-    tail = [node_id for cluster in kept[max_topics - 1:] for node_id in cluster]
-    return head + ([tail] if tail else [])
+    tail_clusters = kept[max_topics - 1:]
+    if not tail_clusters:
+        return head
+    cap = max_cluster_size if max_cluster_size is not None else sum(len(c) for c in tail_clusters)
+    buckets: list[list[str]] = []
+    current: list[str] = []
+    for cluster in tail_clusters:  # largest-first, so big residual clusters stay whole
+        if current and len(current) + len(cluster) > cap:
+            buckets.append(current)
+            current = []
+        current.extend(cluster)
+    if current:
+        buckets.append(current)
+    return head + buckets
 
 
 def cluster_importance(cluster_size: int, total_nodes: int) -> int:
