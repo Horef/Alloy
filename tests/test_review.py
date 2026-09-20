@@ -171,6 +171,20 @@ def test_review_merge_preserves_clarification_task_edits(tmp_path):
     assert merged[0].reference_claims == []
 
 
+def test_review_export_custom_basename_names_both_files(tmp_path):
+    csv_path, md_path = write_review_file([_question()], tmp_path, basename="questions_for_review_hova")
+    assert csv_path.name == "questions_for_review_hova.csv"
+    assert md_path.name == "questions_for_review_hova.md"
+    # The read-only markdown points reviewers at the correctly named editable CSV.
+    assert "questions_for_review_hova.csv" in md_path.read_text(encoding="utf-8")
+
+
+def test_review_export_sanitizes_unsafe_basename(tmp_path):
+    csv_path, _ = write_review_file([_question()], tmp_path, basename="../../evil name!!")
+    assert csv_path.parent == tmp_path
+    assert csv_path.name.endswith(".csv") and "/" not in csv_path.name
+
+
 def test_review_export_hebrew_columns_header(tmp_path):
     csv_path, _ = write_review_file([_question()], tmp_path, hebrew_columns=True)
     with csv_path.open(encoding="utf-8-sig", newline="") as handle:

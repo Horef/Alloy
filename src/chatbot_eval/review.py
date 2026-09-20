@@ -136,18 +136,21 @@ def write_review_file(
     output_dir: Path,
     *,
     hebrew_columns: bool = False,
+    basename: str = "questions_for_review",
 ) -> tuple[Path, Path]:
     """Export a reviewer-friendly CSV and a read-only Markdown view.
 
     When ``hebrew_columns`` is set, the CSV header uses Hebrew labels (except the machine
     ``id`` column). ``review-merge`` reads either language, so the choice is purely
-    cosmetic for the reviewer. Returns the CSV path (the file the reviewer edits) and the
-    Markdown path.
+    cosmetic for the reviewer. ``basename`` sets the file stem (e.g. a per-corpus name like
+    ``questions_for_review_hova``) so multiple exports can live side by side without manual
+    renaming. Returns the CSV path (the file the reviewer edits) and the Markdown path.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     items = validate_question_set(list(questions))
-    csv_path = output_dir / "questions_for_review.csv"
-    markdown_path = output_dir / "questions_for_review.md"
+    safe_basename = "".join(ch for ch in basename if ch.isalnum() or ch in ("_", "-")).strip("_-") or "questions_for_review"
+    csv_path = output_dir / f"{safe_basename}.csv"
+    markdown_path = output_dir / f"{safe_basename}.md"
     fieldnames = [HEBREW_COLUMN_LABELS[key] for key in REVIEW_COLUMNS] if hebrew_columns else list(REVIEW_COLUMNS)
     with (
         _staged_text_file(csv_path, encoding="utf-8-sig", newline="") as (csv_handle, csv_temporary),
@@ -163,7 +166,7 @@ def write_review_file(
             if hebrew_columns:
                 row = {HEBREW_COLUMN_LABELS[key]: value for key, value in row.items()}
             writer.writerow(row)
-        md_handle.write(_render_markdown(items))
+        md_handle.write(_render_markdown(items, csv_path.name))
         for handle, temporary, destination in (
             (csv_handle, csv_temporary, csv_path),
             (md_handle, md_temporary, markdown_path),
@@ -174,11 +177,11 @@ def write_review_file(
     return csv_path, markdown_path
 
 
-def _render_markdown(items: list[SilverQuestion]) -> str:
+def _render_markdown(items: list[SilverQuestion], csv_name: str = "questions_for_review.csv") -> str:
     lines = [
         "# שאלות לסקירה אנושית",
         "",
-        "קובץ קריאה בלבד. לעריכה השתמשו ב-`questions_for_review.csv`.",
+        f"קובץ קריאה בלבד. לעריכה השתמשו ב-`{csv_name}`.",
         f"סך הכול {len(items)} שאלות.",
         "",
     ]

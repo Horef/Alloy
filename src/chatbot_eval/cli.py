@@ -151,7 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
         "review-export", help="Export a human-readable review file from a generated silver question set",
     )
     review_export.add_argument("--questions", type=Path, required=True, help="Silver CSV or JSONL to export for review")
-    review_export.add_argument("--output", type=Path, default=Path("outputs/review"), help="Destination for questions_for_review.csv/.md")
+    review_export.add_argument("--output", type=Path, default=Path("outputs/review"), help="Destination for the review CSV/.md")
+    review_export.add_argument("--name", default="questions_for_review", help="Base filename (stem) for the exported CSV/.md, e.g. 'questions_for_review_hova'")
     review_export.add_argument("--hebrew-columns", action="store_true", help="Write Hebrew column headers for reviewers (the 'id' column stays English); review-merge reads either language")
 
     review_merge = commands.add_parser(
@@ -416,9 +417,11 @@ def main(argv: list[str] | None = None) -> int:
         questions = read_questions(args.questions)
         with RunManifest(
             args.output, command=args.command, settings=settings, inputs=[args.questions],
-            parameters={"question_count": len(questions), "hebrew_columns": args.hebrew_columns},
+            parameters={"question_count": len(questions), "hebrew_columns": args.hebrew_columns, "name": args.name},
         ) as manifest:
-            review_csv, review_md = write_review_file(questions, args.output, hebrew_columns=args.hebrew_columns)
+            review_csv, review_md = write_review_file(
+                questions, args.output, hebrew_columns=args.hebrew_columns, basename=args.name,
+            )
             manifest.complete(
                 question_count=len(questions),
                 outputs=input_inventory([review_csv, review_md]),

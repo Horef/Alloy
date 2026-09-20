@@ -503,7 +503,8 @@ chatbot-eval --config config.toml review-export \
 | Option | Required/default | Meaning |
 |---|---|---|
 | `--questions PATH` | required | Silver CSV or JSONL to export for review. |
-| `--output DIR` | `outputs/review` | Destination for `questions_for_review.csv` and `.md`. |
+| `--output DIR` | `outputs/review` | Destination for the review CSV and `.md`. |
+| `--name STEM` | `questions_for_review` | Base filename (stem) for the exported CSV/`.md`, e.g. `questions_for_review_hova`, so per-corpus exports do not need manual renaming. Unsafe characters are stripped. |
 | `--hebrew-columns` | off | Write Hebrew column headers for Hebrew-speaking reviewers. The `id` column keeps its English name because it is the machine join key. `review-merge` reads either language, so this choice is purely cosmetic. |
 
 ### review-merge
