@@ -151,6 +151,12 @@ def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
         return Outcome.MISLEADING_HALLUCINATION
     if question.expected_behavior == ExpectedBehavior.CLARIFY:
         return Outcome.CORRECT_CLARIFICATION if scores.response_is_clarification else Outcome.MISSING_CLARIFICATION
+    # "answer_or_clarify" ambiguous variant: the reference is a comprehensive answer covering every
+    # interpretation, but a focused clarifying question is an equally valid response. Accept the
+    # clarification as success here rather than treating it as a deferred/incorrect answer, then let
+    # the normal answer path grade a direct (comprehensive) answer below.
+    if question.clarification_acceptable and scores.response_is_clarification:
+        return Outcome.CORRECT_CLARIFICATION
     if question.expected_behavior == ExpectedBehavior.ANSWER and scores.response_is_abstention:
         return Outcome.INCORRECT_ABSTENTION
     if question.expected_behavior == ExpectedBehavior.ABSTAIN and scores.response_is_abstention:

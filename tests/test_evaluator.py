@@ -34,6 +34,22 @@ def test_outcome_matrix():
     assert classify(question(True), scores(addressed=1, correct=0, incorrect_type="hallucination", false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
 
 
+def test_answer_or_clarify_accepts_either_comprehensive_answer_or_clarification():
+    """An 'answer_or_clarify' ambiguous variant is an ANSWER task (its reference is the parent's
+    comprehensive answer), but a clarifying question is an equally valid response."""
+    item = question(True)  # ANSWER task
+    item.clarification_acceptable = True
+    # A correct comprehensive answer succeeds as usual.
+    assert classify(item, scores()) == Outcome.CORRECT_ANSWER
+    # A clarifying question is ALSO accepted (not a missing-answer failure).
+    assert classify(item, scores(clarification=True)) == Outcome.CORRECT_CLARIFICATION
+    # But genuine misinformation is still caught first.
+    assert classify(item, scores(clarification=True, false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
+    # Without the flag, a clarification on an answer task is not a full success.
+    plain = question(True)
+    assert classify(plain, scores(clarification=True)) != Outcome.CORRECT_CLARIFICATION
+
+
 def test_clarification_is_a_distinct_expected_behavior():
     item = question(True)
     item.expected_behavior = ExpectedBehavior.CLARIFY

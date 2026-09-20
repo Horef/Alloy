@@ -119,6 +119,11 @@ class GeneratedVariation(BaseModel):
     question: str
     question_form: Literal["natural_user", "ambiguous"]
     required_clarification: str = ""
+    # For ambiguous variants only. ``must_clarify`` means answering with one interpretation risks a
+    # materially wrong answer, so a clarifying question is the only safe response. ``answer_or_clarify``
+    # means the interpretations are all safe to present, so a correct comprehensive answer (covering
+    # every interpretation) is just as acceptable as a clarifying question.
+    ambiguity_kind: Literal["must_clarify", "answer_or_clarify"] = "must_clarify"
     rationale: str
 
 
@@ -141,6 +146,13 @@ class SilverQuestion(BaseModel):
     reference_claims: list[str] = Field(default_factory=list)
     supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
     sources: list[SourceRef] = Field(default_factory=list)
+    # For an "answer_or_clarify" ambiguous variant: the expected behavior is ANSWER (a correct
+    # comprehensive answer covering every interpretation is the reference), but a clarifying question
+    # is ALSO an acceptable response. The judge treats a whole-response clarification as success here
+    # instead of a missing-answer failure. The focused follow-up itself is kept in
+    # ``acceptable_clarification`` for reviewers. Empty/False for all other questions.
+    clarification_acceptable: bool = False
+    acceptable_clarification: str = ""
     review_status: str = "pending"
     reviewer_notes: str = ""
 

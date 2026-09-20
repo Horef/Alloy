@@ -250,3 +250,43 @@ def test_generate_persists_diagnostics_and_inventories_them_in_manifest(tmp_path
     assert str(diagnostics_path.resolve()) in {
         item["path"] for item in manifest["results"]["outputs"]
     }
+
+
+def test_revary_regenerates_only_variations(tmp_path, monkeypatch):
+    import json
+    from chatbot_eval.io import write_questions
+    from chatbot_eval.models import GeneratedVariation, QuestionForm, VariationBatch
+
+    config = tmp_path / "config.toml"
+    config.write_text("", encoding="utf-8")
+
+    canonical = SilverQuestion(id="Q1", topic="t", question="שאלה קנונית", expected_answer="תשובה",
+                               reference_claims=["תשובה"])
+    old_variant = SilverQuestion(id="V1", topic="t", question="ניסוח ישן", expected_answer="תשובה",
+                                 question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1")
+    questions_dir = tmp_path / "in"
+    csv_path, jsonl_path = write_questions([canonical, old_variant], questions_dir)
+    output = tmp_path / "out"
+
+    class VarLLM:
+        def generate(self, prompt, schema, model, **kwargs):
+            return VariationBatch(variations=[
+                GeneratedVariation(source_question_id="Q1", question="ניסוח חדש",
+                                   question_form="natural_user", rationale="r"),
+            ])
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: VarLLM())
+
+    assert cli.main([
+        "--config", str(config), "revary", "--questions", str(jsonl_path),
+        "--output", str(output), "--variation-count", "1",
+    ]) == 0
+
+    merged = [json.loads(line) for line in (output / "silver_questions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    questions_text = {q["question"] for q in merged}
+    assert "שאלה קנונית" in questions_text       # canonical kept
+    assert "ניסוח ישן" not in questions_text       # old variant dropped
+    assert "ניסוח חדש" in questions_text           # fresh variant added
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["results"]["revary_diagnostics"]["new_variants"] == 1

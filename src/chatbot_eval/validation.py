@@ -96,6 +96,9 @@ def validate_question_set(questions: list[SilverQuestion]) -> list[SilverQuestio
         if not question.expected_answer.strip():
             errors.append(f"{prefix} has an empty expected answer")
 
+        if question.clarification_acceptable and question.expected_behavior != ExpectedBehavior.ANSWER:
+            errors.append(f"{prefix} sets clarification_acceptable but is not an answer task")
+
         if question.expected_behavior == ExpectedBehavior.ANSWER:
             if not question.answerable:
                 errors.append(f"{prefix} expects an answer but answerable=false")

@@ -163,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
     review_merge.add_argument("--review", type=Path, required=True, help="Edited questions_for_review.csv")
     review_merge.add_argument("--output", type=Path, default=Path("outputs/questions-reviewed"), help="Destination for the merged silver CSV/JSONL")
 
+    revary = commands.add_parser(
+        "revary",
+        help="Regenerate only the derived user variations (natural-user and ambiguous) on an existing silver set, keeping canonical and boundary questions",
+    )
+    revary.add_argument("--questions", type=Path, required=True, help="Silver CSV/JSONL whose variations should be regenerated")
+    revary.add_argument("--output", type=Path, default=Path("outputs/questions-revaried"), help="Destination for the refreshed silver CSV/JSONL")
+    revary.add_argument("--variation-count", type=int, help="Total variants to generate; defaults to the number previously present")
+    revary.add_argument("--ambiguous-variation-share", type=float, help="Share of variants that should be ambiguous; defaults to config value")
+    revary.add_argument("--exclude-questions", type=Path, help="Existing silver CSV/JSONL whose questions must not be reproduced as variants")
+
     reground = commands.add_parser(
         "reground",
         help="Regenerate only the grounding (sources, quotes, reference claims) for human-edited questions against the documents",
@@ -533,6 +543,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Generated a reviewable system prompt across {len(topics)} discovered topics.")
         print(f"System prompt: {prompt_path}\nReview package: {package_path}")
         logger.info("command_completed command=generate-prompt topic_count=%d output=%s", len(topics), args.output)
+        return 0
+
+    if args.command == "revary":
+        questions = read_questions(args.questions)
+        excluded_questions = ()
+        if args.exclude_questions:
+            excluded_questions = tuple(q.question for q in read_questions(args.exclude_questions))
+        ambiguous_share = (
+            settings.ambiguous_variation_share if args.ambiguous_variation_share is None
+            else args.ambiguous_variation_share
+        )
+        if not 0 <= ambiguous_share <= 1:
+            raise ValueError("--ambiguous-variation-share must be in [0, 1]")
+        if args.variation_count is not None and args.variation_count < 0:
+            raise ValueError("--variation-count must be non-negative")
+        with RunManifest(
+            args.output, command=args.command, settings=settings, inputs=[args.questions],
+            parameters={
+                "total_questions": len(questions),
+                "variation_count": args.variation_count,
+                "ambiguous_variation_share": ambiguous_share,
+                "generation_fingerprint": graph_build_fingerprint(),
+            },
+        ) as manifest:
+            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+            merged, revary_diagnostics = generator.regenerate_variations(
+                questions,
+                variation_budget=args.variation_count,
+                ambiguous_variation_share=ambiguous_share,
+                max_candidate_rounds=settings.max_candidate_rounds,
+                excluded_questions=excluded_questions,
+                stable_question_ids=settings.stable_question_ids,
+            )
+            csv_path, jsonl_path = write_questions(merged, args.output)
+            manifest.complete(
+                question_count=len(merged), revary_diagnostics=revary_diagnostics,
+                outputs=input_inventory([csv_path, jsonl_path]),
+            )
+        print(
+            f"Regenerated variations: kept {revary_diagnostics['canonical_kept']} canonical, "
+            f"dropped {revary_diagnostics['previous_variants_dropped']} old variants, "
+            f"created {revary_diagnostics['new_variants']} new "
+            f"({revary_diagnostics['new_variants_by_form']}).\n"
+            f"Silver CSV: {csv_path}\nProvenance JSONL: {jsonl_path}\n"
+            "New variants are review_status=pending; review and approve them before evaluating."
+        )
+        logger.info("command_completed command=revary question_count=%d output=%s", len(merged), args.output)
         return 0
 
     if args.command == "reground":

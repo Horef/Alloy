@@ -8,6 +8,8 @@ helps managers bootstrap chatbot instructions. It supports these workflows:
    reviewer's edits back onto the full technical set without losing provenance.
 3. `reground`: regenerate the grounding (sources, quotes, reference claims) for questions whose text
    a reviewer edited, so their evidence matches the new wording.
+3a. `revary`: regenerate only the derived user variations (natural-user and ambiguous) on an existing
+   silver set, keeping the reviewed canonical and boundary questions untouched.
 4. `evaluate`: send reviewed questions to a JSON-over-HTTP chatbot and judge its answers.
 5. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
 6. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
@@ -348,8 +350,9 @@ evidence but changes the behavior expected from the chatbot.
 | `question_form` | Meaning | `expected_behavior` |
 |---|---|---|
 | `canonical` | Clean, explicit review question generated directly from evidence. | `answer` for supported questions, `abstain` for boundary questions. |
-| `natural_user` | Shorter, conversational, first-person, or domain-shorthand version that preserves enough information. | `answer`; the parent reference answer is reused. |
-| `ambiguous` | Plausible request missing a material discriminator, where a direct answer could apply the wrong rule. | `clarify`; `expected_answer` contains the ideal focused follow-up. |
+| `natural_user` | How a real user actually asks: first-person, everyday words, common shorthand, and deliberately spanning a range of specificity. It may drop expert discriminators the canonical question spells out (specific level numbers, named categories) as long as the parent reference answer is still a correct response. | `answer`; the parent reference answer is reused. |
+| `ambiguous` (`must_clarify`) | Plausible request missing a material discriminator, where a direct single-interpretation answer could be materially wrong or harmful. | `clarify`; `expected_answer` holds the ideal focused follow-up (only clarifying succeeds). |
+| `ambiguous` (`answer_or_clarify`) | Plausible request missing a discriminator, but where the interpretations are all safe to present together, so a comprehensive answer covering every interpretation is just as good as clarifying. | `answer` against the parent's comprehensive reference, **and** a clarifying question is accepted too (`clarification_acceptable=true`; the focused follow-up is kept in `acceptable_clarification`). |
 
 Every variant stores `parent_question_id`. This makes it possible to compare whether a chatbot can
 handle both the clean formulation and realistic user language without treating the variants as
@@ -585,6 +588,33 @@ Only answerable answer-task questions can be regrounded. Clarification, abstenti
 questions have no factual claims and are skipped with a recorded reason. A `run_manifest.json`
 records how many were regrounded, how many failed, and why. Questions that could not be regrounded
 keep their `needs_reground` status so they remain visible.
+
+## Workflow 3b: regenerate user variations only
+
+`revary` refreshes only the derived user variations on an existing silver set. It keeps the reviewed
+canonical questions and the boundary/unanswerable questions untouched, drops the existing
+natural-user and ambiguous variants, and generates fresh ones from the canonical questions. Use it
+after improving variation quality (or to re-roll variants) without paying to rebuild the knowledge
+graph or regenerate the reviewed canonical set.
+
+```bash
+chatbot-eval --config config.toml revary \
+  --questions ./outputs/questions/silver_questions.jsonl \
+  --output ./outputs/questions-revaried
+```
+
+| Option | Required/default | Meaning |
+|---|---|---|
+| `--questions PATH` | required | Silver CSV/JSONL whose variations should be regenerated. |
+| `--output DIR` | `outputs/questions-revaried` | Destination for the refreshed silver CSV/JSONL. |
+| `--variation-count N` | previous count | Total variants to generate; defaults to the number previously present, preserving the mix size. |
+| `--ambiguous-variation-share R` | config value | Share of variants that should be ambiguous; `[0, 1]`. |
+| `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions must not be reproduced as variants. |
+
+New variants are written with `review_status=pending` and (for ambiguous ones) classified as
+`must_clarify` or `answer_or_clarify`; review and approve them before evaluating. A
+`revary_diagnostics` block records how many canonical questions were kept, how many old variants
+were dropped, and the new variant mix.
 
 ## Workflow 4: evaluate a live chatbot
 

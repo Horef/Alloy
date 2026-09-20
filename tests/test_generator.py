@@ -199,6 +199,63 @@ def test_ambiguous_variation_expects_a_follow_up_and_preserves_provenance():
     assert result.expected_behavior == ExpectedBehavior.CLARIFY
     assert result.expected_answer == "האם מדובר בחייל חובה או קבע?"
     assert result.parent_question_id == "Q0001"
+    assert result.clarification_acceptable is False
+
+
+def test_answer_or_clarify_variant_is_answer_task_with_acceptable_clarification():
+    parent = SilverQuestion(
+        id="Q0001", topic="חופשות", question="מהם סוגי החופשה המיוחדת ותנאיהם?",
+        expected_answer="חופשה אישית, כלכלית, ולימודים — כל אחת בתנאים שלה.",
+        reference_claims=["חופשה אישית", "חופשה כלכלית", "חופשה ללימודים"],
+    )
+    variation = GeneratedVariation(
+        source_question_id="Q0001", question="מה התנאים לחופשה מיוחדת?",
+        question_form="ambiguous", required_clarification="לאיזה סוג חופשה מיוחדת כוונתך?",
+        ambiguity_kind="answer_or_clarify", rationale="ניתן לענות מקיף או להבהיר",
+    )
+
+    result = SilverSetGenerator._to_variation(variation, parent, 2)
+
+    # It is an ANSWER task carrying the parent's comprehensive reference, but a clarification is OK.
+    assert result.expected_behavior == ExpectedBehavior.ANSWER
+    assert result.reference_claims == parent.reference_claims
+    assert result.expected_answer == parent.expected_answer
+    assert result.clarification_acceptable is True
+    assert result.acceptable_clarification == "לאיזה סוג חופשה מיוחדת כוונתך?"
+
+
+def test_regenerate_variations_replaces_variants_keeps_canonical_and_boundary():
+    canonical = SilverQuestion(id="Q1", topic="t", question="שאלה קנונית", expected_answer="תשובה",
+                               reference_claims=["תשובה"])
+    boundary = SilverQuestion(id="U1", topic="t", question="שאלה גבולית", expected_answer="חסר מידע",
+                              answerable=False, expected_behavior=ExpectedBehavior.ABSTAIN,
+                              question_type=QuestionType.UNANSWERABLE)
+    old_variant = SilverQuestion(id="V1", topic="t", question="ניסוח ישן", expected_answer="תשובה",
+                                 question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1")
+
+    class VarLLM:
+        def generate(self, prompt, schema, model):
+            return VariationBatch(variations=[
+                GeneratedVariation(source_question_id="Q1", question="ניסוח חדש וטבעי",
+                                   question_form="natural_user", rationale="r"),
+                GeneratedVariation(source_question_id="Q1", question="שאלה מעורפלת",
+                                   question_form="ambiguous", required_clarification="לאיזה מקרה?",
+                                   ambiguity_kind="answer_or_clarify", rationale="r"),
+            ])
+
+    merged, diag = SilverSetGenerator(VarLLM(), "m").regenerate_variations(
+        [canonical, boundary, old_variant], variation_budget=2, ambiguous_variation_share=0.5,
+        max_candidate_rounds=1, stable_question_ids=False,
+    )
+    forms = [q.question_form for q in merged]
+    # Canonical and boundary kept; old variant dropped; two fresh variants added.
+    assert any(q.question == "שאלה קנונית" for q in merged)
+    assert any(q.question == "שאלה גבולית" for q in merged)
+    assert not any(q.question == "ניסוח ישן" for q in merged)
+    assert diag["canonical_kept"] == 2  # canonical + boundary are both non-variant "kept"
+    assert diag["previous_variants_dropped"] == 1
+    assert diag["new_variants"] == 2
+    assert QuestionForm.NATURAL_USER in forms and QuestionForm.AMBIGUOUS in forms
 
 
 def test_generation_budget_includes_natural_and_ambiguous_variants():
