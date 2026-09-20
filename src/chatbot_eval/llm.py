@@ -100,12 +100,20 @@ class GeminiStructuredLLM:
             return False
         if isinstance(exc, errors.APIError):
             return exc.code in {408, 409, 429, 500, 502, 503, 504}
-        network_errors = (
-            TimeoutError, ConnectionError,
-            errors.httpx.TimeoutException, errors.httpx.TransportError,
-            errors.requests.Timeout, errors.requests.ConnectionError,
-        )
-        return isinstance(exc, network_errors)
+        # The optional transport backends the SDK re-exports (httpx, requests) vary by SDK version,
+        # so collect only the classes that actually exist. Referencing a missing attribute directly
+        # used to raise AttributeError from inside the retry check and mask the real error.
+        network_errors: list[type] = [TimeoutError, ConnectionError]
+        for backend, names in (
+            ("httpx", ("TimeoutException", "TransportError")),
+            ("requests", ("Timeout", "ConnectionError")),
+        ):
+            module = getattr(errors, backend, None)
+            for name in names:
+                exc_type = getattr(module, name, None)
+                if isinstance(exc_type, type):
+                    network_errors.append(exc_type)
+        return isinstance(exc, tuple(network_errors))
 
     @staticmethod
     def _retry_delay(exc: Exception, attempt: int, cap: float = 60.0) -> float:
