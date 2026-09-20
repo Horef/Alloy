@@ -15,7 +15,9 @@ from .artifacts import (
 from .cache import CorpusAnalysisCache
 from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
-from .generator import GenerationOptions, SilverSetGenerator, reground_fingerprint, topic_discovery_fingerprint
+from .generator import GenerationOptions, SilverSetGenerator, reground_fingerprint
+from .graph import GraphBundle, derive_topic_clusters
+from .graph_build import GraphBuilder, graph_build_fingerprint, group_chunks_by_document
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
     read_evaluation_contract, read_evaluation_records,
@@ -207,6 +209,69 @@ def _analysis_cache(args, settings) -> CorpusAnalysisCache:
     if getattr(args, "output", None) and args.output.resolve().is_relative_to(args.documents.resolve()):
         raise ValueError("The output directory must be outside --documents")
     return _workflow_cache(args, settings, args.documents)
+
+
+def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled) -> GraphBundle:
+    """Build (or reuse) the corpus knowledge graph and its labeled topics.
+
+    Node signals are extracted incrementally per document (unchanged documents reuse cached
+    signals); the assembled graph and its topic labels are then cached as a unit. This is the
+    single entry point both ``generate`` and ``generate-prompt`` use so they share one graph.
+    """
+    builder = GraphBuilder(llm, settings.generation_model, progress_enabled)
+    chunks_by_document = group_chunks_by_document(chunks)
+    signals = cache.load_node_signals(
+        chunks_by_document,
+        model=settings.generation_model, transport=settings.gemini_transport,
+        batch_chunks=settings.graph_extraction_batch_chunks,
+        implementation_sha256=graph_build_fingerprint(),
+        extract=lambda document, doc_chunks: builder.extract_document_signals(
+            document, doc_chunks, settings.graph_extraction_batch_chunks,
+        ),
+    )
+
+    def build() -> GraphBundle:
+        graph = builder.assemble_graph(
+            chunks, signals, keyphrase_overlap_threshold=settings.keyphrase_overlap_threshold,
+        )
+        clusters = derive_topic_clusters(
+            graph, min_cluster_nodes=settings.min_cluster_nodes, max_topics=settings.max_graph_topics,
+            min_cluster_edge_weight=settings.min_cluster_edge_weight,
+            max_cluster_size=settings.max_cluster_size,
+        )
+        topics = builder.label_topics(graph, clusters)
+        return GraphBundle(graph, topics)
+
+    return cache.load_graph(
+        chunks, signals,
+        model=settings.generation_model, transport=settings.gemini_transport,
+        keyphrase_overlap_threshold=settings.keyphrase_overlap_threshold,
+        max_topics=settings.max_graph_topics, min_cluster_nodes=settings.min_cluster_nodes,
+        clustering_params={
+            "min_cluster_edge_weight": settings.min_cluster_edge_weight,
+            "max_cluster_size": settings.max_cluster_size,
+        },
+        implementation_sha256=graph_build_fingerprint(),
+        build=build,
+    )
+
+
+def _graph_topics_as_candidates(bundle: GraphBundle):
+    """Adapt graph topics to the ``TopicCandidate`` shape the prompt generator expects.
+
+    ``generate-prompt`` reasons over topic name/description/importance and the source IDs behind
+    each topic; a graph topic's ``node_ids`` are exactly those source IDs, so the adapter is a
+    faithful, lossless projection that lets the prompt pipeline stay unchanged.
+    """
+    from .models import TopicCandidate
+
+    return [
+        TopicCandidate(
+            name=topic.name, description=topic.description,
+            importance=topic.importance, source_ids=list(topic.node_ids),
+        )
+        for topic in bundle.topics
+    ]
 
 
 def _headers(values: list[str]) -> dict[str, str]:
@@ -425,12 +490,8 @@ def main(argv: list[str] | None = None) -> int:
             chunks, chunk_key = cache.load_chunks(
                 args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled,
             )
-            topic_generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
-            topics = cache.load_topics(
-                chunks, chunk_key, model=settings.generation_model, transport=settings.gemini_transport,
-                batch_chunks=settings.batch_chunks, implementation_sha256=topic_discovery_fingerprint(),
-                discover=lambda: topic_generator.discover_topics(chunks, settings.batch_chunks),
-            )
+            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled)
+            topics = _graph_topics_as_candidates(bundle)
             prompt_generator = SystemPromptGenerator(
                 llm, settings.generation_model,
                 document_context_chars=settings.prompt_max_document_chars,
@@ -589,25 +650,26 @@ def main(argv: list[str] | None = None) -> int:
                     else args.verify_answer_completeness
                 ),
                 completeness_evidence_limit=settings.completeness_evidence_limit,
+                max_cluster_nodes=settings.max_cluster_nodes,
             )
+            # The knowledge graph is built (incrementally) before the question-generation calls, and
+            # is not part of the checkpointed generation calls: its own per-document signal cache and
+            # graph cache already make it cheap to reuse across runs.
+            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled)
             generation_signature = hashlib.sha256(json.dumps({
                 "chunk_key": chunk_key,
                 "options": options.__dict__,
+                "topics": [t.name for t in bundle.topics],
                 "model": settings.generation_model,
                 "transport": settings.gemini_transport, "model_identity": model_identity(settings),
-                "implementation": topic_discovery_fingerprint(),
+                "implementation": graph_build_fingerprint(),
             }, ensure_ascii=False, sort_keys=True, default=list).encode("utf-8")).hexdigest()
             generation_checkpoint = args.checkpoint or args.output / "generation_checkpoint.jsonl"
             generation_llm = StructuredCallCheckpoint(
                 generation_checkpoint, llm, signature=generation_signature, resume=args.resume,
             )
             generator = SilverSetGenerator(generation_llm, settings.generation_model, progress_enabled)
-            topics = cache.load_topics(
-                chunks, chunk_key, model=settings.generation_model, transport=settings.gemini_transport,
-                batch_chunks=settings.batch_chunks, implementation_sha256=topic_discovery_fingerprint(),
-                discover=lambda: generator.discover_topics(chunks, settings.batch_chunks),
-            )
-            questions, topics = generator.generate(chunks, options, topics=topics)
+            questions, topics = generator.generate(chunks, options, bundle=bundle)
             csv_path, jsonl_path = write_questions(questions, args.output)
             generation_diagnostics = dict(generator.last_generation_diagnostics)
             diagnostics_path = _write_generation_diagnostics(generation_diagnostics, args.output)

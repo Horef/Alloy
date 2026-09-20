@@ -209,8 +209,10 @@ def test_generate_persists_diagnostics_and_inventories_them_in_manifest(tmp_path
         "accepted_total": 0,
         "rejected": {"quote_not_verbatim": 1},
         "unallocated": 1,
-        "boundary_evidence_scope": "selected_excerpts",
+        "boundary_evidence_scope": "cluster_excerpts",
     }
+
+    from chatbot_eval.graph import GraphBundle, KnowledgeGraph
 
     class Cache:
         enabled = True
@@ -219,9 +221,6 @@ def test_generate_persists_diagnostics_and_inventories_them_in_manifest(tmp_path
         def load_chunks(self, *args, **kwargs):
             return [], "chunk-key"
 
-        def load_topics(self, *args, **kwargs):
-            return []
-
         def summary(self):
             return {"hits": 0, "misses": 0}
 
@@ -229,13 +228,14 @@ def test_generate_persists_diagnostics_and_inventories_them_in_manifest(tmp_path
         def __init__(self, *args, **kwargs):
             self.last_generation_diagnostics = {}
 
-        def generate(self, chunks, options, *, topics):
+        def generate(self, chunks, options, *, bundle):
             self.last_generation_diagnostics = expected
-            return [], topics
+            return [], bundle.topics
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
     monkeypatch.setattr(cli, "_analysis_cache", lambda *args, **kwargs: Cache())
+    monkeypatch.setattr(cli, "_build_graph_bundle", lambda *args, **kwargs: GraphBundle(KnowledgeGraph([], []), []))
     monkeypatch.setattr(cli, "SilverSetGenerator", Generator)
 
     assert cli.main([

@@ -8,12 +8,22 @@ from typing import Any, Callable
 
 from .artifacts import atomic_write_text, file_sha256
 from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
-from .models import EvaluationInsights, EvaluationRecord, PromptPackage, SilverQuestion, TopicCandidate, TopicMap
+from .graph import GraphBundle
+from .models import (
+    EvaluationInsights,
+    EvaluationRecord,
+    NodeSignals,
+    PromptPackage,
+    SilverQuestion,
+    TopicCandidate,
+    TopicMap,
+)
 from .prompt_policy import POLICY_VERSION, assemble_prompt, strip_policy
 
 logger = logging.getLogger(__name__)
 
-CACHE_SCHEMA_VERSION = 1
+# v2: added per-document node-signal and knowledge-graph cache kinds for KG-based generation.
+CACHE_SCHEMA_VERSION = 2
 
 
 def _json_hash(value: Any) -> str:
@@ -125,6 +135,150 @@ class CorpusAnalysisCache:
         else:
             self.events["topics"] = "disabled"
         return topics
+
+    def load_node_signals(
+        self,
+        chunks_by_document: dict[str, list[Chunk]],
+        *,
+        model: str,
+        transport: str,
+        batch_chunks: int,
+        implementation_sha256: str,
+        extract: Callable[[str, list[Chunk]], list[NodeSignals]],
+    ) -> dict[str, NodeSignals]:
+        """Return per-chunk signals, extracting only documents whose content changed.
+
+        This is the incremental core of KG rebuilds. Each document's signals are cached under a key
+        derived from that document's chunk ids and text plus the extractor implementation, model,
+        transport, and batch size. Unchanged documents hit the cache and skip the LLM entirely;
+        added or edited documents miss and are extracted; deleted documents simply stop being
+        requested, so their stale entries are ignored (content-addressed, never overwritten).
+        Returns a flat ``chunk_id -> NodeSignals`` map across all documents.
+        """
+        signals: dict[str, NodeSignals] = {}
+        hits = misses = 0
+        for document, chunks in sorted(chunks_by_document.items()):
+            key = _json_hash({
+                "schema_version": CACHE_SCHEMA_VERSION,
+                "signals_implementation_sha256": implementation_sha256,
+                "document": document,
+                "chunks": [{"id": c.id, "text": c.text} for c in chunks],
+                "model": model, "model_identity": self.model_identity,
+                "transport": transport, "batch_chunks": batch_chunks,
+            })
+            path = self.directory / "node_signals" / f"{key}.json"
+            cached = None
+            if self.enabled and not self.refresh:
+                cached = self._read_node_signals(path, key)
+            if cached is not None:
+                hits += 1
+                for signal in cached:
+                    signals[signal.chunk_id] = signal
+                continue
+            misses += 1
+            document_signals = extract(document, chunks)
+            for signal in document_signals:
+                signals[signal.chunk_id] = signal
+            if self.enabled:
+                atomic_write_text(path, json.dumps({
+                    "schema_version": CACHE_SCHEMA_VERSION, "kind": "node_signals", "key": key,
+                    "signals": [signal.model_dump(mode="json") for signal in document_signals],
+                }, ensure_ascii=False, separators=(",", ":")))
+        if not self.enabled:
+            self.events["node_signals"] = "disabled"
+        else:
+            self.events["node_signals"] = f"documents={len(chunks_by_document)} reused={hits} extracted={misses}"
+        logger.info(
+            "node_signals documents=%d reused=%d extracted=%d refresh=%s",
+            len(chunks_by_document), hits, misses, self.refresh,
+        )
+        return signals
+
+    def load_graph(
+        self,
+        chunks: list[Chunk],
+        signals: dict[str, NodeSignals],
+        *,
+        model: str,
+        transport: str,
+        keyphrase_overlap_threshold: float,
+        max_topics: int,
+        min_cluster_nodes: int,
+        implementation_sha256: str,
+        build: Callable[[], GraphBundle],
+        clustering_params: dict | None = None,
+    ) -> GraphBundle:
+        """Cache the assembled graph (edges) and labeled topics.
+
+        Edge building is deterministic, but topic labeling uses one LLM call, so the assembled
+        result is cached. The key covers the ordered chunk set, every chunk's signals, the edge and
+        clustering parameters, the model/transport, and the graph-build implementation. Any change
+        to a document's signals (i.e. an edited or added document) changes the key and forces a
+        rebuild; unchanged corpora reuse the graph and skip the labeling call.
+        """
+        from .graph import GraphEdge, GraphNode, GraphTopic, KnowledgeGraph
+
+        key = _json_hash({
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "graph_implementation_sha256": implementation_sha256,
+            "chunks": [{"id": c.id, "file": c.file, "location": c.location, "text": c.text} for c in chunks],
+            "signals": {
+                cid: signals[cid].model_dump(mode="json")
+                for cid in sorted(signals)
+            },
+            "model": model, "model_identity": self.model_identity, "transport": transport,
+            "keyphrase_overlap_threshold": keyphrase_overlap_threshold,
+            "max_topics": max_topics, "min_cluster_nodes": min_cluster_nodes,
+            "clustering_params": clustering_params or {},
+        })
+        path = self.directory / "graph" / f"{key}.json"
+        if self.enabled and not self.refresh:
+            payload = self._read_payload(path, "graph", key)
+            if payload is not None:
+                try:
+                    graph_data = payload["graph"]
+                    nodes = [GraphNode(**node) for node in graph_data["nodes"]]
+                    edges = [GraphEdge(source_id=e["source_id"], target_id=e["target_id"],
+                                       type=e["type"], weight=e["weight"], shared=tuple(e["shared"]))
+                             for e in graph_data["edges"]]
+                    topics = [GraphTopic(**topic) for topic in graph_data["topics"]]
+                    self.events["graph"] = "hit"
+                    logger.info("cache_hit kind=graph key=%s path=%s", key[:12], path)
+                    return GraphBundle(KnowledgeGraph(nodes=nodes, edges=edges), topics)
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("cache_invalid kind=graph path=%s error=%s", path, exc)
+
+        bundle = build()
+        self.events["graph"] = "refresh" if self.enabled and self.refresh else "miss"
+        if self.enabled:
+            atomic_write_text(path, json.dumps({
+                "schema_version": CACHE_SCHEMA_VERSION, "kind": "graph", "key": key,
+                "graph": {
+                    "nodes": [node.__dict__ for node in bundle.graph.nodes],
+                    "edges": [
+                        {"source_id": e.source_id, "target_id": e.target_id, "type": e.type,
+                         "weight": e.weight, "shared": list(e.shared)}
+                        for e in bundle.graph.edges
+                    ],
+                    "topics": [topic.__dict__ for topic in bundle.topics],
+                },
+            }, ensure_ascii=False, separators=(",", ":")))
+            logger.info("cache_write kind=graph key=%s path=%s", key[:12], path)
+        return bundle
+
+    @staticmethod
+    def _read_node_signals(path: Path, expected_key: str) -> list[NodeSignals] | None:
+        payload = CorpusAnalysisCache._read_payload(path, "node_signals", expected_key)
+        if payload is None:
+            return None
+        try:
+            values = payload["signals"]
+            if not isinstance(values, list):
+                raise TypeError("signals must be a list")
+            return [NodeSignals.model_validate(item) for item in values]
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("cache_invalid kind=node_signals path=%s error=%s", path, exc)
+            return None
 
     def summary(self) -> dict[str, Any]:
         return {

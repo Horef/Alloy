@@ -51,6 +51,36 @@ class TopicMap(BaseModel):
     topics: list[TopicCandidate]
 
 
+class NodeSignals(BaseModel):
+    """LLM-extracted signals for one knowledge-graph node (chunk).
+
+    ``entities`` are salient named things (organizations, units, roles, forms, benefits,
+    programs, places) as they appear in the text. ``keyphrases`` are short topical noun phrases.
+    ``summary`` is one concise sentence describing what the chunk is about. All in the source
+    language (Hebrew for this corpus), copied from the text rather than translated.
+    """
+
+    chunk_id: str
+    entities: list[str] = Field(default_factory=list)
+    keyphrases: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class NodeSignalsBatch(BaseModel):
+    signals: list[NodeSignals]
+
+
+class GraphTopicLabel(BaseModel):
+    """LLM-produced human-readable name and description for a graph-derived cluster."""
+
+    name: str
+    description: str
+
+
+class GraphTopicLabelBatch(BaseModel):
+    labels: list[GraphTopicLabel]
+
+
 class GeneratedQuestion(BaseModel):
     question: str
     expected_answer: str

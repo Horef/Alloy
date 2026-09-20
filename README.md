@@ -22,9 +22,20 @@ they are not final ground truth until a domain expert reviews them.
 
 ## Architecture and data flow
 
+Since v1.0, question generation is built on a **corpus knowledge graph**. Chunks become graph nodes
+enriched with extracted signals (entities, keyphrases, a one-line summary); deterministic typed
+edges connect nodes that share entities, overlap on keyphrases, or sit adjacently in the same
+document. Topics are derived from graph structure (clusters of related nodes) rather than lexical
+overlap with a topic label, and the evidence for each question is a connected *cluster* of nodes, so
+facts spread across chunks are presented together. This raises the recall and completeness of the
+generated reference answers. Topic prevalence still drives quotas: a cluster's corpus coverage sets
+its importance, preserving the original generation philosophy.
+
 ```text
-local documents -> chunks -> topic map -> balanced quotas
-                -> typed Q&A generation -> evidence validation/deduplication
+local documents -> chunks -> node signals (entities/keyphrases/summary, extracted per document)
+                -> knowledge graph (typed edges) -> prevalence-weighted topic clusters -> quotas
+                -> typed Q&A generation from cluster evidence -> validation/deduplication
+                -> optional answer-completeness verification
                 -> canonical questions -> natural/ambiguous user variations
                 -> reviewable silver CSV/JSONL -> human approval
                                                    |
@@ -40,7 +51,7 @@ local documents -> chunks -> topic map -> balanced quotas
                          |
                          +-> optional topic inference, insights, and previous-run comparison
 
-local documents -> chunks -> topic map -> prompt blueprint
+local documents -> chunks -> knowledge graph topics -> prompt blueprint
                 + current prompt + prior evaluation evidence
                 -> revised Hebrew system prompt + structured manager review package
 ```
@@ -153,6 +164,13 @@ log_level = "INFO"
 | `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
+| `generation.graph_extraction_batch_chunks` | `8` | Chunks per knowledge-graph signal-extraction call. |
+| `generation.keyphrase_overlap_threshold` | `0.3` | Jaccard threshold (in `(0, 1]`) for creating a keyphrase-overlap edge between two nodes. |
+| `generation.max_graph_topics` | `12` | Maximum graph-derived topics; the smallest clusters merge into an "other" topic. |
+| `generation.min_cluster_nodes` | `1` | Smallest standalone cluster kept before merging into "other". |
+| `generation.max_cluster_nodes` | `12` | Maximum graph nodes assembled as evidence for one topic's question batch. |
+| `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
+| `generation.max_cluster_size` | `40` | Clusters larger than this are split by weakest-edge removal so no single topic dominates. |
 | `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
 | `generation.completeness_evidence_limit` | `16` | Maximum candidate chunks re-selected per question during answer-completeness verification. Larger values widen the recall check at higher cost. |
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
@@ -226,23 +244,30 @@ Generation is staged rather than performed with one unconstrained prompt:
 1. **Ingest documents** by recursively finding supported files and normalizing their text.
 2. **Create structure-aware overlapping chunks** with stable source IDs. Paragraph/heading boundaries,
    PDF page numbers, and DOCX table locations remain visible in provenance.
-3. **Discover central topics** in batches while treating document content as untrusted data.
-4. **Merge topic maps** into roughly 4-12 broad, non-overlapping topics when evidence permits.
-5. **Allocate quotas** by importance, minimum topic allocation, and maximum topic share.
-6. **Select evidence** using topic-linked chunks followed by lexical topic overlap.
-7. **Generate structured candidates** containing the question, answer, difficulty, type, rationale,
+3. **Extract node signals** per document (entities, keyphrases, one-line summary) while treating
+   document content as untrusted data. Extraction is per-document and cached, so a later run only
+   re-extracts documents that were added or edited.
+4. **Build the knowledge graph**: deterministic typed edges connect nodes that share entities
+   (matched with Hebrew-aware, prefix- and gershayim-tolerant normalization), overlap on keyphrases,
+   or are adjacent in the same document.
+5. **Derive prevalence-weighted topic clusters** (roughly 4-12) from strong semantic edges, splitting
+   oversized clusters and merging tiny ones so no single hub entity fuses the whole corpus.
+6. **Allocate quotas** by cluster importance (corpus coverage), minimum topic allocation, and maximum
+   topic share.
+7. **Assemble per-question evidence** as a bounded connected cluster of graph nodes (a topic's seed
+   nodes plus their strongest neighbors), so related facts across chunks are presented together.
+8. **Generate structured candidates** containing the question, answer, difficulty, type, rationale,
    exact source IDs, and verbatim supporting quotations.
-8. **Validate provenance and enforce the configured answerable question-type targets** deterministically.
-   When `verify_answer_completeness` is enabled, each accepted answerable canonical candidate is then
-   re-checked against evidence re-selected for that specific question (rather than only its topic), so
-   a reference answer left incomplete or wrong by narrow topic-driven chunk selection is either
-   corrected against the broader evidence or rejected. The verification outcomes are recorded in the
-   generation diagnostics.
-9. **Remove near-duplicates**, including matches from an optional previous silver set.
-10. **Derive realistic user variations** from accepted canonical questions. Natural variants retain
+9. **Validate provenance and enforce the configured answerable question-type targets** deterministically.
+10. **Optionally verify answer completeness**: when `verify_answer_completeness` is enabled, each
+    accepted answerable canonical candidate is re-checked against evidence re-selected for that
+    specific question, so a reference answer that is still incomplete or wrong is corrected against the
+    broader evidence or rejected. Verification outcomes are recorded in the generation diagnostics.
+11. **Remove near-duplicates**, including matches from an optional previous silver set.
+12. **Derive realistic user variations** from accepted canonical questions. Natural variants retain
     the same expected answer; deliberately ambiguous variants expect one focused follow-up question.
-11. **Generate boundary cases** using the budget reserved for unanswerable questions.
-12. **Assign reproducible content-derived IDs** and export for human review with
+13. **Generate boundary cases** using the budget reserved for unanswerable questions.
+14. **Assign reproducible content-derived IDs** and export for human review with
     `review_status=pending`.
 
 The command may return fewer questions than requested. This is expected when candidates are
@@ -257,17 +282,25 @@ discriminator such as population, status, timeframe, or requested procedure.
 ### Corpus-analysis cache
 
 All Gemini-backed workflows share a persistent, content-addressed cache. `generate` and
-`generate-prompt` cache local document extraction/chunking and document topic discovery;
+`generate-prompt` cache local document extraction/chunking and the corpus knowledge graph;
 `evaluate-file` can cache inferred question topics; both evaluation workflows can cache optional
 insights. Final prompt packages are also cached from the full corpus, configuration, prior-run
 evidence, current prompt, model, transport, budgets, and generator implementation. A normal repeated
 run skips matching reusable stages. Question generation and judging are not ordinary cache entries:
 generation has an explicit interruption checkpoint and judging has its explicit `--resume` checkpoint.
 
+The knowledge graph is rebuilt **incrementally**. Node signals (entities, keyphrases, summary) are
+cached per document under that document's content hash, so adding, editing, or deleting a document
+only re-extracts the documents that actually changed; unchanged documents reuse their cached signals
+with no model calls. The assembled graph (deterministic edges plus labeled topics) is cached as a
+unit keyed by the full node-signal set, so it is rebuilt only when the corpus or graph parameters
+change. This keeps re-runs on a large, mostly-stable corpus cheap.
+
 Cache invalidation is based on supported document relative paths and SHA-256 content hashes,
-chunk size/overlap, topic batch size, Gemini model and transport, cache schema, and the relevant
-implementation code. File modification timestamps are not trusted. Changing any keyed input creates
-a new entry automatically; unchanged inputs reuse the prior result.
+chunk size/overlap, per-document node signals, graph and clustering parameters, Gemini model and
+transport, cache schema, and the relevant implementation code. File modification timestamps are not
+trusted. Changing any keyed input creates a new entry automatically; unchanged inputs reuse the
+prior result.
 
 Use `--refresh-cache` to ignore and atomically replace every matching workflow entry, including a
 final prompt package, for

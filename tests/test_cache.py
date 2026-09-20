@@ -282,3 +282,94 @@ def test_prompt_package_cache_recomputes_stale_policy_payload(tmp_path, field, s
     assert recovered.summary()["prompt_package"] == "miss"
     repaired_payload = json.loads(cache_file.read_text(encoding="utf-8"))
     assert repaired_payload["prompt_package"] == expected.model_dump(mode="json")
+
+
+def test_node_signals_are_extracted_per_document_and_reused_incrementally(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    by_doc = {
+        "a.md": [Chunk("a#1", "a.md", "d", "alpha"), Chunk("a#2", "a.md", "d", "alpha two")],
+        "b.md": [Chunk("b#1", "b.md", "d", "beta")],
+    }
+    calls: list[str] = []
+
+    def extract(document, chunks):
+        calls.append(document)
+        return [NodeSignals(chunk_id=c.id, entities=[document], summary="s") for c in chunks]
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, implementation_sha256="impl1", extract=extract)
+
+    first = CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, **kwargs)
+    assert sorted(calls) == ["a.md", "b.md"]
+    assert set(first) == {"a#1", "a#2", "b#1"}
+
+    # Unchanged corpus: zero extractions.
+    calls.clear()
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, **kwargs)
+    assert calls == []
+
+    # Editing only b.md re-extracts only b.md; a.md is reused.
+    edited = dict(by_doc)
+    edited["b.md"] = [Chunk("b#1", "b.md", "d", "beta CHANGED")]
+    calls.clear()
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(edited, **kwargs)
+    assert calls == ["b.md"]
+
+
+def test_node_signals_reextract_when_implementation_changes(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+    calls: list[str] = []
+
+    def extract(document, chunks):
+        calls.append(document)
+        return [NodeSignals(chunk_id=c.id) for c in chunks]
+
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(
+        by_doc, model="m", transport="direct", batch_chunks=8, implementation_sha256="v1", extract=extract,
+    )
+    calls.clear()
+    # A new extractor implementation must invalidate cached signals.
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(
+        by_doc, model="m", transport="direct", batch_chunks=8, implementation_sha256="v2", extract=extract,
+    )
+    assert calls == ["a.md"]
+
+
+def test_graph_is_cached_and_rebuilt_when_signals_change(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.graph import GraphBundle, GraphNode, GraphTopic, KnowledgeGraph, build_edges
+    from chatbot_eval.models import NodeSignals
+
+    chunks = [Chunk("a#1", "a.md", "d", "alpha"), Chunk("a#2", "a.md", "d", "beta")]
+    signals = {c.id: NodeSignals(chunk_id=c.id, entities=["x"]) for c in chunks}
+    builds = {"n": 0}
+
+    def build():
+        builds["n"] += 1
+        nodes = [GraphNode(c.id, c.file, c.location, c.text, entities=["x"]) for c in chunks]
+        graph = KnowledgeGraph(nodes, build_edges(nodes))
+        return GraphBundle(graph, [GraphTopic(name="t", description="", importance=3, node_ids=[c.id for c in chunks])])
+
+    kwargs = dict(
+        model="m", transport="direct", keyphrase_overlap_threshold=0.3,
+        max_topics=12, min_cluster_nodes=1, implementation_sha256="impl1", build=build,
+    )
+
+    b1 = CorpusAnalysisCache(tmp_path, enabled=True).load_graph(chunks, signals, **kwargs)
+    assert builds["n"] == 1 and b1.topics[0].name == "t"
+
+    # Reload unchanged -> cache hit, no rebuild, edges/topics round-trip intact.
+    b2 = CorpusAnalysisCache(tmp_path, enabled=True).load_graph(chunks, signals, **kwargs)
+    assert builds["n"] == 1
+    assert [n.chunk_id for n in b2.graph.nodes] == ["a#1", "a#2"]
+    assert any(e.type == "shared_entity" for e in b2.graph.edges)
+
+    # Changing a signal (edited document) forces a rebuild.
+    changed = dict(signals)
+    changed["a#1"] = NodeSignals(chunk_id="a#1", entities=["y"])
+    CorpusAnalysisCache(tmp_path, enabled=True).load_graph(chunks, changed, **kwargs)
+    assert builds["n"] == 2

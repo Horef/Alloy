@@ -24,6 +24,16 @@ stable_question_ids = true
 question_type_targets = { basic_knowledge = 0.50, topic_integration = 0.30, document_wide = 0.10, cross_document = 0.10 }
 min_topic_questions = 1
 max_topic_share = 0.35
+# Knowledge-graph generation (v1.0+). Topics and per-question evidence come from a corpus knowledge
+# graph rather than lexical topic-label overlap. Node signals are extracted per document and cached,
+# so only added or edited documents are re-extracted on a later run.
+graph_extraction_batch_chunks = 8   # chunks per signal-extraction call
+keyphrase_overlap_threshold = 0.3   # Jaccard threshold for a keyphrase_overlap edge, in (0, 1]
+max_graph_topics = 12               # cap on graph-derived topics; smaller clusters merge into "other"
+min_cluster_nodes = 1               # smallest standalone cluster before merging into "other"
+max_cluster_nodes = 12              # max graph nodes assembled as evidence for one topic's questions
+min_cluster_edge_weight = 2.0       # min shared-entity strength to merge nodes into one topic (avoids hairball)
+max_cluster_size = 40               # oversized clusters are split by weakest-edge removal
 # Re-check each generated reference answer against evidence re-selected for that specific question
 # (not just its topic), to catch answers left incomplete or wrong by narrow topic-driven chunk
 # selection. Costs one extra model call per answerable canonical candidate. Off by default.

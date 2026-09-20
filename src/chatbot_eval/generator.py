@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .documents import Chunk
+from .graph import GraphBundle, GraphTopic, KnowledgeGraph, cluster_evidence_ids
 from .llm import StructuredLLM
 from .models import (
     AnswerCompletenessReview,
@@ -213,6 +214,10 @@ class GenerationOptions:
     # model call per answerable canonical candidate.
     verify_answer_completeness: bool = False
     completeness_evidence_limit: int = 16
+    # Maximum knowledge-graph nodes assembled as evidence for one topic's question batch. The
+    # cluster is grown from the topic's seed nodes by descending edge weight, so this bounds how
+    # much related, cross-chunk evidence the generator sees per topic.
+    max_cluster_nodes: int = 12
 
 
 def _render_chunk(chunk: Chunk) -> str:
@@ -296,6 +301,15 @@ def allocate_quotas(topics: list[TopicCandidate], total: int, minimum: int, max_
         quotas[topic.name] += 1
         remaining -= 1
     return quotas
+
+
+def allocate_graph_quotas(topics: list[GraphTopic], total: int, minimum: int, max_share: float) -> dict[str, int]:
+    """Prevalence-weighted quota allocation for graph topics.
+
+    ``allocate_quotas`` depends only on ``.name`` and ``.importance``, both of which ``GraphTopic``
+    exposes, so this simply reuses the same importance-ordered, share-capped allocation.
+    """
+    return allocate_quotas(topics, total, minimum, max_share)
 
 
 def allocate_type_targets(
@@ -459,9 +473,17 @@ class SilverSetGenerator:
         chunks: list[Chunk],
         options: GenerationOptions,
         *,
-        topics: list[TopicCandidate] | None = None,
-    ) -> tuple[list[SilverQuestion], list[TopicCandidate]]:
-        topics = list(topics) if topics is not None else self.discover_topics(chunks, options.batch_chunks)
+        bundle: GraphBundle,
+    ) -> tuple[list[SilverQuestion], list[GraphTopic]]:
+        """Generate a silver question set from a corpus knowledge graph.
+
+        Evidence for each topic is a bounded, connected cluster of graph nodes (the topic's seed
+        nodes plus their strongest neighbors), so multi-chunk facts are presented together. Topic
+        quotas remain prevalence-weighted (by cluster importance), preserving Alloy's philosophy.
+        """
+        graph = bundle.graph
+        topics = list(bundle.topics)
+        chunk_by_id = {chunk.id: chunk for chunk in chunks}
         effective_max = options.max_questions
         if options.requested_topic_count is not None:
             if options.requested_topic_count < 1:
@@ -477,25 +499,22 @@ class SilverSetGenerator:
         answerable_budget = max(0, effective_max - unanswerable_budget - variation_budget)
         type_remaining = allocate_type_targets(answerable_budget, options.question_type_targets, chunks)
         if options.requested_topic:
-            requested = TopicCandidate(
+            matched = next((t for t in topics if t.name.casefold() == options.requested_topic.casefold()), None)
+            requested = matched or GraphTopic(
                 name=options.requested_topic,
                 description=f"User-requested topic: {options.requested_topic}",
                 importance=5,
-                source_ids=[],
+                node_ids=[chunk.id for chunk in chunks],
             )
-            matched = next((t for t in topics if t.name.casefold() == options.requested_topic.casefold()), None)
-            if matched:
-                requested = matched
-            else:
+            if matched is None:
                 topics.append(requested)
             count = options.requested_topic_count or options.max_questions
             quotas = {topic.name: 0 for topic in topics}
             quotas[requested.name] = min(count, effective_max)
         else:
-            quotas = allocate_quotas(topics, answerable_budget, options.min_topic_questions, options.max_topic_share)
+            quotas = allocate_graph_quotas(topics, answerable_budget, options.min_topic_questions, options.max_topic_share)
 
         accepted: list[SilverQuestion] = []
-        chunk_by_id = {chunk.id: chunk for chunk in chunks}
         produced_answerable = 0
         rejected = Counter()
         completeness_outcomes = Counter()
@@ -505,11 +524,9 @@ class SilverSetGenerator:
             if wanted <= 0 or produced_answerable >= answerable_budget:
                 continue
             wanted = min(wanted, answerable_budget - produced_answerable)
-            relevant = _renderable_chunks(_relevant_chunks(topic, chunks))
+            evidence_ids = cluster_evidence_ids(graph, topic.node_ids, max_nodes=options.max_cluster_nodes)
+            relevant = _renderable_chunks([chunk_by_id[node_id] for node_id in evidence_ids if node_id in chunk_by_id])
             rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
-            unknown_topic_sources = [source_id for source_id in topic.source_ids if source_id not in chunk_by_id]
-            if unknown_topic_sources:
-                rejected["topic_unknown_source_id"] += len(unknown_topic_sources)
             if not relevant:
                 rejected["topic_no_rendered_evidence"] += 1
                 continue
@@ -634,7 +651,8 @@ class SilverSetGenerator:
             for topic in track(sorted_topics, enabled=self.progress_enabled, description="Generating boundary cases", total=len(sorted_topics)):
                 if len(accepted) >= effective_max or unanswerable_budget <= 0:
                     break
-                relevant = _renderable_chunks(_relevant_chunks(topic, chunks))
+                evidence_ids = cluster_evidence_ids(graph, topic.node_ids, max_nodes=options.max_cluster_nodes)
+                relevant = _renderable_chunks([chunk_by_id[node_id] for node_id in evidence_ids if node_id in chunk_by_id])
                 rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
                 if not relevant:
                     rejected["topic_no_rendered_evidence"] += 1
@@ -690,7 +708,14 @@ class SilverSetGenerator:
             ),
             "topic_quotas": dict(quotas),
             "rendered_source_ids": rendered_source_ids,
-            "boundary_evidence_scope": "selected_excerpts" if boundary_requested else "not_requested",
+            "boundary_evidence_scope": "cluster_excerpts" if boundary_requested else "not_requested",
+            "knowledge_graph": {
+                "nodes": len(graph.nodes),
+                "edges": len(graph.edges),
+                "edges_by_type": dict(Counter(edge.type for edge in graph.edges)),
+                "topics": len(topics),
+                "topic_sizes": {topic.name: len(topic.node_ids) for topic in topics},
+            },
             "answer_completeness_verification": (
                 {"enabled": True, "outcomes": dict(completeness_outcomes)}
                 if options.verify_answer_completeness else {"enabled": False}

@@ -32,6 +32,13 @@ class Settings:
     max_topic_share: float
     verify_answer_completeness: bool
     completeness_evidence_limit: int
+    graph_extraction_batch_chunks: int
+    keyphrase_overlap_threshold: float
+    max_graph_topics: int
+    min_cluster_nodes: int
+    max_cluster_nodes: int
+    min_cluster_edge_weight: float
+    max_cluster_size: int
     prompt_max_document_chars: int
     prompt_max_evaluation_chars: int
     prompt_max_auxiliary_chars: int
@@ -83,6 +90,20 @@ class Settings:
             errors.append("generation.max_topic_share must be in (0, 1]")
         if self.completeness_evidence_limit < 1:
             errors.append("generation.completeness_evidence_limit must be positive")
+        if self.graph_extraction_batch_chunks < 1:
+            errors.append("generation.graph_extraction_batch_chunks must be positive")
+        if not 0 < self.keyphrase_overlap_threshold <= 1:
+            errors.append("generation.keyphrase_overlap_threshold must be in (0, 1]")
+        if self.max_graph_topics < 1:
+            errors.append("generation.max_graph_topics must be positive")
+        if self.min_cluster_nodes < 1:
+            errors.append("generation.min_cluster_nodes must be positive")
+        if self.max_cluster_nodes < 1:
+            errors.append("generation.max_cluster_nodes must be positive")
+        if self.min_cluster_edge_weight <= 0:
+            errors.append("generation.min_cluster_edge_weight must be positive")
+        if self.max_cluster_size < 1:
+            errors.append("generation.max_cluster_size must be positive")
         if min(
             self.prompt_max_document_chars,
             self.prompt_max_evaluation_chars,
@@ -197,6 +218,13 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
             "generation.verify_answer_completeness",
         ),
         completeness_evidence_limit=int(_get(data, "generation", "completeness_evidence_limit", 16)),
+        graph_extraction_batch_chunks=int(_get(data, "generation", "graph_extraction_batch_chunks", 8)),
+        keyphrase_overlap_threshold=float(_get(data, "generation", "keyphrase_overlap_threshold", 0.3)),
+        max_graph_topics=int(_get(data, "generation", "max_graph_topics", 12)),
+        min_cluster_nodes=int(_get(data, "generation", "min_cluster_nodes", 1)),
+        max_cluster_nodes=int(_get(data, "generation", "max_cluster_nodes", 12)),
+        min_cluster_edge_weight=float(_get(data, "generation", "min_cluster_edge_weight", 2.0)),
+        max_cluster_size=int(_get(data, "generation", "max_cluster_size", 40)),
         prompt_max_document_chars=int(_get(data, "generation", "prompt_max_document_chars", 100_000)),
         prompt_max_evaluation_chars=int(_get(data, "generation", "prompt_max_evaluation_chars", 60_000)),
         prompt_max_auxiliary_chars=int(_get(data, "generation", "prompt_max_auxiliary_chars", 30_000)),

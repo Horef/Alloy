@@ -3,7 +3,26 @@ from chatbot_eval.generator import (
     GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate, _render_chunks,
     allocate_quotas, allocate_type_targets, validate_candidate,
 )
-from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, SourceRef, TopicCandidate, TopicMap, VariationBatch
+from chatbot_eval.graph import GraphBundle, GraphTopic, KnowledgeGraph, build_edges
+from chatbot_eval.graph_build import GraphBuilder
+from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, NodeSignals, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, SourceRef, TopicCandidate, TopicMap, VariationBatch
+
+
+def _bundle(chunks, topics):
+    """Build a GraphBundle directly from chunks and (name, importance, node_ids) topic tuples.
+
+    Signal extraction/labeling are exercised separately; generation tests only need a graph whose
+    topics point at the right seed nodes, so this constructs one deterministically without an LLM.
+    """
+    from chatbot_eval.graph import GraphNode
+
+    nodes = [GraphNode(c.id, c.file, c.location, c.text) for c in chunks]
+    graph = KnowledgeGraph(nodes=nodes, edges=build_edges(nodes))
+    graph_topics = [
+        GraphTopic(name=name, description="", importance=importance, node_ids=list(node_ids))
+        for name, importance, node_ids in topics
+    ]
+    return GraphBundle(graph, graph_topics)
 
 
 def test_quota_allocation_respects_total_and_cap():
@@ -59,17 +78,15 @@ def test_generation_diagnostics_expose_capacity_blocked_by_topic_cap():
             assert schema is QuestionBatch
             return QuestionBatch(questions=[])
 
-    topics = [
-        TopicCandidate(name="A", description="", importance=5, source_ids=["a#1"]),
-        TopicCandidate(name="B", description="", importance=4, source_ids=["b#1"]),
+    chunks = [
+        Chunk("a#1", "a.md", "document", "evidence A"),
+        Chunk("b#1", "b.md", "document", "evidence B"),
     ]
+    bundle = _bundle(chunks, [("A", 5, ["a#1"]), ("B", 4, ["b#1"])])
     generator = SilverSetGenerator(EmptyLLM(), "test")
 
     generator.generate(
-        [
-            Chunk("a#1", "a.md", "document", "evidence A"),
-            Chunk("b#1", "b.md", "document", "evidence B"),
-        ],
+        chunks,
         GenerationOptions(
             max_questions=10,
             batch_chunks=2,
@@ -78,7 +95,7 @@ def test_generation_diagnostics_expose_capacity_blocked_by_topic_cap():
             unanswerable_ratio=0,
             max_candidate_rounds=1,
         ),
-        topics=topics,
+        bundle=bundle,
     )
 
     assert generator.last_generation_diagnostics["topic_quotas"] == {"A": 4, "B": 4}
@@ -187,10 +204,6 @@ def test_ambiguous_variation_expects_a_follow_up_and_preserves_provenance():
 def test_generation_budget_includes_natural_and_ambiguous_variants():
     class FakeLLM:
         def generate(self, prompt, schema, model):
-            if schema is TopicMap:
-                return TopicMap(topics=[TopicCandidate(
-                    name="תנאי שירות", description="זכאות", importance=5, source_ids=["a#1"],
-                )])
             if schema is QuestionBatch:
                 return QuestionBatch(questions=[_candidate()])
             if schema is VariationBatch:
@@ -207,12 +220,14 @@ def test_generation_budget_includes_natural_and_ambiguous_variants():
                 ])
             raise AssertionError(schema)
 
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
     questions, _ = SilverSetGenerator(FakeLLM(), "test").generate(
-        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        chunks,
         GenerationOptions(
             max_questions=3, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
             unanswerable_ratio=0, user_variation_ratio=2 / 3, ambiguous_variation_share=0.5,
         ),
+        bundle=_bundle(chunks, [("תנאי שירות", 5, ["a#1"])]),
     )
 
     assert [question.question_form for question in questions] == [
@@ -225,8 +240,6 @@ def test_generation_refills_rejected_candidates_within_bound():
         question_calls = 0
 
         def generate(self, prompt, schema, model):
-            if schema is TopicMap:
-                return TopicMap(topics=[TopicCandidate(name="נושא", description="", importance=5, source_ids=["a#1"])])
             if schema is QuestionBatch:
                 self.question_calls += 1
                 if self.question_calls == 1:
@@ -235,12 +248,14 @@ def test_generation_refills_rejected_candidates_within_bound():
             raise AssertionError(schema)
 
     fake = FakeLLM()
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
     questions, _ = SilverSetGenerator(fake, "test").generate(
-        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        chunks,
         GenerationOptions(
             max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
             unanswerable_ratio=0, max_candidate_rounds=2,
         ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
     )
 
     assert len(questions) == 1
@@ -252,10 +267,6 @@ def test_generation_retry_prompt_explains_prior_rejection():
 
     class FakeLLM:
         def generate(self, prompt, schema, model):
-            if schema is TopicMap:
-                return TopicMap(topics=[TopicCandidate(
-                    name="נושא", description="", importance=5, source_ids=["a#1"],
-                )])
             prompts.append(prompt)
             if len(prompts) == 1:
                 return QuestionBatch(questions=[_candidate(
@@ -264,12 +275,14 @@ def test_generation_retry_prompt_explains_prior_rejection():
             assert "quote_not_verbatim" in prompt
             return QuestionBatch(questions=[_candidate()])
 
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
     SilverSetGenerator(FakeLLM(), "test").generate(
-        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        chunks,
         GenerationOptions(
             max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
             unanswerable_ratio=0, max_candidate_rounds=2,
         ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
     )
 
     assert len(prompts) == 2
@@ -278,11 +291,6 @@ def test_generation_retry_prompt_explains_prior_rejection():
 def test_requested_topic_also_scopes_boundary_questions():
     class FakeLLM:
         def generate(self, prompt, schema, model):
-            if schema is TopicMap:
-                return TopicMap(topics=[
-                    TopicCandidate(name="נושא א", description="", importance=5, source_ids=["a#1"]),
-                    TopicCandidate(name="נושא ב", description="", importance=4, source_ids=["b#1"]),
-                ])
             if schema is QuestionBatch and "boundary questions" in prompt:
                 assert "TOPIC: נושא א" in prompt
                 return QuestionBatch(questions=[GeneratedQuestion(
@@ -295,15 +303,18 @@ def test_requested_topic_also_scopes_boundary_questions():
                 return QuestionBatch(questions=[_candidate()])
             raise AssertionError(schema)
 
+    chunks = [
+        Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם"),
+        Chunk("b#1", "b.md", "document", "תוכן אחר שקיים במסמך השני ונועד רק לבדיקה"),
+    ]
+    bundle = _bundle(chunks, [("נושא א", 5, ["a#1"]), ("נושא ב", 4, ["b#1"])])
     questions, _ = SilverSetGenerator(FakeLLM(), "test").generate(
-        [
-            Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם"),
-            Chunk("b#1", "b.md", "document", "תוכן אחר שקיים במסמך השני ונועד רק לבדיקה"),
-        ],
+        chunks,
         GenerationOptions(
             max_questions=2, batch_chunks=2, min_topic_questions=1, max_topic_share=1,
             unanswerable_ratio=0.5, requested_topic="נושא א", max_candidate_rounds=1,
         ),
+        bundle=bundle,
     )
 
     assert {question.topic for question in questions} == {"נושא א"}
@@ -485,8 +496,6 @@ def test_generate_runs_completeness_pass_and_records_diagnostics():
 
     class FakeLLM:
         def generate(self, prompt, schema, model):
-            if schema is TopicMap:
-                return TopicMap(topics=[TopicCandidate(name="נושא", description="", importance=5, source_ids=["a#1"])])
             if schema is QuestionBatch:
                 return QuestionBatch(questions=[_candidate()])
             if schema is AnswerCompletenessReview:
@@ -500,12 +509,14 @@ def test_generate_runs_completeness_pass_and_records_diagnostics():
             raise AssertionError(schema)
 
     generator = SilverSetGenerator(FakeLLM(), "model")
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כל המשרתים בשירות")]
     questions, _ = generator.generate(
-        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כל המשרתים בשירות")],
+        chunks,
         GenerationOptions(
             max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
             unanswerable_ratio=0, verify_answer_completeness=True,
         ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
     )
 
     assert len(questions) == 1
@@ -518,19 +529,19 @@ def test_generate_runs_completeness_pass_and_records_diagnostics():
 def test_generate_completeness_pass_off_by_default_makes_no_review_call():
     class FakeLLM:
         def generate(self, prompt, schema, model):
-            if schema is TopicMap:
-                return TopicMap(topics=[TopicCandidate(name="נושא", description="", importance=5, source_ids=["a#1"])])
             if schema is QuestionBatch:
                 return QuestionBatch(questions=[_candidate()])
             raise AssertionError(f"unexpected schema {schema}")
 
     generator = SilverSetGenerator(FakeLLM(), "model")
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
     questions, _ = generator.generate(
-        [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")],
+        chunks,
         GenerationOptions(
             max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
             unanswerable_ratio=0,
         ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
     )
     assert len(questions) == 1
     assert generator.last_generation_diagnostics["answer_completeness_verification"] == {"enabled": False}
