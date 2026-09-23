@@ -33,6 +33,11 @@ min_cluster_nodes = 1
 max_cluster_nodes = 12
 min_cluster_edge_weight = 2.0
 max_cluster_size = 40
+# Topic layer: "entity" (default) or "theme" (groups chunks by a controlled theme so subjects like
+# pay self-organize into their own topic). extract_themes tags chunks without switching clustering.
+topic_mode = "entity"
+extract_themes = false
+max_theme_vocabulary = 20
 
 [evaluation]
 request_timeout_seconds = 60

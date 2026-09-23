@@ -33,6 +33,14 @@ facts spread across chunks are presented together. This raises the recall and co
 generated reference answers. Topic prevalence still drives quotas: a cluster's corpus coverage sets
 its importance, preserving the original generation philosophy.
 
+An optional **theme layer** (`generation.topic_mode = "theme"`) sits above the entity graph: one
+corpus-level call derives a small controlled vocabulary of broad themes, each chunk is tagged with a
+single theme from it, and topics are then grouped by theme rather than by entity overlap. This makes
+a subject spread thinly across many documents (the motivating example was pay/שכר) cohere into its
+own topic instead of scattering, so topic coverage self-organizes and a reviewer only has to create
+and read. Themes are kept as a separate layer and never create graph edges, so theme mode cannot
+cause the entity hairball. Entity mode remains the default; see `docs/theme-layer-ab-results.md`.
+
 ```text
 local documents -> chunks -> node signals (entities/keyphrases/summary, extracted per document)
                 -> knowledge graph (typed edges) -> prevalence-weighted topic clusters -> quotas
@@ -173,6 +181,9 @@ log_level = "INFO"
 | `generation.max_cluster_nodes` | `12` | Maximum graph nodes assembled as evidence for one topic's question batch. |
 | `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
 | `generation.max_cluster_size` | `40` | Clusters larger than this are split by weakest-edge removal so no single topic dominates. |
+| `generation.topic_mode` | `entity` | How topics are formed. `entity` (default) clusters chunks by shared entities. `theme` tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and re-extracts node signals once (a one-time cost). See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
+| `generation.extract_themes` | `false` | Tag chunks with a theme without switching clustering (useful for inspection). Implied by `topic_mode = "theme"`. |
+| `generation.max_theme_vocabulary` | `20` | Ceiling on the controlled theme-vocabulary size derived for the corpus. |
 | `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
 | `generation.completeness_evidence_limit` | `16` | Maximum candidate chunks re-selected per question during answer-completeness verification. Larger values widen the recall check at higher cost. |
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
