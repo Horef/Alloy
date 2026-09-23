@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .documents import Chunk
-from .graph import GraphBundle, GraphTopic, KnowledgeGraph, cluster_evidence_ids
+from .graph import (
+    GraphBundle,
+    GraphTopic,
+    KnowledgeGraph,
+    cluster_evidence_ids,
+    entity_match_keys,
+    normalize_entity,
+)
 from .llm import StructuredLLM
 from .models import (
     AnswerCompletenessReview,
@@ -321,6 +328,33 @@ def allocate_quotas(topics: list[TopicCandidate], total: int, minimum: int, max_
     return quotas
 
 
+def _nodes_matching_topic(graph: GraphBundle | KnowledgeGraph, topic_term: str, limit: int = 12) -> list[str]:
+    """Rank graph nodes by relevance to a free-text topic term, for a user-requested topic.
+
+    When ``generate --topic`` names a theme that is not already a discovered graph topic (e.g. a
+    concept spread thinly across documents), seed evidence from the nodes whose signals and text
+    most overlap the requested term, so the focused batch is genuinely about that theme rather than
+    an arbitrary slice of the corpus. Uses the same tolerant Hebrew normalization as edge matching.
+    """
+    kg = graph.graph if isinstance(graph, GraphBundle) else graph
+    term_keys = entity_match_keys(topic_term) | set(_tokens(topic_term))
+    if not term_keys:
+        return []
+    scored: list[tuple[int, str]] = []
+    for node in kg.nodes:
+        haystack = " ".join(node.entities + node.keyphrases + [node.summary, node.text])
+        node_keys = set(_tokens(haystack)) | node.entity_keys
+        overlap = len(term_keys & node_keys)
+        # Also count a raw substring hit so multi-word or unsplit terms still match.
+        normalized_term = normalize_entity(topic_term)
+        if normalized_term and normalized_term in normalize_entity(haystack):
+            overlap += 1
+        if overlap > 0:
+            scored.append((overlap, node.chunk_id))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [chunk_id for _, chunk_id in scored[:limit]]
+
+
 def allocate_graph_quotas(topics: list[GraphTopic], total: int, minimum: int, max_share: float) -> dict[str, int]:
     """Prevalence-weighted quota allocation for graph topics.
 
@@ -559,7 +593,9 @@ class SilverSetGenerator:
                 name=options.requested_topic,
                 description=f"User-requested topic: {options.requested_topic}",
                 importance=5,
-                node_ids=[chunk.id for chunk in chunks],
+                # Seed from the nodes most relevant to the requested topic term (by entity/keyphrase/
+                # summary/text overlap) so the evidence is focused on it, rather than from all chunks.
+                node_ids=_nodes_matching_topic(graph, options.requested_topic) or [chunk.id for chunk in chunks],
             )
             if matched is None:
                 topics.append(requested)

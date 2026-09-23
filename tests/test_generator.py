@@ -3,7 +3,7 @@ from chatbot_eval.generator import (
     GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate, _render_chunks,
     allocate_quotas, allocate_type_targets, validate_candidate,
 )
-from chatbot_eval.graph import GraphBundle, GraphTopic, KnowledgeGraph, build_edges
+from chatbot_eval.graph import GraphBundle, GraphNode, GraphTopic, KnowledgeGraph, build_edges
 from chatbot_eval.graph_build import GraphBuilder
 from chatbot_eval.models import EvidenceQuote, ExpectedBehavior, GeneratedQuestion, GeneratedVariation, NodeSignals, QuestionBatch, QuestionForm, QuestionType, SilverQuestion, SourceRef, TopicCandidate, TopicMap, VariationBatch
 
@@ -222,6 +222,24 @@ def test_answer_or_clarify_variant_is_answer_task_with_acceptable_clarification(
     assert result.expected_answer == parent.expected_answer
     assert result.clarification_acceptable is True
     assert result.acceptable_clarification == "לאיזה סוג חופשה מיוחדת כוונתך?"
+
+
+def test_requested_topic_seeds_from_relevant_nodes():
+    from chatbot_eval.generator import _nodes_matching_topic
+
+    nodes = [
+        GraphNode("pay#1", "salary.md", "d", "טבלת שכר", entities=["תוספת שכר"], keyphrases=["רמות שכר"],
+                  summary="הסבר על שכר ותוספות"),
+        GraphNode("leave#1", "leave.md", "d", "ימי חופשה", entities=["חופשה שנתית"], keyphrases=["מכסת חופשה"],
+                  summary="הסבר על חופשות"),
+        GraphNode("pay#2", "family.md", "d", "תשלומי משפחה", entities=["תשמ\"ש"], keyphrases=["תשלום למשפחה"],
+                  summary="תשלומי משפחה ושכר דירה"),
+    ]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    seeds = _nodes_matching_topic(graph, "שכר", limit=12)
+    # Salary-relevant nodes rank ahead of the leave node; the leave node should not lead.
+    assert "pay#1" in seeds
+    assert seeds[0] != "leave#1"
 
 
 def test_merge_question_sets_appends_and_dedups():
