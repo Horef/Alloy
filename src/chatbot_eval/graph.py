@@ -130,6 +130,7 @@ class GraphNode:
     entities: list[str] = field(default_factory=list)
     keyphrases: list[str] = field(default_factory=list)
     summary: str = ""
+    theme: str = ""
 
     def to_chunk(self) -> Chunk:
         return Chunk(self.chunk_id, self.file, self.location, self.text)
@@ -370,15 +371,24 @@ def derive_topic_clusters(
             split.extend(_split_oversized(component, clustering_edges, max_cluster_size))
         components = sorted(split, key=lambda c: (-len(c), c[0]))
     kept = [c for c in components if len(c) >= min_cluster_nodes] or components
-    if len(kept) <= max_topics:
-        return kept
-    # Too many clusters: keep the largest (most prevalent) as distinct topics and combine the
-    # remaining small ones into a bounded number of "other" buckets. Bin-packing the tail (rather
-    # than fusing it into one lump) keeps each residual topic under max_cluster_size, so a densely
-    # connected corpus does not collapse back into a single giant "other" topic nor explode into
-    # dozens of singleton topics.
-    head = kept[: max_topics - 1]
-    tail_clusters = kept[max_topics - 1:]
+    return _cap_topic_count(kept, max_topics=max_topics, max_cluster_size=max_cluster_size)
+
+
+def _cap_topic_count(
+    clusters: list[list[str]], *, max_topics: int, max_cluster_size: int | None,
+) -> list[list[str]]:
+    """Keep the largest clusters as distinct topics and bin-pack the small-cluster tail.
+
+    When there are more clusters than ``max_topics``, the largest (most prevalent) stay as their own
+    topics and the remaining small ones are combined into a bounded number of "other" buckets, each
+    under ``max_cluster_size``. Bin-packing the tail (rather than fusing it into one lump) keeps a
+    dense corpus from collapsing into one giant "other" topic while avoiding a swarm of singletons.
+    """
+    clusters = sorted(clusters, key=lambda c: (-len(c), c[0]))
+    if len(clusters) <= max_topics:
+        return clusters
+    head = clusters[: max_topics - 1]
+    tail_clusters = clusters[max_topics - 1:]
     if not tail_clusters:
         return head
     cap = max_cluster_size if max_cluster_size is not None else sum(len(c) for c in tail_clusters)
@@ -392,6 +402,58 @@ def derive_topic_clusters(
     if current:
         buckets.append(current)
     return head + buckets
+
+
+def derive_theme_clusters(
+    graph: KnowledgeGraph,
+    *,
+    max_topics: int = 40,
+    max_cluster_size: int | None = None,
+    min_cluster_edge_weight: float = 2.0,
+) -> list[list[str]]:
+    """Group nodes into topics by their assigned *theme* (the high-level layer), largest first.
+
+    This is the theme-first mode: nodes sharing the same controlled-vocabulary theme form one topic,
+    so a theme that is spread across many documents (e.g. pay) becomes its own topic even when its
+    chunks share few entities. Themes are a separate layer and never create entity edges, so this
+    cannot cause the entity hairball. A theme group larger than ``max_cluster_size`` is still split
+    by the entity-edge splitter (its internal cohesion), and any nodes without a theme fall back to
+    entity-based clustering so nothing is lost. The result is capped/bin-packed like entity mode.
+    """
+    node_ids = [node.chunk_id for node in graph.nodes]
+    if not node_ids:
+        return []
+    themed: dict[str, list[str]] = defaultdict(list)
+    unthemed: list[str] = []
+    for node in graph.nodes:
+        theme = normalize_entity(node.theme)
+        if theme and theme != normalize_entity("אחר"):
+            themed[theme].append(node.chunk_id)
+        else:
+            unthemed.append(node.chunk_id)
+    # If themes were never assigned, fall back entirely to entity clustering.
+    if not themed:
+        return derive_topic_clusters(
+            graph, max_topics=max_topics, max_cluster_size=max_cluster_size,
+            min_cluster_edge_weight=min_cluster_edge_weight,
+        )
+    clusters = list(themed.values())
+    # Cluster the unthemed / "other" nodes among themselves by entity edges so they are not one lump.
+    if unthemed:
+        other_edges = _clustering_edges(
+            [e for e in graph.edges
+             if e.source_id in set(unthemed) and e.target_id in set(unthemed)],
+            min_cluster_edge_weight,
+        )
+        clusters.extend(_components_from_edges(unthemed, other_edges))
+    # A very large theme group is split by its internal entity cohesion so it does not dominate.
+    if max_cluster_size is not None:
+        clustering_edges = _clustering_edges(graph.edges, min_cluster_edge_weight)
+        split: list[list[str]] = []
+        for cluster in clusters:
+            split.extend(_split_oversized(cluster, clustering_edges, max_cluster_size))
+        clusters = split
+    return _cap_topic_count(clusters, max_topics=max_topics, max_cluster_size=max_cluster_size)
 
 
 def cluster_importance(cluster_size: int, total_nodes: int) -> int:

@@ -39,6 +39,9 @@ class Settings:
     max_cluster_nodes: int
     min_cluster_edge_weight: float
     max_cluster_size: int
+    topic_mode: str
+    extract_themes: bool
+    max_theme_vocabulary: int
     prompt_max_document_chars: int
     prompt_max_evaluation_chars: int
     prompt_max_auxiliary_chars: int
@@ -104,6 +107,10 @@ class Settings:
             errors.append("generation.min_cluster_edge_weight must be positive")
         if self.max_cluster_size < 1:
             errors.append("generation.max_cluster_size must be positive")
+        if self.topic_mode not in {"entity", "theme"}:
+            errors.append("generation.topic_mode must be 'entity' or 'theme'")
+        if self.max_theme_vocabulary < 1:
+            errors.append("generation.max_theme_vocabulary must be positive")
         if min(
             self.prompt_max_document_chars,
             self.prompt_max_evaluation_chars,
@@ -225,6 +232,9 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         max_cluster_nodes=int(_get(data, "generation", "max_cluster_nodes", 12)),
         min_cluster_edge_weight=float(_get(data, "generation", "min_cluster_edge_weight", 2.0)),
         max_cluster_size=int(_get(data, "generation", "max_cluster_size", 40)),
+        topic_mode=str(_get(data, "generation", "topic_mode", "entity")),
+        extract_themes=_as_bool(_get(data, "generation", "extract_themes", False), "generation.extract_themes"),
+        max_theme_vocabulary=int(_get(data, "generation", "max_theme_vocabulary", 20)),
         prompt_max_document_chars=int(_get(data, "generation", "prompt_max_document_chars", 100_000)),
         prompt_max_evaluation_chars=int(_get(data, "generation", "prompt_max_evaluation_chars", 60_000)),
         prompt_max_auxiliary_chars=int(_get(data, "generation", "prompt_max_auxiliary_chars", 30_000)),

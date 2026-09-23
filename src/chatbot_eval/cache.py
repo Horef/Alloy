@@ -16,6 +16,7 @@ from .models import (
     NodeSignals,
     PromptPackage,
     SilverQuestion,
+    ThemeVocabulary,
     TopicCandidate,
     TopicMap,
 )
@@ -137,6 +138,47 @@ class CorpusAnalysisCache:
             self.events["topics"] = "disabled"
         return topics
 
+    def load_theme_vocabulary(
+        self,
+        chunks: list[Chunk],
+        *,
+        model: str,
+        transport: str,
+        max_themes: int,
+        implementation_sha256: str,
+        build: Callable[[], ThemeVocabulary],
+    ) -> ThemeVocabulary:
+        """Cache the corpus-level controlled theme vocabulary.
+
+        Keyed by the full ordered chunk set, model/transport, ceiling, and implementation, so it is
+        reused whenever the corpus and settings are unchanged and rebuilt when they change.
+        """
+        key = _json_hash({
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "theme_vocabulary_implementation_sha256": implementation_sha256,
+            "chunks": [{"id": c.id, "text": c.text} for c in chunks],
+            "model": model, "model_identity": self.model_identity, "transport": transport,
+            "max_themes": max_themes,
+        })
+        path = self.directory / "theme_vocabulary" / f"{key}.json"
+        if self.enabled and not self.refresh:
+            payload = self._read_payload(path, "theme_vocabulary", key)
+            if payload is not None:
+                try:
+                    vocabulary = ThemeVocabulary.model_validate(payload["theme_vocabulary"])
+                    self.events["theme_vocabulary"] = "hit"
+                    return vocabulary
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("cache_invalid kind=theme_vocabulary path=%s error=%s", path, exc)
+        vocabulary = build()
+        self.events["theme_vocabulary"] = "refresh" if self.enabled and self.refresh else "miss"
+        if self.enabled:
+            atomic_write_text(path, json.dumps({
+                "schema_version": CACHE_SCHEMA_VERSION, "kind": "theme_vocabulary", "key": key,
+                "theme_vocabulary": vocabulary.model_dump(mode="json"),
+            }, ensure_ascii=False, separators=(",", ":")))
+        return vocabulary
+
     def load_node_signals(
         self,
         chunks_by_document: dict[str, list[Chunk]],
@@ -147,6 +189,7 @@ class CorpusAnalysisCache:
         implementation_sha256: str,
         extract: Callable[[str, list[Chunk]], list[NodeSignals]],
         max_concurrency: int = 1,
+        theme_signature: str = "",
     ) -> dict[str, NodeSignals]:
         """Return per-chunk signals, extracting only documents whose content changed.
 
@@ -175,6 +218,7 @@ class CorpusAnalysisCache:
                 "chunks": [{"id": c.id, "text": c.text} for c in chunks],
                 "model": model, "model_identity": self.model_identity,
                 "transport": transport, "batch_chunks": batch_chunks,
+                "theme_signature": theme_signature,
             })
             keys[document] = key
             cache_paths[document] = self.directory / "node_signals" / f"{key}.json"

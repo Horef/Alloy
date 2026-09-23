@@ -64,6 +64,11 @@ class NodeSignals(BaseModel):
     entities: list[str] = Field(default_factory=list)
     keyphrases: list[str] = Field(default_factory=list)
     summary: str = ""
+    # A single broad, corpus-level theme label for this chunk, chosen from a controlled vocabulary
+    # (see ``ThemeVocabulary``). Kept SEPARATE from ``entities`` on purpose: themes are a distinct
+    # high-level layer used to organize topics, while entities stay specific for evidence assembly.
+    # Empty when theme extraction is disabled.
+    theme: str = ""
 
 
 class NodeSignalsBatch(BaseModel):
@@ -71,10 +76,21 @@ class NodeSignalsBatch(BaseModel):
 
 
 class GraphTopicLabel(BaseModel):
-    """LLM-produced human-readable name and description for a graph-derived cluster."""
+    """LLM-produced human-readable name and description for a graph-derived cluster or theme."""
 
     name: str
     description: str
+
+
+class ThemeVocabulary(BaseModel):
+    """A small, controlled set of broad corpus-level themes.
+
+    Derived once per corpus so per-chunk theme assignment reuses the SAME theme strings across
+    chunks (that shared string is what lets, e.g., all pay-related chunks group into one topic).
+    Each theme has a short Hebrew name and a one-line description of what user questions it covers.
+    """
+
+    themes: list[GraphTopicLabel]
 
 
 class GraphTopicLabelBatch(BaseModel):

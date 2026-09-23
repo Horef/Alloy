@@ -16,7 +16,7 @@ from .cache import CorpusAnalysisCache
 from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
 from .generator import GenerationOptions, SilverSetGenerator, merge_question_sets, reground_fingerprint
-from .graph import GraphBundle, derive_topic_clusters
+from .graph import GraphBundle, derive_theme_clusters, derive_topic_clusters
 from .graph_build import GraphBuilder, graph_build_fingerprint, group_chunks_by_document, signals_fingerprint
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
@@ -238,26 +238,61 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
     """
     builder = GraphBuilder(llm, settings.generation_model, progress_enabled)
     chunks_by_document = group_chunks_by_document(chunks)
+
+    # Theme layer (opt-in): theme mode implies theme extraction. Build the controlled theme
+    # vocabulary once from cheap per-document summaries, then let each chunk pick one theme from it.
+    theme_mode = settings.topic_mode == "theme"
+    want_themes = theme_mode or settings.extract_themes
+    theme_vocabulary = None
+    theme_signature = ""
+    if want_themes:
+        # First get entity/keyphrase/summary signals (no theme) so we can summarize the corpus.
+        base_signals = cache.load_node_signals(
+            chunks_by_document,
+            model=settings.generation_model, transport=settings.gemini_transport,
+            batch_chunks=settings.graph_extraction_batch_chunks,
+            implementation_sha256=signals_fingerprint(),
+            extract=lambda document, doc_chunks: builder.extract_document_signals(
+                document, doc_chunks, settings.graph_extraction_batch_chunks,
+            ),
+            max_concurrency=max_concurrency,
+        )
+        summaries = [base_signals[c.id].summary for c in chunks if c.id in base_signals]
+        theme_vocabulary = cache.load_theme_vocabulary(
+            chunks, model=settings.generation_model, transport=settings.gemini_transport,
+            max_themes=settings.max_theme_vocabulary, implementation_sha256=signals_fingerprint(),
+            build=lambda: builder.build_theme_vocabulary(chunks, summaries, settings.max_theme_vocabulary),
+        )
+        theme_signature = "|".join(sorted(t.name for t in theme_vocabulary.themes))
+
     signals = cache.load_node_signals(
         chunks_by_document,
         model=settings.generation_model, transport=settings.gemini_transport,
         batch_chunks=settings.graph_extraction_batch_chunks,
         implementation_sha256=signals_fingerprint(),
         extract=lambda document, doc_chunks: builder.extract_document_signals(
-            document, doc_chunks, settings.graph_extraction_batch_chunks,
+            document, doc_chunks, settings.graph_extraction_batch_chunks, theme_vocabulary=theme_vocabulary,
         ),
         max_concurrency=max_concurrency,
+        theme_signature=theme_signature,
     )
 
     def build() -> GraphBundle:
         graph = builder.assemble_graph(
             chunks, signals, keyphrase_overlap_threshold=settings.keyphrase_overlap_threshold,
         )
-        clusters = derive_topic_clusters(
-            graph, min_cluster_nodes=settings.min_cluster_nodes, max_topics=settings.max_graph_topics,
-            min_cluster_edge_weight=settings.min_cluster_edge_weight,
-            max_cluster_size=settings.max_cluster_size,
-        )
+        if theme_mode:
+            clusters = derive_theme_clusters(
+                graph, max_topics=settings.max_graph_topics,
+                max_cluster_size=settings.max_cluster_size,
+                min_cluster_edge_weight=settings.min_cluster_edge_weight,
+            )
+        else:
+            clusters = derive_topic_clusters(
+                graph, min_cluster_nodes=settings.min_cluster_nodes, max_topics=settings.max_graph_topics,
+                min_cluster_edge_weight=settings.min_cluster_edge_weight,
+                max_cluster_size=settings.max_cluster_size,
+            )
         topics = builder.label_topics(graph, clusters)
         return GraphBundle(graph, topics)
 
@@ -269,6 +304,7 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
         clustering_params={
             "min_cluster_edge_weight": settings.min_cluster_edge_weight,
             "max_cluster_size": settings.max_cluster_size,
+            "topic_mode": settings.topic_mode,
         },
         implementation_sha256=graph_build_fingerprint(),
         build=build,
