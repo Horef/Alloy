@@ -506,6 +506,8 @@ def validate_candidate(candidate: GeneratedQuestion, chunk_by_id: dict[str, Chun
     if not candidate.answerable:
         if candidate.question_type != QuestionType.UNANSWERABLE:
             return [], "invalid_unanswerable_type"
+        if not candidate.source_ids:
+            return [], "missing_source_ids"
         if any(claim.strip() for claim in candidate.reference_claims):
             return [], "unanswerable_has_reference_claims"
         if candidate.supporting_quotes:

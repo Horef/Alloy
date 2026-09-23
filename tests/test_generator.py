@@ -159,6 +159,24 @@ def test_candidate_validation_requires_exact_and_complete_provenance():
     assert reason == "unknown_source_id"
 
 
+def test_unanswerable_question_requires_nearby_evidence():
+    chunks = {"a#1": Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")}
+    candidate = GeneratedQuestion(
+        question="מתי אפשר להגיש ערעור על החלטה\u200f?",
+        expected_answer="אין מספיק מידע כדי לענות; חסר פרטים על סוג ההחלטה והזמן המבוקש.",
+        answerable=False,
+        difficulty="easy",
+        rationale="הפנייה מבקשת פרטים חסרים.",
+        source_ids=[],
+        question_type=QuestionType.UNANSWERABLE,
+        reference_claims=[],
+        supporting_quotes=[],
+    )
+
+    _, reason = validate_candidate(candidate, chunks)
+    assert reason == "missing_source_ids"
+
+
 def test_cross_document_question_requires_two_documents():
     chunks = {
         "a#1": Chunk("a#1", "a.md", "document", "המדיניות חלה מחר"),
