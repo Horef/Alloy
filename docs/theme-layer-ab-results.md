@@ -46,3 +46,39 @@ consolidated topics with no manager authoring, and does not create an entity hai
 Theme mode remains **opt-in** (`topic_mode = "theme"`); entity mode stays the default so existing
 runs are unchanged. Enable theme mode on corpora where coverage of every theme matters more than
 tight entity cohesion.
+
+## Full hova question-generation run (theme mode) vs the previous entity run
+
+Beyond the topic-map probe, a complete `generate` was run on hova in theme mode
+(`hova/outputs/questions-kb-theme`, 300 questions) and compared to the previous entity-mode run
+(`hova/outputs/questions-kb`, 295 questions). Both used the same 85-node graph and a 12-topic budget.
+
+**Topic balance (from generation diagnostics):**
+
+| | entity run | theme run |
+|---|---|---|
+| questions | 295 | 300 |
+| distinct topics used | 12 | 12 |
+| largest topic (graph chunks) | 33 | 14 |
+| smallest topic | 1 | 3 |
+| singleton topics | 2 | 0 |
+| questions touching שכר | 12 | 14 |
+
+**Question distribution:** the entity run concentrated 94 of 295 questions (32%) in one topic
+("בקשות תנאי שירות...") and another 45 in "זכויות פרט, תשלומים והיתרי עבודה" — over half the set in
+two broad buckets, with pay folded inside them. The theme run spread questions far more evenly: the
+largest topic held 42 of 300 (14%) and the twelve topics are human-legible, non-overlapping subjects
+(economic aid, lone soldiers, attendance/command authority, leave, service length, legal counsel,
+welfare, travel reimbursement, discharge, dietary provision, housing, mental health).
+
+**Takeaway:** on a real generation, theme mode produced a more balanced, better-organized question
+set — no dominant catch-all topic, no singleton topics, and slightly more pay coverage — matching
+what the topic-map probe predicted. This is why theme mode is now the default.
+
+## Cache pruning (validated on the same run)
+
+The theme run was also the first live exercise of default cache pruning. On completion it swept
+`chunks=2 graph=4 node_signals=136 theme_vocabulary=1` superseded entries, leaving node_signals at
+68 (= 34 documents × 2 legitimate key-sets: the base extraction plus the theme-tagged extraction).
+Both live key-sets from the two in-run `load_node_signals` calls were correctly retained; only the
+truly orphaned entries were removed.
