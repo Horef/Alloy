@@ -47,15 +47,80 @@ def _document_inventory(root: Path) -> list[dict[str, str]]:
     ]
 
 
+# Maps a cache "kind" (as recorded on lookups) to its on-disk subfolder. Kind and subfolder are
+# identical everywhere except prompt_package, whose folder is pluralized.
+_KIND_SUBFOLDERS = {
+    "chunks": "chunks",
+    "topics": "topics",
+    "theme_vocabulary": "theme_vocabulary",
+    "node_signals": "node_signals",
+    "graph": "graph",
+    "question_topics": "question_topics",
+    "insights": "insights",
+    "prompt_package": "prompt_packages",
+}
+
+
 class CorpusAnalysisCache:
     """Content-addressed local cache for extracted chunks and discovered topic maps."""
 
-    def __init__(self, directory: Path, *, enabled: bool = True, refresh: bool = False, model_identity: dict | None = None):
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        enabled: bool = True,
+        refresh: bool = False,
+        prune: bool = True,
+        model_identity: dict | None = None,
+    ):
         self.model_identity = model_identity or {}
         self.directory = directory
         self.enabled = enabled
         self.refresh = refresh
+        self.prune_enabled = prune
         self.events: dict[str, str] = {}
+        # Every cache key this instance looks up, grouped by kind. prune() keeps exactly these and
+        # deletes superseded entries. Accumulates across all load_* calls in the instance's lifetime,
+        # so kinds looked up more than once per run (e.g. node_signals with and without a theme
+        # signature) contribute the union of their valid keys and none are wrongly swept.
+        self._live_keys: dict[str, set[str]] = {}
+
+    def _track(self, kind: str, key: str) -> None:
+        """Record a cache key as still-valid for this run so prune() will keep it."""
+        self._live_keys.setdefault(kind, set()).add(key)
+
+    def prune(self) -> dict[str, int]:
+        """Delete cache entries superseded by this run, keeping only keys looked up this instance.
+
+        Content-addressed entries are written but never overwritten, so changing any keying input
+        (edited document, new chunk size, theme signature, implementation bump) leaves the previous
+        entry orphaned. This sweep removes those orphans: for every kind that was touched this run,
+        it keeps exactly the keys recorded via ``_track`` and removes the rest of that subfolder.
+
+        A subfolder that was never touched this run is left untouched (we cannot know its live set),
+        so pruning is scoped to the kinds the current command actually used. No-op when the cache is
+        disabled, in refresh mode we still prune (the fresh keys are the live set), and unknown files
+        are ignored.
+        """
+        removed: dict[str, int] = {}
+        if not (self.enabled and self.prune_enabled):
+            return removed
+        for kind, live in self._live_keys.items():
+            subfolder = _KIND_SUBFOLDERS.get(kind, kind)
+            folder = self.directory / subfolder
+            if not folder.is_dir():
+                continue
+            for entry in folder.glob("*.json"):
+                if entry.stem in live:
+                    continue
+                try:
+                    entry.unlink()
+                    removed[kind] = removed.get(kind, 0) + 1
+                except OSError as exc:
+                    logger.warning("cache_prune_failed kind=%s path=%s error=%s", kind, entry, exc)
+        if removed:
+            logger.info("cache_pruned %s", " ".join(f"{k}={n}" for k, n in sorted(removed.items())))
+        return removed
 
     def load_chunks(
         self,
@@ -72,6 +137,7 @@ class CorpusAnalysisCache:
             "chunk_chars": chunk_chars,
             "overlap_chars": overlap_chars,
         })
+        self._track("chunks", key)
         path = self.directory / "chunks" / f"{key}.json"
         if self.enabled and not self.refresh:
             cached = self._read_chunks(path, key)
@@ -115,6 +181,7 @@ class CorpusAnalysisCache:
             "transport": transport,
             "batch_chunks": batch_chunks,
         })
+        self._track("topics", key)
         path = self.directory / "topics" / f"{key}.json"
         if self.enabled and not self.refresh:
             cached = self._read_topics(path, key)
@@ -160,6 +227,7 @@ class CorpusAnalysisCache:
             "model": model, "model_identity": self.model_identity, "transport": transport,
             "max_themes": max_themes,
         })
+        self._track("theme_vocabulary", key)
         path = self.directory / "theme_vocabulary" / f"{key}.json"
         if self.enabled and not self.refresh:
             payload = self._read_payload(path, "theme_vocabulary", key)
@@ -221,6 +289,7 @@ class CorpusAnalysisCache:
                 "theme_signature": theme_signature,
             })
             keys[document] = key
+            self._track("node_signals", key)
             cache_paths[document] = self.directory / "node_signals" / f"{key}.json"
             cached = self._read_node_signals(cache_paths[document], key) if (self.enabled and not self.refresh) else None
             if cached is not None:
@@ -301,6 +370,7 @@ class CorpusAnalysisCache:
             "max_topics": max_topics, "min_cluster_nodes": min_cluster_nodes,
             "clustering_params": clustering_params or {},
         })
+        self._track("graph", key)
         path = self.directory / "graph" / f"{key}.json"
         if self.enabled and not self.refresh:
             payload = self._read_payload(path, "graph", key)
@@ -351,9 +421,18 @@ class CorpusAnalysisCache:
             return None
 
     def summary(self) -> dict[str, Any]:
+        """Report cache activity for the run manifest, sweeping superseded entries first.
+
+        ``summary`` is called once per command after all cache use, which is exactly when a prune is
+        safe (the live-key set is complete), so the sweep is driven from here. The manifest records
+        how many stale entries were removed per kind.
+        """
+        pruned = self.prune()
         return {
             "enabled": self.enabled,
             "refresh_requested": self.refresh,
+            "prune_enabled": self.prune_enabled,
+            "pruned": pruned,
             "directory": str(self.directory.resolve()),
             **self.events,
         }
@@ -374,6 +453,7 @@ class CorpusAnalysisCache:
             "questions": [{"id": q.id, "question": q.question} for q in questions],
             "model": model, "model_identity": self.model_identity, "transport": transport, "batch_size": batch_size,
         })
+        self._track("question_topics", key)
         path = self.directory / "question_topics" / f"{key}.json"
         if self.enabled and not self.refresh:
             payload = self._read_payload(path, "question_topics", key)
@@ -409,6 +489,7 @@ class CorpusAnalysisCache:
             "implementation_sha256": implementation_sha256, "model": model, "model_identity": self.model_identity,
             "transport": transport, "max_prompt_chars": max_prompt_chars,
         })
+        self._track("insights", key)
         path = self.directory / "insights" / f"{key}.json"
         if self.enabled and not self.refresh:
             payload = self._read_payload(path, "insights", key)
@@ -468,6 +549,7 @@ class CorpusAnalysisCache:
             "evaluation_context_chars": evaluation_context_chars,
             "auxiliary_context_chars": auxiliary_context_chars,
         })
+        self._track("prompt_package", key)
         path = self.directory / "prompt_packages" / f"{key}.json"
         if self.enabled and not self.refresh:
             payload = self._read_payload(path, "prompt_package", key)

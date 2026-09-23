@@ -150,23 +150,23 @@ def test_configuration_rejects_nonpositive_completeness_evidence_limit(tmp_path)
         load_settings(path, require_api_key=False)
 
 
-def test_theme_layer_defaults_to_entity_mode_and_is_configurable(tmp_path):
+def test_theme_layer_defaults_to_theme_mode_and_is_configurable(tmp_path):
     default_path = tmp_path / "default.toml"
     default_path.write_text("", encoding="utf-8")
     default_settings = load_settings(default_path, require_api_key=False)
-    assert default_settings.topic_mode == "entity"
+    assert default_settings.topic_mode == "theme"
     assert default_settings.extract_themes is False
     assert default_settings.max_theme_vocabulary == 20
 
-    enabled_path = tmp_path / "enabled.toml"
-    enabled_path.write_text(
-        "[generation]\ntopic_mode = \"theme\"\nextract_themes = true\nmax_theme_vocabulary = 30\n",
+    entity_path = tmp_path / "entity.toml"
+    entity_path.write_text(
+        "[generation]\ntopic_mode = \"entity\"\nextract_themes = true\nmax_theme_vocabulary = 30\n",
         encoding="utf-8",
     )
-    enabled_settings = load_settings(enabled_path, require_api_key=False)
-    assert enabled_settings.topic_mode == "theme"
-    assert enabled_settings.extract_themes is True
-    assert enabled_settings.max_theme_vocabulary == 30
+    entity_settings = load_settings(entity_path, require_api_key=False)
+    assert entity_settings.topic_mode == "entity"
+    assert entity_settings.extract_themes is True
+    assert entity_settings.max_theme_vocabulary == 30
 
 
 def test_configuration_rejects_unknown_topic_mode(tmp_path):

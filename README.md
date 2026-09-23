@@ -39,7 +39,8 @@ single theme from it, and topics are then grouped by theme rather than by entity
 a subject spread thinly across many documents (the motivating example was pay/שכר) cohere into its
 own topic instead of scattering, so topic coverage self-organizes and a reviewer only has to create
 and read. Themes are kept as a separate layer and never create graph edges, so theme mode cannot
-cause the entity hairball. Entity mode remains the default; see `docs/theme-layer-ab-results.md`.
+cause the entity hairball. Theme mode is the default (`entity` remains available as an opt-out); see
+`docs/theme-layer-ab-results.md` for the hova/keva validation behind that choice.
 
 ```text
 local documents -> chunks -> node signals (entities/keyphrases/summary, extracted per document)
@@ -181,7 +182,7 @@ log_level = "INFO"
 | `generation.max_cluster_nodes` | `12` | Maximum graph nodes assembled as evidence for one topic's question batch. |
 | `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
 | `generation.max_cluster_size` | `40` | Clusters larger than this are split by weakest-edge removal so no single topic dominates. |
-| `generation.topic_mode` | `entity` | How topics are formed. `entity` (default) clusters chunks by shared entities. `theme` tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and re-extracts node signals once (a one-time cost). See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
+| `generation.topic_mode` | `theme` | How topics are formed. `theme` (default) tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. `entity` clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin themes. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and re-extracts node signals once (a one-time cost). See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
 | `generation.extract_themes` | `false` | Tag chunks with a theme without switching clustering (useful for inspection). Implied by `topic_mode = "theme"`. |
 | `generation.max_theme_vocabulary` | `20` | Ceiling on the controlled theme-vocabulary size derived for the corpus. |
 | `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
@@ -319,13 +320,20 @@ Use `--refresh-cache` to ignore and atomically replace every matching workflow e
 final prompt package, for
 example after deciding an upstream model alias should be sampled again. Use `--no-cache` for a run
 that must neither read nor write cache data. `--cache-dir` overrides the configured shared location.
-The two switches are mutually exclusive.
+`--refresh-cache` and `--no-cache` are mutually exclusive.
+
+After each run the cache is **swept**: for every cache kind the run touched, entries that no longer
+match the current corpus and settings are deleted, keeping only the keys the run actually used. This
+stops superseded entries from accumulating (e.g. after a chunk-size change or a switch to theme mode,
+each document's old node-signal entry would otherwise linger next to the new one). The sweep is
+scoped to the kinds the command used, so a run keeps exactly what it needs and never removes an entry
+a later step still relies on; the run manifest records how many entries were removed per kind. Pass
+`--keep-stale-cache` to disable the sweep and retain every entry.
 
 The cache is local and may contain extracted document text. Protect it like the source knowledge
 base, do not commit it, and choose a suitably protected directory in production. The cache directory
 must be outside `--documents`, preventing cache JSON from becoming corpus input. Corrupt or
-schema-incompatible entries are logged and recomputed. Old content-addressed entries are retained;
-there is no automatic deletion policy.
+schema-incompatible entries are logged and recomputed.
 
 ### Supported inputs
 

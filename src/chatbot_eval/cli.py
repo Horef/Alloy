@@ -203,6 +203,11 @@ def _add_cache_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--refresh-cache", action="store_true", help="Recompute and replace matching workflow cache entries")
     group.add_argument("--no-cache", action="store_true", help="Do not read or write the workflow cache")
+    parser.add_argument(
+        "--keep-stale-cache", action="store_true",
+        help="Keep superseded cache entries. By default the cache is swept after a run so entries "
+             "no longer matching the current corpus and settings are deleted.",
+    )
 
 
 def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAnalysisCache:
@@ -217,7 +222,9 @@ def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAn
     return CorpusAnalysisCache(
         directory,
         enabled=enabled,
-        refresh=args.refresh_cache, model_identity=model_identity(settings),
+        refresh=args.refresh_cache,
+        prune=not getattr(args, "keep_stale_cache", False),
+        model_identity=model_identity(settings),
     )
 
 

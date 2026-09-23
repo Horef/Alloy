@@ -36,12 +36,13 @@ min_cluster_nodes = 1               # smallest standalone cluster before merging
 max_cluster_nodes = 12              # max graph nodes assembled as evidence for one topic's questions
 min_cluster_edge_weight = 2.0       # min shared-entity strength to merge nodes into one topic (avoids hairball)
 max_cluster_size = 40               # oversized clusters are split by weakest-edge removal
-# Topic layer. "entity" (default) clusters chunks by shared entities. "theme" tags each chunk with
-# one theme from a small controlled vocabulary and groups by theme, so a subject spread across the
-# corpus (e.g. pay) becomes its own topic even when its chunks share few entities. Theme mode makes
-# coverage self-organize (create-and-read) at the cost of one extra vocabulary call plus a one-time
-# re-extraction of node signals. Themes are a separate layer from entities and never create edges.
-topic_mode = "entity"               # "entity" or "theme"
+# Topic layer. "theme" (default) tags each chunk with one theme from a small controlled vocabulary
+# and groups by theme, so a subject spread across the corpus (e.g. pay) becomes its own topic even
+# when its chunks share few entities — topic coverage self-organizes (create-and-read). "entity"
+# clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin
+# themes. Theme mode costs one extra vocabulary call plus a one-time re-extraction of node signals;
+# themes are a separate layer from entities and never create edges. See docs/theme-layer-ab-results.md.
+topic_mode = "theme"                # "theme" (default) or "entity"
 extract_themes = false              # tag chunks with a theme without switching clustering (implied by theme mode)
 max_theme_vocabulary = 20           # ceiling on the controlled theme vocabulary size
 # Re-check each generated reference answer against evidence re-selected for that specific question

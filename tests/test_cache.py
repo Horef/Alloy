@@ -425,6 +425,100 @@ def test_theme_vocabulary_is_reused_until_corpus_or_ceiling_changes(tmp_path):
     assert calls["n"] == 3
 
 
+def test_prune_removes_superseded_node_signals_but_keeps_live_ones(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    def extract(document, chunks):
+        return [NodeSignals(chunk_id=c.id, entities=[document]) for c in chunks]
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, extract=extract)
+
+    # Extract once (implementation v1), then again with a new implementation -> a second entry per
+    # document accumulates under node_signals.
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, implementation_sha256="v1", **kwargs)
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, implementation_sha256="v2", **kwargs)
+    folder = tmp_path / "node_signals"
+    assert len(list(folder.glob("*.json"))) == 2  # both v1 and v2 entries present
+
+    # A fresh run at v2 that prunes must keep only the v2 entry it actually used.
+    cache = CorpusAnalysisCache(tmp_path, enabled=True)
+    cache.load_node_signals(by_doc, implementation_sha256="v2", **kwargs)
+    pruned = cache.prune()
+    assert pruned == {"node_signals": 1}
+    assert len(list(folder.glob("*.json"))) == 1
+
+
+def test_prune_keeps_both_key_sets_when_signals_loaded_twice_in_one_run(tmp_path):
+    # Mirrors the theme flow: node signals are loaded once without a theme signature and once with
+    # one in the same run. Prune must keep BOTH per-document entries, not sweep the other call's.
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    def extract(document, chunks):
+        return [NodeSignals(chunk_id=c.id) for c in chunks]
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, implementation_sha256="v1", extract=extract)
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+
+    cache = CorpusAnalysisCache(tmp_path, enabled=True)
+    cache.load_node_signals(by_doc, **kwargs)                          # base (no theme)
+    cache.load_node_signals(by_doc, theme_signature="שכר", **kwargs)   # themed
+    folder = tmp_path / "node_signals"
+    assert len(list(folder.glob("*.json"))) == 2
+
+    pruned = cache.prune()
+    assert pruned == {}  # both entries are live for this run; nothing swept
+    assert len(list(folder.glob("*.json"))) == 2
+
+
+def test_prune_leaves_untouched_kinds_alone(tmp_path):
+    # Prune only sweeps kinds the current run actually looked up; a subfolder never touched this run
+    # (its live set is unknown) must be left intact.
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    def extract(document, chunks):
+        return [NodeSignals(chunk_id=c.id) for c in chunks]
+
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+    # Seed a stale topics entry via a first cache instance.
+    seed = CorpusAnalysisCache(tmp_path, enabled=True)
+    seed.load_topics(
+        [Chunk("a#1", "a.md", "d", "alpha")], "chunks-v1", model="m", transport="direct",
+        batch_chunks=8, implementation_sha256="v1", discover=lambda: [_topic()],
+    )
+    assert len(list((tmp_path / "topics").glob("*.json"))) == 1
+
+    # A run that only touches node_signals prunes node_signals but not topics.
+    cache = CorpusAnalysisCache(tmp_path, enabled=True)
+    cache.load_node_signals(by_doc, model="m", transport="direct", batch_chunks=8, implementation_sha256="v1", extract=extract)
+    cache.prune()
+    assert len(list((tmp_path / "topics").glob("*.json"))) == 1  # untouched kind preserved
+
+
+def test_prune_is_disabled_when_requested_or_cache_disabled(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    def extract(document, chunks):
+        return [NodeSignals(chunk_id=c.id) for c in chunks]
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, extract=extract)
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, implementation_sha256="v1", **kwargs)
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, implementation_sha256="v2", **kwargs)
+    folder = tmp_path / "node_signals"
+    assert len(list(folder.glob("*.json"))) == 2
+
+    # prune=False keeps everything.
+    keeper = CorpusAnalysisCache(tmp_path, enabled=True, prune=False)
+    keeper.load_node_signals(by_doc, implementation_sha256="v2", **kwargs)
+    assert keeper.prune() == {}
+    assert len(list(folder.glob("*.json"))) == 2
+
+
 def test_node_signals_reextract_when_theme_signature_changes(tmp_path):
     from chatbot_eval.documents import Chunk
     from chatbot_eval.models import NodeSignals
