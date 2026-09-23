@@ -390,3 +390,64 @@ def test_graph_is_cached_and_rebuilt_when_signals_change(tmp_path):
     changed["a#1"] = NodeSignals(chunk_id="a#1", entities=["y"])
     CorpusAnalysisCache(tmp_path, enabled=True).load_graph(chunks, changed, **kwargs)
     assert builds["n"] == 2
+
+
+def test_theme_vocabulary_is_reused_until_corpus_or_ceiling_changes(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import GraphTopicLabel, ThemeVocabulary
+
+    chunks = [Chunk("a#1", "a.md", "d", "alpha"), Chunk("a#2", "a.md", "d", "beta")]
+    vocabulary = ThemeVocabulary(themes=[GraphTopicLabel(name="שכר", description="תשלומים")])
+    calls = {"n": 0}
+
+    def build():
+        calls["n"] += 1
+        return vocabulary
+
+    kwargs = dict(model="m", transport="direct", max_themes=20, implementation_sha256="v1", build=build)
+
+    first = CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(chunks, **kwargs)
+    assert calls["n"] == 1 and first == vocabulary
+
+    # Unchanged corpus + ceiling -> cache hit, no rebuild.
+    reused = CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(chunks, **kwargs)
+    assert calls["n"] == 1 and reused == vocabulary
+
+    # Raising the ceiling changes the key -> rebuild.
+    CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(
+        chunks, model="m", transport="direct", max_themes=30, implementation_sha256="v1", build=build,
+    )
+    assert calls["n"] == 2
+
+    # Editing the corpus text changes the key -> rebuild.
+    edited = [Chunk("a#1", "a.md", "d", "alpha CHANGED"), Chunk("a#2", "a.md", "d", "beta")]
+    CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(edited, **kwargs)
+    assert calls["n"] == 3
+
+
+def test_node_signals_reextract_when_theme_signature_changes(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import NodeSignals
+
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+    calls: list[str] = []
+
+    def extract(document, chunks):
+        calls.append(document)
+        return [NodeSignals(chunk_id=c.id) for c in chunks]
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, implementation_sha256="v1", extract=extract)
+
+    # Baseline extraction with no theme vocabulary.
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, **kwargs)
+    assert calls == ["a.md"]
+
+    # Introducing a theme vocabulary changes the per-document key -> re-extract once.
+    calls.clear()
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, theme_signature="שכר|חופשות", **kwargs)
+    assert calls == ["a.md"]
+
+    # Same theme signature -> reuse, no re-extraction.
+    calls.clear()
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, theme_signature="שכר|חופשות", **kwargs)
+    assert calls == []

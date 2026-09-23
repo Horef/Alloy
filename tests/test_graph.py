@@ -4,6 +4,7 @@ from chatbot_eval.graph import (
     build_edges,
     cluster_evidence_ids,
     cluster_importance,
+    derive_theme_clusters,
     derive_topic_clusters,
     entity_match_keys,
     normalize_entity,
@@ -149,3 +150,75 @@ def test_cluster_evidence_empty_seeds_returns_empty():
     graph = KnowledgeGraph([GraphNode("a#1", "a.md", "d", "x")], [])
     assert cluster_evidence_ids(graph, ["missing"], max_nodes=5) == []
     assert cluster_evidence_ids(graph, ["a#1"], max_nodes=0) == []
+
+
+# --- theme-first clustering (opt-in theme layer) ------------------------------------------------
+
+
+def test_theme_clusters_group_by_theme_even_with_low_entity_overlap():
+    # Three pay chunks that share almost no entities still form ONE topic because they share a theme.
+    # Entity mode would scatter them; theme mode keeps them together.
+    nodes = [
+        GraphNode("a#1", "a.md", "d", "x", entities=["קצין", "טופס 101"], theme="שכר"),
+        GraphNode("b#1", "b.md", "d", "x", entities=["מילואים", "החזר"], theme="שכר"),
+        GraphNode("c#1", "c.md", "d", "x", entities=["דרגה", "ותק"], theme="שכר"),
+        GraphNode("d#1", "d.md", "d", "x", entities=["חופשה"], theme="חופשות"),
+    ]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_theme_clusters(graph, max_topics=40)
+    pay = next(c for c in clusters if "a#1" in c)
+    assert {"a#1", "b#1", "c#1"} <= set(pay)
+    assert "d#1" not in pay
+
+
+def test_theme_clusters_fall_back_to_entity_clustering_when_no_themes():
+    # No node carries a theme -> behave exactly like entity clustering (nothing lost).
+    nodes = [
+        GraphNode("a#1", "a.md", "d", "x", entities=["חופשה", "אישור"]),
+        GraphNode("a#2", "a.md", "d", "x", entities=["חופשה", "אישור"]),
+        GraphNode("a#3", "a.md", "d", "x", entities=["דבר אחר"]),
+    ]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    theme = derive_theme_clusters(graph, max_topics=40, min_cluster_edge_weight=2.0)
+    entity = derive_topic_clusters(graph, max_topics=40, min_cluster_edge_weight=2.0)
+    assert sorted(sorted(c) for c in theme) == sorted(sorted(c) for c in entity)
+
+
+def test_theme_clusters_split_oversized_theme_by_entity_cohesion():
+    # One theme with two internally-cohesive sub-groups (each shares 2 entities) is split by entity
+    # cohesion when it exceeds the cap, so the theme does not dominate; every node stays covered once.
+    nodes = [
+        GraphNode("g1a", "f.md", "d", "x", entities=["p", "q"], theme="שכר"),
+        GraphNode("g1b", "f.md", "d", "x", entities=["p", "q"], theme="שכר"),
+        GraphNode("g2a", "f.md", "d", "x", entities=["r", "s"], theme="שכר"),
+        GraphNode("g2b", "f.md", "d", "x", entities=["r", "s"], theme="שכר"),
+    ]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_theme_clusters(graph, max_topics=40, max_cluster_size=2)
+    assert all(len(c) <= 2 for c in clusters)
+    covered = sorted(n for c in clusters for n in c)
+    assert covered == sorted(node.chunk_id for node in nodes)
+
+
+def test_theme_clusters_route_unthemed_and_other_nodes_without_dropping_them():
+    # Themed nodes group by theme; unthemed / "אחר" nodes still surface (entity-clustered), never lost.
+    nodes = [
+        GraphNode("a#1", "a.md", "d", "x", entities=["x"], theme="שכר"),
+        GraphNode("b#1", "b.md", "d", "x", entities=["y"], theme=""),
+        GraphNode("c#1", "c.md", "d", "x", entities=["z"], theme="אחר"),
+    ]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_theme_clusters(graph, max_topics=40)
+    covered = sorted(n for c in clusters for n in c)
+    assert covered == ["a#1", "b#1", "c#1"]
+    pay = next(c for c in clusters if "a#1" in c)
+    assert "b#1" not in pay and "c#1" not in pay
+
+
+def test_theme_clusters_are_capped_at_max_topics():
+    nodes = [GraphNode(f"n{i}", f"f{i}.md", "d", "x", entities=[f"e{i}"], theme=f"t{i}") for i in range(10)]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_theme_clusters(graph, max_topics=3)
+    assert len(clusters) <= 3
+    covered = sorted(n for c in clusters for n in c)
+    assert covered == sorted(node.chunk_id for node in nodes)

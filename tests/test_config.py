@@ -148,3 +148,36 @@ def test_configuration_rejects_nonpositive_completeness_evidence_limit(tmp_path)
     path.write_text("[generation]\ncompleteness_evidence_limit = 0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="completeness_evidence_limit"):
         load_settings(path, require_api_key=False)
+
+
+def test_theme_layer_defaults_to_entity_mode_and_is_configurable(tmp_path):
+    default_path = tmp_path / "default.toml"
+    default_path.write_text("", encoding="utf-8")
+    default_settings = load_settings(default_path, require_api_key=False)
+    assert default_settings.topic_mode == "entity"
+    assert default_settings.extract_themes is False
+    assert default_settings.max_theme_vocabulary == 20
+
+    enabled_path = tmp_path / "enabled.toml"
+    enabled_path.write_text(
+        "[generation]\ntopic_mode = \"theme\"\nextract_themes = true\nmax_theme_vocabulary = 30\n",
+        encoding="utf-8",
+    )
+    enabled_settings = load_settings(enabled_path, require_api_key=False)
+    assert enabled_settings.topic_mode == "theme"
+    assert enabled_settings.extract_themes is True
+    assert enabled_settings.max_theme_vocabulary == 30
+
+
+def test_configuration_rejects_unknown_topic_mode(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[generation]\ntopic_mode = "semantic"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="topic_mode must be 'entity' or 'theme'"):
+        load_settings(path, require_api_key=False)
+
+
+def test_configuration_rejects_nonpositive_theme_vocabulary(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[generation]\nmax_theme_vocabulary = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="max_theme_vocabulary must be positive"):
+        load_settings(path, require_api_key=False)

@@ -8,6 +8,7 @@ from chatbot_eval.models import (
     GraphTopicLabelBatch,
     NodeSignals,
     NodeSignalsBatch,
+    ThemeVocabulary,
 )
 
 
@@ -81,3 +82,74 @@ def test_label_topics_falls_back_when_labeling_fails():
     topics = builder.label_topics(graph, derive_topic_clusters(graph))
     # Deterministic fallback name derived from the cluster signature, never a crash.
     assert topics and topics[0].name
+
+
+# --- theme layer (opt-in) -----------------------------------------------------------------------
+
+
+def test_build_theme_vocabulary_enforces_ceiling_and_drops_blank_names():
+    class VocabLLM:
+        def generate(self, prompt, schema, model):
+            assert schema is ThemeVocabulary
+            return ThemeVocabulary(themes=[
+                GraphTopicLabel(name="שכר", description="תשלומים"),
+                GraphTopicLabel(name="  ", description="ריק"),      # blank name dropped
+                GraphTopicLabel(name="חופשות", description="ימי חופשה"),
+                GraphTopicLabel(name="מילואים", description="שירות מילואים"),
+            ])
+
+    builder = GraphBuilder(VocabLLM(), "m")
+    chunks = [Chunk("a#1", "a.md", "d", "x")]
+    vocab = builder.build_theme_vocabulary(chunks, ["summary one", "summary two"], max_themes=2)
+    names = [t.name for t in vocab.themes]
+    assert names == ["שכר", "חופשות"]  # blank removed, then capped at 2, order preserved
+
+
+def test_build_theme_vocabulary_is_a_noop_without_summaries():
+    class ExplodingLLM:
+        def generate(self, prompt, schema, model):
+            raise AssertionError("must not call the model with no summaries")
+
+    builder = GraphBuilder(ExplodingLLM(), "m")
+    vocab = builder.build_theme_vocabulary([Chunk("a#1", "a.md", "d", "x")], ["", "   "], max_themes=20)
+    assert vocab.themes == []
+
+
+def test_build_theme_vocabulary_falls_back_to_empty_on_model_error():
+    class FailingLLM:
+        def generate(self, prompt, schema, model):
+            raise RuntimeError("model down")
+
+    builder = GraphBuilder(FailingLLM(), "m")
+    vocab = builder.build_theme_vocabulary([Chunk("a#1", "a.md", "d", "x")], ["real summary"], max_themes=20)
+    assert vocab.themes == []
+
+
+def test_theme_aware_extraction_injects_vocabulary_and_tags_chunks():
+    seen_prompts: list[str] = []
+
+    class ThemeLLM:
+        def generate(self, prompt, schema, model):
+            seen_prompts.append(prompt)
+            return NodeSignalsBatch(signals=[
+                NodeSignals(chunk_id=i, entities=["e"], summary=f"s {i}", theme="שכר")
+                for i in _ids(prompt)
+            ])
+
+    vocab = ThemeVocabulary(themes=[
+        GraphTopicLabel(name="שכר", description="תשלומים"),
+        GraphTopicLabel(name="חופשות", description="ימי חופשה"),
+    ])
+    chunks = [Chunk("a#1", "a.md", "d", "x")]
+    signals = GraphBuilder(ThemeLLM(), "m").extract_document_signals(
+        "a.md", chunks, batch_chunks=8, theme_vocabulary=vocab,
+    )
+    assert signals[0].theme == "שכר"
+    # The controlled vocabulary is rendered into the extraction prompt.
+    assert "שכר" in seen_prompts[0] and "חופשות" in seen_prompts[0]
+
+
+def test_extraction_without_vocabulary_leaves_theme_empty():
+    chunks = [Chunk("a#1", "a.md", "d", "x")]
+    signals = GraphBuilder(SignalLLM(), "m").extract_document_signals("a.md", chunks, batch_chunks=8)
+    assert signals[0].theme == ""
