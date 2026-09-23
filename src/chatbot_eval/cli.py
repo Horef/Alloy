@@ -15,7 +15,7 @@ from .artifacts import (
 from .cache import CorpusAnalysisCache
 from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
-from .generator import GenerationOptions, SilverSetGenerator, reground_fingerprint
+from .generator import GenerationOptions, SilverSetGenerator, merge_question_sets, reground_fingerprint
 from .graph import GraphBundle, derive_topic_clusters
 from .graph_build import GraphBuilder, graph_build_fingerprint, group_chunks_by_document, signals_fingerprint
 from .history import (
@@ -77,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument(
         "--exclude-questions", type=Path,
         help="Existing silver CSV/JSONL whose questions must not be generated again",
+    )
+    generate.add_argument(
+        "--merge-into", type=Path,
+        help="Existing silver CSV/JSONL to append the newly generated questions onto (kept verbatim, near-duplicates dropped, stable IDs recomputed). Ideal with --topic to add a focused subset.",
     )
     generate.add_argument("--resume", action="store_true", help="Resume successful structured generation calls")
     generate.add_argument("--checkpoint", type=Path, help="Generation-call checkpoint; defaults inside output")
@@ -700,6 +704,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.exclude_questions:
                 excluded_questions = tuple(q.question for q in read_questions(args.exclude_questions))
                 logger.info("generation_exclusions_loaded count=%d", len(excluded_questions))
+            merge_into_questions = read_questions(args.merge_into) if args.merge_into else []
+            if merge_into_questions:
+                # Avoid regenerating questions already present in the target set.
+                excluded_questions = excluded_questions + tuple(q.question for q in merge_into_questions)
+                logger.info("generation_merge_target_loaded count=%d", len(merge_into_questions))
             options = GenerationOptions(
                 max_questions=maximum, batch_chunks=settings.batch_chunks,
                 min_topic_questions=settings.min_topic_questions, max_topic_share=settings.max_topic_share,
@@ -740,8 +749,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             generator = SilverSetGenerator(generation_llm, settings.generation_model, progress_enabled)
             questions, topics = generator.generate(chunks, options, bundle=bundle)
-            csv_path, jsonl_path = write_questions(questions, args.output)
             generation_diagnostics = dict(generator.last_generation_diagnostics)
+            merge_diagnostics = None
+            if merge_into_questions:
+                questions, merge_diagnostics = merge_question_sets(
+                    merge_into_questions, questions,
+                    stable_question_ids=settings.stable_question_ids and not args.sequential_ids,
+                )
+                generation_diagnostics["merge"] = merge_diagnostics
+            csv_path, jsonl_path = write_questions(questions, args.output)
             diagnostics_path = _write_generation_diagnostics(generation_diagnostics, args.output)
             manifest.complete(
                 question_count=len(questions), topic_count=len(topics), chunk_count=len(chunks),
@@ -750,10 +766,19 @@ def main(argv: list[str] | None = None) -> int:
                 resumed_generation=args.resume,
                 outputs=input_inventory([csv_path, jsonl_path, diagnostics_path, generation_checkpoint]),
             )
-        print(f"Generated {len(questions)} questions across {len(topics)} discovered topics.")
+        if merge_diagnostics:
+            print(
+                f"Generated {merge_diagnostics['new_generated']} questions and merged into "
+                f"{merge_diagnostics['existing_kept']} existing "
+                f"({merge_diagnostics['new_added']} added, {merge_diagnostics['new_dropped_duplicate']} dropped as duplicates); "
+                f"{merge_diagnostics['merged_total']} total."
+            )
+        else:
+            print(f"Generated {len(questions)} questions across {len(topics)} discovered topics.")
         print(f"Review CSV: {csv_path}\nProvenance JSONL: {jsonl_path}\nGeneration diagnostics: {diagnostics_path}")
-        if len(questions) < maximum:
-            print(f"Note: generated fewer than requested ({len(questions)}/{maximum}) because unsupported or duplicate candidates were discarded.")
+        generated_count = merge_diagnostics["new_generated"] if merge_diagnostics else len(questions)
+        if generated_count < maximum:
+            print(f"Note: generated fewer than requested ({generated_count}/{maximum}) because unsupported or duplicate candidates were discarded.")
         logger.info("command_completed command=generate question_count=%d output=%s", len(questions), args.output)
         return 0
 

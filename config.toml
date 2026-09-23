@@ -28,7 +28,7 @@ max_topic_share = 0.35
 # Knowledge-graph generation (v1.0+). Node signals are extracted per document and cached.
 graph_extraction_batch_chunks = 8
 keyphrase_overlap_threshold = 0.3
-max_graph_topics = 12
+max_graph_topics = 40
 min_cluster_nodes = 1
 max_cluster_nodes = 12
 min_cluster_edge_weight = 2.0

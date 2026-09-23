@@ -168,7 +168,7 @@ log_level = "INFO"
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
 | `generation.graph_extraction_batch_chunks` | `8` | Chunks per knowledge-graph signal-extraction call. |
 | `generation.keyphrase_overlap_threshold` | `0.3` | Jaccard threshold (in `(0, 1]`) for creating a keyphrase-overlap edge between two nodes. |
-| `generation.max_graph_topics` | `12` | Maximum graph-derived topics; the smallest clusters merge into an "other" topic. |
+| `generation.max_graph_topics` | `40` | Maximum graph-derived topics. Beyond this, the largest (most prevalent) clusters stay distinct and the remaining small ones are bin-packed into bounded "other" buckets. A higher cap yields finer topics on dense corpora; it does not create a topic the graph structure does not support (a theme spread thinly across documents may still not cohere into its own cluster — use `generate --topic` to force a focused subset). |
 | `generation.min_cluster_nodes` | `1` | Smallest standalone cluster kept before merging into "other". |
 | `generation.max_cluster_nodes` | `12` | Maximum graph nodes assembled as evidence for one topic's question batch. |
 | `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
@@ -387,6 +387,7 @@ Rejection counts are written to operational logs at `INFO` level and to the revi
 | `--ambiguous-variation-share R` | config value | Share of variants expected to trigger clarification; `[0, 1]`. |
 | `--sequential-ids` | off | Use legacy `Q0001`-style run-local IDs instead of content-derived stable IDs. |
 | `--verify-answer-completeness` / `--no-verify-answer-completeness` | config value | Enable or disable the per-question answer-completeness verification pass for this run, overriding `generation.verify_answer_completeness`. |
+| `--merge-into PATH` | unset | Append the newly generated questions onto an existing silver CSV/JSONL. The existing questions are kept verbatim (reviewer decisions and grounding preserved), near-duplicate new questions are dropped, and content-derived stable IDs are recomputed across the combined set. Pair with `--topic` to add a focused subset (e.g. a missing topic) to an already-reviewed set without regenerating it. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
 | `--resume` | off | Replay successful structured calls from a compatible generation checkpoint, then continue after the interrupted call. |
 | `--checkpoint PATH` | `<output>/generation_checkpoint.jsonl` | Durable structured-call journal used by generation resume. |
@@ -414,6 +415,19 @@ chatbot-eval --config config.toml generate \
   --topic-count 12 \
   --max-questions 12 \
   --output ./outputs/leave-questions
+```
+
+Add a focused topic to an already-reviewed set (generate only that topic and merge it in, keeping
+the existing questions and their reviewer decisions):
+
+```bash
+chatbot-eval --config config.toml generate \
+  --documents ./knowledge_base \
+  --topic "שכר" \
+  --topic-count 15 \
+  --max-questions 15 \
+  --merge-into ./outputs/questions/silver_questions.jsonl \
+  --output ./outputs/questions-with-salary
 ```
 
 Exclude previously reviewed, rejected, or deleted questions:

@@ -420,6 +420,43 @@ def _assign_stable_ids(questions: list[SilverQuestion]) -> None:
             question.parent_question_id = old_to_new[old_parent]
 
 
+def merge_question_sets(
+    existing: list[SilverQuestion],
+    new: list[SilverQuestion],
+    *,
+    stable_question_ids: bool = True,
+    duplicate_threshold: float = 0.78,
+) -> tuple[list[SilverQuestion], dict]:
+    """Append newly generated questions onto an existing silver set.
+
+    Existing questions are kept verbatim (their reviewer decisions and grounding are preserved). A
+    new question is dropped when it near-duplicates any existing question OR any already-accepted new
+    question, so re-running a topic-scoped generation does not reintroduce questions already present.
+    When ``stable_question_ids`` is set, content-derived IDs are recomputed across the combined set,
+    which also collapses any exact content duplicates to the same ID. Returns ``(merged, diagnostics)``.
+    """
+    merged = list(existing)
+    existing_texts = tuple(q.question for q in existing)
+    added = 0
+    dropped_duplicate = 0
+    for question in new:
+        if _is_duplicate(question.question, merged, existing_texts, threshold=duplicate_threshold):
+            dropped_duplicate += 1
+            continue
+        merged.append(question)
+        added += 1
+    if stable_question_ids:
+        _assign_stable_ids(merged)
+    diagnostics = {
+        "existing_kept": len(existing),
+        "new_generated": len(new),
+        "new_added": added,
+        "new_dropped_duplicate": dropped_duplicate,
+        "merged_total": len(merged),
+    }
+    return merged, diagnostics
+
+
 def validate_candidate(candidate: GeneratedQuestion, chunk_by_id: dict[str, Chunk]) -> tuple[list[Chunk], str | None]:
     """Apply deterministic grounding checks before a generated question reaches human review."""
     if not candidate.question.strip():

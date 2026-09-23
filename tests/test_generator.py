@@ -224,6 +224,36 @@ def test_answer_or_clarify_variant_is_answer_task_with_acceptable_clarification(
     assert result.acceptable_clarification == "לאיזה סוג חופשה מיוחדת כוונתך?"
 
 
+def test_merge_question_sets_appends_and_dedups():
+    from chatbot_eval.generator import merge_question_sets
+
+    existing = [
+        SilverQuestion(id="Q-a", topic="t", question="כמה ימי חופשה מגיעים לחייל?", expected_answer="20",
+                       reference_claims=["20"]),
+        SilverQuestion(id="Q-b", topic="t", question="מי מאשר יציאה לחופשה?", expected_answer="המפקד",
+                       reference_claims=["המפקד"]),
+    ]
+    new = [
+        # A genuinely new question about salary.
+        SilverQuestion(id="Q-c", topic="שכר", question="כיצד מחושב התמריץ הכספי?", expected_answer="לפי קבוצה",
+                       reference_claims=["לפי קבוצה"]),
+        # A near-duplicate of an existing question -> dropped.
+        SilverQuestion(id="Q-d", topic="t", question="כמה ימי חופשה מגיעים לחייל", expected_answer="20",
+                       reference_claims=["20"]),
+    ]
+    merged, diag = merge_question_sets(existing, new, stable_question_ids=True)
+
+    assert diag["existing_kept"] == 2
+    assert diag["new_generated"] == 2
+    assert diag["new_added"] == 1
+    assert diag["new_dropped_duplicate"] == 1
+    assert diag["merged_total"] == 3
+    # The new salary question survived; the near-duplicate did not add a row.
+    assert any("התמריץ" in q.question for q in merged)
+    # Stable IDs were recomputed across the combined set and are unique.
+    assert len({q.id for q in merged}) == 3
+
+
 def test_regenerate_variations_replaces_variants_keeps_canonical_and_boundary():
     canonical = SilverQuestion(id="Q1", topic="t", question="שאלה קנונית", expected_answer="תשובה",
                                reference_claims=["תשובה"])

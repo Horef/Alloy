@@ -290,3 +290,64 @@ def test_revary_regenerates_only_variations(tmp_path, monkeypatch):
     assert "ניסוח חדש" in questions_text           # fresh variant added
     manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["results"]["revary_diagnostics"]["new_variants"] == 1
+
+
+def test_generate_merge_into_appends_to_existing_set(tmp_path, monkeypatch):
+    import json
+    from chatbot_eval.graph import GraphBundle, KnowledgeGraph
+    from chatbot_eval.io import write_questions
+
+    config = tmp_path / "config.toml"
+    config.write_text("", encoding="utf-8")
+    documents = tmp_path / "documents"
+    documents.mkdir()
+    (documents / "source.txt").write_text("source", encoding="utf-8")
+    output = tmp_path / "output"
+
+    # Existing reviewed set to merge into.
+    existing = [
+        SilverQuestion(id="Q-old1", topic="t", question="שאלה קיימת אחת", expected_answer="א",
+                       reference_claims=["א"]),
+        SilverQuestion(id="Q-old2", topic="t", question="שאלה קיימת שתיים", expected_answer="ב",
+                       reference_claims=["ב"]),
+    ]
+    _, merge_target = write_questions(existing, tmp_path / "existing")
+
+    generated = [
+        SilverQuestion(id="Q-new", topic="שכר", question="שאלה חדשה על שכר", expected_answer="ג",
+                       reference_claims=["ג"]),
+    ]
+
+    class Cache:
+        enabled = True
+        refresh = False
+        def load_chunks(self, *a, **k):
+            return [], "chunk-key"
+        def summary(self):
+            return {}
+
+    class Generator:
+        def __init__(self, *a, **k):
+            self.last_generation_diagnostics = {}
+        def generate(self, chunks, options, *, bundle):
+            self.last_generation_diagnostics = {"accepted_total": 1}
+            return list(generated), bundle.topics
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_analysis_cache", lambda *a, **k: Cache())
+    monkeypatch.setattr(cli, "_build_graph_bundle", lambda *a, **k: GraphBundle(KnowledgeGraph([], []), []))
+    monkeypatch.setattr(cli, "SilverSetGenerator", Generator)
+
+    assert cli.main([
+        "--config", str(config), "generate", "--documents", str(documents),
+        "--output", str(output), "--max-questions", "1", "--merge-into", str(merge_target),
+    ]) == 0
+
+    merged = [json.loads(l) for l in (output / "silver_questions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    questions_text = {q["question"] for q in merged}
+    assert "שאלה קיימת אחת" in questions_text and "שאלה קיימת שתיים" in questions_text  # existing kept
+    assert "שאלה חדשה על שכר" in questions_text                                          # new appended
+    assert len(merged) == 3
+    diag = json.loads((output / "generation_diagnostics.json").read_text(encoding="utf-8"))
+    assert diag["merge"]["new_added"] == 1 and diag["merge"]["existing_kept"] == 2
