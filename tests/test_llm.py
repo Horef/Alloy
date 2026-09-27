@@ -87,6 +87,28 @@ def test_structured_calls_explicitly_disable_afc():
     assert captured["config"].automatic_function_calling.disable is True
 
 
+def test_embed_returns_vectors_and_rejects_incomplete_responses():
+    class Embedding:
+        def __init__(self, values):
+            self.values = values
+
+    class Models:
+        def __init__(self, vectors):
+            self.vectors = vectors
+
+        def embed_content(self, **kwargs):
+            return type("Response", (), {"embeddings": [Embedding(v) for v in self.vectors]})()
+
+    llm = object.__new__(GeminiStructuredLLM)
+    llm._max_retries = 0
+    llm._client = type("Client", (), {"models": Models([[0.1, 0.2], [0.3, 0.4]])})()
+    assert llm.embed(["א", "ב"], "embedding-model") == [[0.1, 0.2], [0.3, 0.4]]
+
+    llm._client = type("Client", (), {"models": Models([[0.1, 0.2]])})()
+    with pytest.raises(RuntimeError, match="incomplete embedding"):
+        llm.embed(["א", "ב"], "embedding-model")
+
+
 def test_non_retryable_client_error_fails_immediately(monkeypatch):
     class Models:
         calls = 0

@@ -142,27 +142,45 @@ class GeminiStructuredLLM:
         self, prompt: str, schema: type[T], model: str,
         *, required_fields: dict[str, int] | None = None,
     ) -> T:
+        response_json_schema = _augment_required(schema.model_json_schema(), required_fields)
+
+        def call() -> T:
+            response = self._client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_json_schema=response_json_schema,
+                    # This pipeline never exposes tools to the model. Disable AFC explicitly
+                    # so the SDK does not initialize its function-calling loop or log its
+                    # default maximum-remote-calls message.
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                ),
+            )
+            if not response.text:
+                raise RuntimeError("Gemini returned an empty structured response")
+            self._log_quota(response, model)
+            return schema.model_validate_json(response.text)
+
+        return self._with_retries(call, model)
+
+    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Embed ``texts`` with an embedding model through the configured transport."""
+        def call() -> list[list[float]]:
+            response = self._client.models.embed_content(model=model, contents=texts)
+            vectors = [list(item.values or []) for item in (response.embeddings or [])]
+            if len(vectors) != len(texts) or any(not vector for vector in vectors):
+                raise RuntimeError("Gemini returned an incomplete embedding response")
+            return vectors
+
+        return self._with_retries(call, model)
+
+    def _with_retries(self, call, model: str):
         started = time.perf_counter()
         last_error: Exception | None = None
-        response_json_schema = _augment_required(schema.model_json_schema(), required_fields)
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_json_schema=response_json_schema,
-                        # This pipeline never exposes tools to the model. Disable AFC explicitly
-                        # so the SDK does not initialize its function-calling loop or log its
-                        # default maximum-remote-calls message.
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    ),
-                )
-                if not response.text:
-                    raise RuntimeError("Gemini returned an empty structured response")
-                self._log_quota(response, model)
-                return schema.model_validate_json(response.text)
+                return call()
             except Exception as exc:
                 last_error = exc
                 retryable = self._is_retryable(exc)
