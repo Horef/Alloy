@@ -36,7 +36,7 @@ from .report import write_report
 from .retrieval import CachedEmbedder, ModelEmbedder
 from .review import MergeDiagnostics, merge_review_file, write_review_file
 from .results_io import ImportDiagnostics, ResultColumns, read_premade_results
-from .contracts import model_identity, records_hash
+from .contracts import cache_identity, model_identity, records_hash
 from .topics import infer_topics, topic_inference_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -228,7 +228,7 @@ def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAn
         enabled=enabled,
         refresh=getattr(args, "refresh_cache", False),
         prune=not getattr(args, "keep_stale_cache", False),
-        model_identity=model_identity(settings),
+        model_identity=cache_identity(settings),
     )
 
 

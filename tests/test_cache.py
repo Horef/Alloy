@@ -241,6 +241,18 @@ def test_prompt_package_cache_identity_includes_profile_and_model_deployment(tmp
     assert calls == 3
 
 
+def test_cache_identity_tracks_route_not_module_contents():
+    from types import SimpleNamespace
+
+    from chatbot_eval.contracts import cache_identity
+
+    apigee = SimpleNamespace(gemini_transport="apigee", apigee_base_url="https://gw.example/ai_gateway/v1/a")
+    other = SimpleNamespace(gemini_transport="apigee", apigee_base_url="https://gw.example/ai_gateway/v1/b")
+    assert cache_identity(apigee) == cache_identity(apigee)
+    assert cache_identity(apigee) != cache_identity(other)
+    assert "supporting_implementation_sha256" not in cache_identity(apigee)
+
+
 @pytest.mark.parametrize(
     ("field", "stale_value"),
     [

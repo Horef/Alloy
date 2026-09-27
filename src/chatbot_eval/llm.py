@@ -15,6 +15,9 @@ from .response_errors import bounded_retry_delay
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
+# Bump when the request configuration or response parsing changes what a structured call returns.
+STRUCTURED_CALL_CONTRACT = 1
+
 
 class EmbeddingCountMismatch(RuntimeError):
     """The embedding model returned a different number of vectors than inputs."""
