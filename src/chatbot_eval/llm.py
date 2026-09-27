@@ -16,6 +16,10 @@ T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
+class EmbeddingCountMismatch(RuntimeError):
+    """The embedding model returned a different number of vectors than inputs."""
+
+
 class StructuredLLM(Protocol):
     def generate(
         self, prompt: str, schema: type[T], model: str,
@@ -170,12 +174,13 @@ class GeminiStructuredLLM:
 
         def call() -> list[list[float]]:
             response = self._client.models.embed_content(model=model, contents=texts, config=config)
-            vectors = [list(item.values or []) for item in (response.embeddings or [])]
-            if len(vectors) != len(texts) or any(not vector for vector in vectors):
-                raise RuntimeError("Gemini returned an incomplete embedding response")
-            return vectors
+            return [list(item.values or []) for item in (response.embeddings or [])]
 
-        return self._with_retries(call, model)
+        vectors = self._with_retries(call, model)
+        # Checked outside the retry loop: a count mismatch is deterministic model behavior, not a failure.
+        if len(vectors) != len(texts) or any(not vector for vector in vectors):
+            raise EmbeddingCountMismatch("Gemini returned an incomplete embedding response")
+        return vectors
 
     def _with_retries(self, call, model: str):
         started = time.perf_counter()

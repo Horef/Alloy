@@ -1,4 +1,5 @@
 from chatbot_eval.documents import Chunk
+from chatbot_eval.llm import EmbeddingCountMismatch
 from chatbot_eval.retrieval import BM25, CachedEmbedder, ChunkRetriever, ModelEmbedder, dedup_tokens, search_tokens
 
 
@@ -9,7 +10,7 @@ def test_model_embedder_falls_back_to_single_requests_for_aggregating_models():
         def embed(self, texts, model):
             calls.append(len(texts))
             if len(texts) > 1:
-                raise RuntimeError("Gemini returned an incomplete embedding response")
+                raise EmbeddingCountMismatch("Gemini returned an incomplete embedding response")
             return [[float(len(texts[0]))]]
 
     embedder = ModelEmbedder(Aggregating(), "gemini-embedding-2", concurrency=2)

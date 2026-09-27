@@ -22,6 +22,7 @@ from typing import Protocol, Sequence
 
 from .documents import Chunk
 from .graph import _strip_one_prefix, normalize_entity
+from .llm import EmbeddingCountMismatch
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +118,8 @@ class ModelEmbedder:
             batch = texts[start : start + self._batch_size]
             try:
                 vectors.extend(self._request(batch))
-            except RuntimeError as exc:
-                if len(batch) == 1 or "incomplete embedding" not in str(exc):
+            except EmbeddingCountMismatch:
+                if len(batch) == 1:
                     raise
                 logger.info("embedding_model_aggregates_inputs model=%s; switching to one text per request", self._model)
                 self._single = True
