@@ -52,7 +52,8 @@ verify_answer_completeness = false
 completeness_evidence_limit = 16
 # Optional embedding model (empty = off). When set, retrieval fuses BM25 with dense ranking and
 # near-duplicate questions are also caught semantically. Vectors are cached under the cache dir.
-embedding_model = ""
+embedding_model = ""                # e.g. "gemini-embedding-2" via the Apigee gateway
+embedding_dimensions = 768
 semantic_duplicate_threshold = 0.92
 # Re-check each boundary question against evidence retrieved from the whole corpus (one call each).
 verify_unanswerable = false

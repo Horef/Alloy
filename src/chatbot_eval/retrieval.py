@@ -14,7 +14,9 @@ import json
 import logging
 import math
 import re
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol, Sequence
 
@@ -81,15 +83,46 @@ class Embedder(Protocol):
 
 
 class ModelEmbedder:
-    """Adapts an LLM client exposing ``embed(texts, model)`` to the :class:`Embedder` protocol."""
+    """Adapts an LLM client exposing ``embed(texts, model)`` to the :class:`Embedder` protocol.
 
-    def __init__(self, client, model: str, batch_size: int = 100):
+    Some models (e.g. multimodal ``gemini-embedding-2``) fold every input of one request into a
+    single vector; when a batch returns the wrong count, this switches to one text per request,
+    issued concurrently.
+    """
+
+    def __init__(
+        self, client, model: str, batch_size: int = 100, concurrency: int = 4, dimensions: int | None = None,
+    ):
         self._client, self._model, self._batch_size = client, model, batch_size
+        self._concurrency = max(1, concurrency)
+        self._dimensions = dimensions
+        self._single = batch_size <= 1
+
+    def _request(self, texts: list[str]) -> list[list[float]]:
+        if self._dimensions:
+            return self._client.embed(texts, self._model, self._dimensions)
+        return self._client.embed(texts, self._model)
+
+    def _embed_singly(self, texts: list[str]) -> list[list[float]]:
+        with ThreadPoolExecutor(max_workers=min(self._concurrency, len(texts))) as pool:
+            return [vectors[0] for vectors in pool.map(lambda text: self._request([text]), texts)]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        if self._single:
+            return self._embed_singly(texts)
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self._batch_size):
-            vectors.extend(self._client.embed(texts[start : start + self._batch_size], self._model))
+            batch = texts[start : start + self._batch_size]
+            try:
+                vectors.extend(self._request(batch))
+            except RuntimeError as exc:
+                if len(batch) == 1 or "incomplete embedding" not in str(exc):
+                    raise
+                logger.info("embedding_model_aggregates_inputs model=%s; switching to one text per request", self._model)
+                self._single = True
+                return vectors + self._embed_singly(texts[start:])
         return vectors
 
 
@@ -99,6 +132,7 @@ class CachedEmbedder:
     def __init__(self, embedder: Embedder, path: Path | None):
         self._embedder, self._path = embedder, path
         self._vectors: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
         if path is not None and path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 try:
@@ -109,21 +143,27 @@ class CachedEmbedder:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         keys = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts]
-        missing = list(dict.fromkeys(key for key in keys if key not in self._vectors))
+        with self._lock:
+            missing = list(dict.fromkeys(key for key in keys if key not in self._vectors))
         if missing:
             by_key = {key: text for key, text in zip(keys, texts)}
+            # The network call runs outside the lock so concurrent callers are not serialized.
             fresh = self._embedder.embed([by_key[key] for key in missing])
             if len(fresh) != len(missing):
                 raise ValueError("embedding model returned a different number of vectors than inputs")
-            lines = []
-            for key, vector in zip(missing, fresh):
-                self._vectors[key] = list(vector)
-                lines.append(json.dumps({"sha256": key, "vector": self._vectors[key]}))
-            if self._path is not None:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                with self._path.open("a", encoding="utf-8") as handle:
-                    handle.write("\n".join(lines) + "\n")
-        return [self._vectors[key] for key in keys]
+            with self._lock:
+                lines = []
+                for key, vector in zip(missing, fresh):
+                    if key in self._vectors:
+                        continue
+                    self._vectors[key] = [round(value, 6) for value in vector]
+                    lines.append(json.dumps({"sha256": key, "vector": self._vectors[key]}))
+                if self._path is not None and lines:
+                    self._path.parent.mkdir(parents=True, exist_ok=True)
+                    with self._path.open("a", encoding="utf-8") as handle:
+                        handle.write("\n".join(lines) + "\n")
+        with self._lock:
+            return [self._vectors[key] for key in keys]
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -138,13 +178,15 @@ class ChunkRetriever:
         self._bm25 = BM25([search_tokens(chunk.text) for chunk in chunks])
         self._embedder = embedder
         self._chunk_vectors: list[list[float]] | None = None
+        self._lock = threading.Lock()
 
     def _dense_order(self, query: str) -> list[int]:
         if self._embedder is None:
             return []
         try:
-            if self._chunk_vectors is None:
-                self._chunk_vectors = self._embedder.embed([chunk.text[:_EMBED_MAX_CHARS] for chunk in self.chunks])
+            with self._lock:
+                if self._chunk_vectors is None:
+                    self._chunk_vectors = self._embedder.embed([chunk.text[:_EMBED_MAX_CHARS] for chunk in self.chunks])
             query_vector = self._embedder.embed([query[:_EMBED_MAX_CHARS]])[0]
         except Exception as exc:
             logger.warning("embedding_retrieval_failed error_type=%s; using lexical ranking only", type(exc).__name__)

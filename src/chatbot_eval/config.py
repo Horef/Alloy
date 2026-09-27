@@ -65,6 +65,7 @@ class Settings:
     prompt_instruction_profile: str = "guided"
     prompt_answer_policy: str = "balanced"
     embedding_model: str = ""
+    embedding_dimensions: int = 768
     semantic_duplicate_threshold: float = 0.92
     verify_unanswerable: bool = False
     unanswerable_evidence_limit: int = 16
@@ -78,6 +79,8 @@ class Settings:
             errors.append("generation.semantic_duplicate_threshold must be in (0, 1]")
         if self.unanswerable_evidence_limit < 1:
             errors.append("generation.unanswerable_evidence_limit must be positive")
+        if self.embedding_dimensions < 0:
+            errors.append("generation.embedding_dimensions must be non-negative (0 = model default)")
         if self.variation_batch_size < 1:
             errors.append("generation.variation_batch_size must be positive")
         if self.prompt_instruction_profile not in {"compact", "guided"}:
@@ -274,6 +277,7 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         prompt_instruction_profile=str(_get(data, "generation", "prompt_instruction_profile", "guided")),
         prompt_answer_policy=str(_get(data, "generation", "prompt_answer_policy", "balanced")),
         embedding_model=str(_get(data, "generation", "embedding_model", "")).strip(),
+        embedding_dimensions=int(_get(data, "generation", "embedding_dimensions", 768)),
         semantic_duplicate_threshold=float(_get(data, "generation", "semantic_duplicate_threshold", 0.92)),
         verify_unanswerable=_as_bool(
             _get(data, "generation", "verify_unanswerable", False), "generation.verify_unanswerable",

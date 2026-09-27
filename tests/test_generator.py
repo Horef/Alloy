@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 
 from chatbot_eval.documents import Chunk
 from chatbot_eval.generator import (
@@ -994,3 +995,62 @@ def test_semantic_duplicates_are_rejected_when_an_embedder_is_configured():
     )
     assert len(questions) == 1
     assert generator.last_generation_diagnostics["rejected"]["semantic_duplicate"] == 1
+
+
+def _topic_question(source_id: str, text: str) -> GeneratedQuestion:
+    return GeneratedQuestion(
+        question=text, expected_answer="תשובה", answerable=True, difficulty="easy", rationale="r",
+        source_ids=[source_id], reference_claims=["תשובה"],
+        supporting_quotes=[EvidenceQuote(source_id=source_id, quote="עובדה")],
+    )
+
+
+def test_concurrent_generation_matches_sequential_and_deduplicates_across_topics():
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            source = re.findall(r"\[SOURCE_ID: (.*?)\]", prompt)[0]
+            return QuestionBatch(questions=[
+                _topic_question(source, f"שאלה ייחודית על המקור {source}"),
+                _topic_question(source, "שאלה משותפת לכל הנושאים במסמכים"),
+            ])
+
+    chunks = [Chunk(f"d{i}#1", f"d{i}.md", "document", f"עובדה {i}") for i in range(4)]
+    bundle = _bundle(chunks, [(f"נושא {i}", 3, [f"d{i}#1"]) for i in range(4)])
+
+    def run(concurrency):
+        generator = SilverSetGenerator(FakeLLM(), "test")
+        questions, _ = generator.generate(chunks, GenerationOptions(
+            max_questions=8, batch_chunks=1, min_topic_questions=2, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=1, concurrency=concurrency,
+        ), bundle=bundle)
+        return questions
+
+    sequential, concurrent = run(1), run(4)
+    shared = [q for q in concurrent if "משותפת" in q.question]
+    assert len(shared) == 1
+    assert len(concurrent) == len(sequential) == 5
+    assert [q.topic for q in concurrent] == sorted((q.topic for q in concurrent), key=lambda t: int(t.split()[-1]))
+    assert {q.question for q in concurrent if q not in shared} == {q.question for q in sequential if "משותפת" not in q.question}
+
+
+def test_natural_variant_must_be_simpler_than_its_parent():
+    parent = SilverQuestion(
+        id="Q1", topic="t", expected_answer="תשובה",
+        question="מהם המסמכים שקצין נדרש להכין ולהגיש לצורך עדכון השכלה במערכות הצבאיות?",
+    )
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            return VariationBatch(variations=[
+                GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
+                                   question="אילו מסמכים קצין צריך להכין ולהגיש כדי לעדכן השכלה במערכות של הצבא?"),
+                GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
+                                   question="מה להגיש כדי שיזינו לי תואר?"),
+            ])
+
+    rejected = Counter()
+    variations = SilverSetGenerator(FakeLLM(), "m").generate_variations(
+        [parent], variation_budget=1, ambiguous_variation_share=0, max_candidate_rounds=1, rejected=rejected,
+    )
+    assert [v.question for v in variations] == ["מה להגיש כדי שיזינו לי תואר?"]
+    assert rejected["natural_not_simpler"] == 1

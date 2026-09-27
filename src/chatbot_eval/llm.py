@@ -164,10 +164,12 @@ class GeminiStructuredLLM:
 
         return self._with_retries(call, model)
 
-    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+    def embed(self, texts: list[str], model: str, dimensions: int | None = None) -> list[list[float]]:
         """Embed ``texts`` with an embedding model through the configured transport."""
+        config = types.EmbedContentConfig(output_dimensionality=dimensions) if dimensions else None
+
         def call() -> list[list[float]]:
-            response = self._client.models.embed_content(model=model, contents=texts)
+            response = self._client.models.embed_content(model=model, contents=texts, config=config)
             vectors = [list(item.values or []) for item in (response.embeddings or [])]
             if len(vectors) != len(texts) or any(not vector for vector in vectors):
                 raise RuntimeError("Gemini returned an incomplete embedding response")

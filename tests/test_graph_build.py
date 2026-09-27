@@ -202,6 +202,24 @@ def test_theme_tagging_reuses_base_signals_and_snaps_to_vocabulary():
     assert len(prompts) == 1
 
 
+def test_topic_labels_are_unique_even_when_the_model_repeats_a_name():
+    from chatbot_eval.graph import GraphNode, KnowledgeGraph
+
+    class RepeatingLLM:
+        def generate(self, prompt, schema, model):
+            return GraphTopicLabelBatch(labels=[GraphTopicLabel(name="שכר", description="d")] * 3)
+
+    graph = KnowledgeGraph([
+        GraphNode("a#1", "a.md", "d", "x", entities=["דירוג"]),
+        GraphNode("b#1", "b.md", "d", "x", entities=["מענק"]),
+        GraphNode("c#1", "c.md", "d", "x", entities=["מענק"]),
+    ], [])
+    topics = GraphBuilder(RepeatingLLM(), "m").label_topics(graph, [["a#1"], ["b#1"], ["c#1"]])
+    names = [t.name for t in topics]
+    assert len(set(names)) == 3
+    assert names[0] == "שכר" and names[1] == "שכר – מענק"
+
+
 def test_topic_labels_see_the_dominant_theme():
     prompts: list[str] = []
 

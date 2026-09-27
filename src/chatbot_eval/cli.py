@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--resume", action="store_true", help="Resume successful structured generation calls")
     generate.add_argument("--checkpoint", type=Path, help="Generation-call checkpoint; defaults inside output")
-    generate.add_argument("--max-concurrency", type=int, help="Concurrent workers for per-document knowledge-graph signal extraction; default is config value 1")
+    generate.add_argument("--max-concurrency", type=int, help="Concurrent workers for knowledge-graph extraction, per-topic question generation, and embeddings; default is config value 1")
     _add_cache_arguments(generate)
 
     generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
@@ -232,18 +232,21 @@ def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAn
     )
 
 
-def _embedder(settings, llm, cache: CorpusAnalysisCache) -> CachedEmbedder | None:
+def _embedder(settings, llm, cache: CorpusAnalysisCache, concurrency: int = 4) -> CachedEmbedder | None:
     """Optional embedding model for hybrid retrieval and semantic dedup, with a persistent store."""
     if not settings.embedding_model:
         return None
     path = None
     if cache.enabled:
         identity = hashlib.sha256(json.dumps({
-            "model": settings.embedding_model, "transport": settings.gemini_transport,
+            "model": settings.embedding_model, "dimensions": settings.embedding_dimensions,
+            "transport": settings.gemini_transport,
             "endpoint": settings.apigee_base_url if settings.gemini_transport == "apigee" else "",
         }, sort_keys=True).encode("utf-8")).hexdigest()[:16]
         path = cache.directory / "embeddings" / f"{identity}.jsonl"
-    return CachedEmbedder(ModelEmbedder(llm, settings.embedding_model), path)
+    return CachedEmbedder(ModelEmbedder(
+        llm, settings.embedding_model, concurrency=concurrency, dimensions=settings.embedding_dimensions or None,
+    ), path)
 
 
 def _analysis_cache(args, settings) -> CorpusAnalysisCache:
@@ -813,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
                 filter_closed_book_answerable=settings.filter_closed_book_answerable,
                 continue_on_call_failure=settings.continue_on_call_failure,
                 variation_batch_size=settings.variation_batch_size,
+                concurrency=settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and
             # is not part of the checkpointed generation calls: its own per-document signal cache and
@@ -838,7 +842,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             generator = SilverSetGenerator(
                 generation_llm, settings.generation_model, progress_enabled,
-                embedder=_embedder(settings, llm, cache),
+                embedder=_embedder(settings, llm, cache, concurrency=graph_concurrency),
             )
             questions, topics = generator.generate(chunks, options, bundle=bundle)
             generation_diagnostics = dict(generator.last_generation_diagnostics)

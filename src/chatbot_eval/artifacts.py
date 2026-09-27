@@ -167,6 +167,7 @@ class StructuredCallCheckpoint:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._responses: dict[str, list[dict[str, Any]]] = {}
         self._occurrences: dict[str, int] = {}
+        self._lock = threading.Lock()
         if resume:
             self._load()
         else:
@@ -191,11 +192,12 @@ class StructuredCallCheckpoint:
             "schema": schema.model_json_schema(),
             "model": model,
         })
-        occurrence = self._occurrences.get(call_key, 0)
-        self._occurrences[call_key] = occurrence + 1
-        cached = self._responses.get(call_key, [])
-        if occurrence < len(cached):
-            return schema.model_validate(cached[occurrence])
+        with self._lock:
+            occurrence = self._occurrences.get(call_key, 0)
+            self._occurrences[call_key] = occurrence + 1
+            cached = self._responses.get(call_key, [])
+            if occurrence < len(cached):
+                return schema.model_validate(cached[occurrence])
         response = self.llm.generate(prompt, schema, model)
         item = {
             "signature": self.signature,
@@ -203,8 +205,9 @@ class StructuredCallCheckpoint:
             "response": response.model_dump(mode="json"),
             "saved_at": _now(),
         }
-        _append_journal(self.path, item)
-        self._responses.setdefault(call_key, []).append(item["response"])
+        with self._lock:
+            _append_journal(self.path, item)
+            self._responses.setdefault(call_key, []).append(item["response"])
         return response
 
 

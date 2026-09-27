@@ -1,5 +1,21 @@
 from chatbot_eval.documents import Chunk
-from chatbot_eval.retrieval import BM25, CachedEmbedder, ChunkRetriever, dedup_tokens, search_tokens
+from chatbot_eval.retrieval import BM25, CachedEmbedder, ChunkRetriever, ModelEmbedder, dedup_tokens, search_tokens
+
+
+def test_model_embedder_falls_back_to_single_requests_for_aggregating_models():
+    calls: list[int] = []
+
+    class Aggregating:
+        def embed(self, texts, model):
+            calls.append(len(texts))
+            if len(texts) > 1:
+                raise RuntimeError("Gemini returned an incomplete embedding response")
+            return [[float(len(texts[0]))]]
+
+    embedder = ModelEmbedder(Aggregating(), "gemini-embedding-2", concurrency=2)
+    assert embedder.embed(["א", "בב", "גגג"]) == [[1.0], [2.0], [3.0]]
+    assert embedder.embed(["דדדד", "ה"]) == [[4.0], [1.0]]
+    assert calls.count(3) == 1 and all(n == 1 for n in calls if n != 3)
 
 
 def test_search_tokens_add_prefix_stripped_hebrew_variants():

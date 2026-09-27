@@ -187,7 +187,8 @@ log_level = "INFO"
 | `generation.max_theme_vocabulary` | `20` | Ceiling on the controlled theme-vocabulary size derived for the corpus. |
 | `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
 | `generation.completeness_evidence_limit` | `16` | Maximum candidate chunks re-selected per question during answer-completeness verification. Larger values widen the recall check at higher cost. |
-| `generation.embedding_model` | empty | Optional embedding model. When set, question-targeted retrieval fuses BM25 with dense ranking (reciprocal rank fusion) and near-duplicates are also detected semantically. Vectors are cached in `<cache>/embeddings/`. If the transport cannot embed, Alloy logs a warning and continues lexically. |
+| `generation.embedding_model` | empty | Optional embedding model. When set, question-targeted retrieval fuses BM25 with dense ranking (reciprocal rank fusion) and near-duplicates are also detected semantically. Vectors are cached in `<cache>/embeddings/`. If the transport cannot embed, Alloy logs a warning and continues lexically. Via the Apigee gateway, `gemini-embedding-2` (fast; one text per request, sent concurrently) and `gemini-embedding-001` (batched but slower) both work. |
+| `generation.embedding_dimensions` | `768` | Requested embedding size (`0` = model default). Smaller vectors keep the cache and similarity checks light with little quality loss. |
 | `generation.semantic_duplicate_threshold` | `0.92` | Cosine similarity at or above which two questions are duplicates (embedding model only). Variants are compared only with other variants. |
 | `generation.verify_unanswerable` | `false` | Re-check each boundary candidate against evidence retrieved from the whole corpus and reject it when that evidence answers it. One extra call per boundary candidate. |
 | `generation.unanswerable_evidence_limit` | `16` | Chunks retrieved per boundary candidate for that check. |
@@ -212,7 +213,7 @@ log_level = "INFO"
 | `evaluation.judge_max_context_chars` | `60000` | Maximum retrieved-context characters placed in one judge prompt, with the same bounded truncation metadata. |
 | `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
 | `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for direct and Apigee Gemini SDK requests. |
-| `evaluation.max_concurrency` | `1` | Chatbot/judge workers. Keep `1` for session-sensitive endpoints; values above `1` are opt-in. |
+| `evaluation.max_concurrency` | `1` | Chatbot/judge workers. Keep `1` for session-sensitive endpoints; values above `1` are opt-in. For `generate`, the same value (or `--max-concurrency`) sets graph-extraction workers, concurrent topic workers for question and boundary generation, and embedding requests; `1` keeps generation fully sequential and reproducible. |
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
@@ -381,7 +382,7 @@ evidence but changes the behavior expected from the chatbot.
 | `question_form` | Meaning | `expected_behavior` |
 |---|---|---|
 | `canonical` | Clean, explicit review question generated directly from evidence. | `answer` for supported questions, `abstain` for boundary questions. |
-| `natural_user` | How a real user actually asks: first-person, everyday words, common shorthand, and deliberately spanning a range of specificity. It may drop expert discriminators the canonical question spells out (specific level numbers, named categories) as long as the parent reference answer is still a correct response. | `answer`; the parent reference answer is reused. |
+| `natural_user` | How a real soldier types into a chat box: short (usually 4-10 words, about a third of the canonical length), first person or a situational opener, everyday words instead of official terms, one recognizable anchor term, and only the main part of a multi-part question. It may drop expert discriminators the canonical question spells out as long as the parent reference answer is still the natural, correct response. A rewrite that is not noticeably shorter than a non-trivial parent is rejected (`natural_not_simpler`). | `answer`; the parent reference answer is reused. |
 | `ambiguous` (`must_clarify`) | Plausible request missing a material discriminator, where a direct single-interpretation answer could be materially wrong or harmful. | `clarify`; `expected_answer` holds the ideal focused follow-up (only clarifying succeeds). |
 | `ambiguous` (`answer_or_clarify`) | Plausible request missing a discriminator, but where the interpretations are all safe to present together, so a comprehensive answer covering every interpretation is just as good as clarifying. | `answer` against the parent's comprehensive reference, **and** a clarifying question is accepted too (`clarification_acceptable=true`; the focused follow-up is kept in `acceptable_clarification`). |
 

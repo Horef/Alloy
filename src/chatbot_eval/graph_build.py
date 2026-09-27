@@ -314,13 +314,24 @@ class GraphBuilder:
         except Exception:
             logger.exception("graph_topic_labeling_failed cluster_count=%d", len(clusters))
         topics: list[GraphTopic] = []
+        used_names: set[str] = set()
         for index, node_ids in enumerate(clusters):
+            signature = signatures[index]
             if index < len(labels) and labels[index].name.strip():
                 name, description = labels[index].name.strip(), labels[index].description.strip()
             else:
-                signature = signatures[index]
                 fallback = signature["entities"][:2] or signature["keyphrases"][:2] or [f"נושא {index + 1}"]
                 name, description = " / ".join(fallback), ""
+            # Topic names key quotas and diagnostics, so two clusters must never share one.
+            if name in used_names:
+                anchor = next((term for term in signature["entities"] + signature["keyphrases"] if term not in name), "")
+                candidate = f"{name} – {anchor}" if anchor else name
+                suffix = 2
+                while candidate in used_names:
+                    candidate = f"{name} ({suffix})"
+                    suffix += 1
+                name = candidate
+            used_names.add(name)
             topics.append(GraphTopic(
                 name=name, description=description,
                 importance=cluster_importance(len(node_ids), total_nodes),
