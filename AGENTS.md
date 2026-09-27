@@ -19,7 +19,9 @@ and judges internal chatbots against them. See [README.md](README.md) for workfl
   (`fix(generation): …`, `feat(retrieval): …`, `docs: …`, `test: …`, `chore: …`) with a short body
   explaining why.
 - Before committing: full test suite green and `git diff --check` clean.
-- After committing, push: `git push origin main`.
+- After committing, push: `git push origin main`. The SSH key may prompt for its passphrase; run the
+  push unpiped so the prompt is visible and let the user type it. Never ask for, echo, or store the
+  passphrase. If the user is unavailable, leave the commits local and say so.
 - Never force-push, rewrite published history, amend pushed commits, or push the local
   `backup/*` branches (they contain purged internal files). Ask the user first for anything destructive.
 
