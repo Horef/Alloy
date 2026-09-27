@@ -12,3 +12,8 @@ keva/
 config.toml
 .DS_Store
 .chatbot_eval_cache/
+# Source corpora and evaluation artifacts may contain internal documents; never commit them.
+knowledge_base/
+*.xlsx
+*.pdf
+*.docx
