@@ -262,6 +262,7 @@ class CorpusAnalysisCache:
         extract: Callable[[str, list[Chunk]], list[NodeSignals]],
         max_concurrency: int = 1,
         theme_signature: str = "",
+        document_key_extra: dict[str, str] | None = None,
     ) -> dict[str, NodeSignals]:
         """Return per-chunk signals, extracting only documents whose content changed.
 
@@ -291,6 +292,7 @@ class CorpusAnalysisCache:
                 "model": model, "model_identity": self.model_identity,
                 "transport": transport, "batch_chunks": batch_chunks,
                 "theme_signature": theme_signature,
+                **({"extra": document_key_extra.get(document, "")} if document_key_extra else {}),
             })
             keys[document] = key
             self._track("node_signals", key)

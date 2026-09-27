@@ -17,7 +17,10 @@ from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
 from .generator import GenerationOptions, SilverSetGenerator, merge_question_sets, reground_fingerprint
 from .graph import GraphBundle, derive_theme_clusters, derive_topic_clusters
-from .graph_build import GraphBuilder, graph_build_fingerprint, group_chunks_by_document, signals_fingerprint
+from .graph_build import (
+    GraphBuilder, graph_build_fingerprint, group_chunks_by_document, signals_fingerprint,
+    theme_tagging_fingerprint, theme_vocabulary_fingerprint,
+)
 from .history import (
     discover_previous_run, read_current_prompt, read_evaluation_insights,
     read_evaluation_contract, read_evaluation_records,
@@ -30,6 +33,7 @@ from .models import ChatbotResult, Outcome, SilverQuestion
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .prompt_policy import POLICY_VERSION
 from .report import write_report
+from .retrieval import CachedEmbedder, ModelEmbedder
 from .review import MergeDiagnostics, merge_review_file, write_review_file
 from .results_io import ImportDiagnostics, ResultColumns, read_premade_results
 from .contracts import model_identity, records_hash
@@ -80,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument(
         "--merge-into", type=Path,
-        help="Existing silver CSV/JSONL to append the newly generated questions onto (kept verbatim, near-duplicates dropped, stable IDs recomputed). Ideal with --topic to add a focused subset.",
+        help="Existing silver CSV/JSONL to append the newly generated questions onto (existing questions and IDs kept verbatim, near-duplicates and their orphaned variants dropped). Ideal with --topic to add a focused subset.",
     )
     generate.add_argument("--resume", action="store_true", help="Resume successful structured generation calls")
     generate.add_argument("--checkpoint", type=Path, help="Generation-call checkpoint; defaults inside output")
@@ -211,21 +215,35 @@ def _add_cache_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAnalysisCache:
-    if args.cache_dir is not None:
+    if getattr(args, "cache_dir", None) is not None:
         directory = args.cache_dir
     else:
         configured = Path(settings.cache_directory)
         directory = configured if configured.is_absolute() else args.config.resolve().parent / configured
-    enabled = settings.cache_enabled and not args.no_cache
+    enabled = settings.cache_enabled and not getattr(args, "no_cache", False)
     if enabled and corpus_root is not None and directory.resolve().is_relative_to(corpus_root.resolve()):
         raise ValueError("The cache directory must be outside --documents so cache files cannot become corpus inputs")
     return CorpusAnalysisCache(
         directory,
         enabled=enabled,
-        refresh=args.refresh_cache,
+        refresh=getattr(args, "refresh_cache", False),
         prune=not getattr(args, "keep_stale_cache", False),
         model_identity=model_identity(settings),
     )
+
+
+def _embedder(settings, llm, cache: CorpusAnalysisCache) -> CachedEmbedder | None:
+    """Optional embedding model for hybrid retrieval and semantic dedup, with a persistent store."""
+    if not settings.embedding_model:
+        return None
+    path = None
+    if cache.enabled:
+        identity = hashlib.sha256(json.dumps({
+            "model": settings.embedding_model, "transport": settings.gemini_transport,
+            "endpoint": settings.apigee_base_url if settings.gemini_transport == "apigee" else "",
+        }, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        path = cache.directory / "embeddings" / f"{identity}.jsonl"
+    return CachedEmbedder(ModelEmbedder(llm, settings.embedding_model), path)
 
 
 def _analysis_cache(args, settings) -> CorpusAnalysisCache:
@@ -246,43 +264,52 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
     builder = GraphBuilder(llm, settings.generation_model, progress_enabled)
     chunks_by_document = group_chunks_by_document(chunks)
 
-    # Theme layer (opt-in): theme mode implies theme extraction. Build the controlled theme
-    # vocabulary once from cheap per-document summaries, then let each chunk pick one theme from it.
+    # Theme layer: theme mode implies theme extraction. Build the controlled theme vocabulary once
+    # from per-chunk summaries, then tag each chunk with one theme in a cheap follow-up pass.
     theme_mode = settings.topic_mode == "theme"
     want_themes = theme_mode or settings.extract_themes
-    theme_vocabulary = None
-    theme_signature = ""
-    if want_themes:
-        # First get entity/keyphrase/summary signals (no theme) so we can summarize the corpus.
-        base_signals = cache.load_node_signals(
-            chunks_by_document,
-            model=settings.generation_model, transport=settings.gemini_transport,
-            batch_chunks=settings.graph_extraction_batch_chunks,
-            implementation_sha256=signals_fingerprint(),
-            extract=lambda document, doc_chunks: builder.extract_document_signals(
-                document, doc_chunks, settings.graph_extraction_batch_chunks,
-            ),
-            max_concurrency=max_concurrency,
-        )
-        summaries = [base_signals[c.id].summary for c in chunks if c.id in base_signals]
-        theme_vocabulary = cache.load_theme_vocabulary(
-            chunks, model=settings.generation_model, transport=settings.gemini_transport,
-            max_themes=settings.max_theme_vocabulary, implementation_sha256=signals_fingerprint(),
-            build=lambda: builder.build_theme_vocabulary(chunks, summaries, settings.max_theme_vocabulary),
-        )
-        theme_signature = "|".join(sorted(t.name for t in theme_vocabulary.themes))
-
-    signals = cache.load_node_signals(
+    base_signals = cache.load_node_signals(
         chunks_by_document,
         model=settings.generation_model, transport=settings.gemini_transport,
         batch_chunks=settings.graph_extraction_batch_chunks,
         implementation_sha256=signals_fingerprint(),
         extract=lambda document, doc_chunks: builder.extract_document_signals(
-            document, doc_chunks, settings.graph_extraction_batch_chunks, theme_vocabulary=theme_vocabulary,
+            document, doc_chunks, settings.graph_extraction_batch_chunks,
         ),
         max_concurrency=max_concurrency,
-        theme_signature=theme_signature,
     )
+    signals = base_signals
+    if want_themes:
+        summaries = [base_signals[c.id].summary for c in chunks if c.id in base_signals]
+        theme_vocabulary = cache.load_theme_vocabulary(
+            chunks, model=settings.generation_model, transport=settings.gemini_transport,
+            max_themes=settings.max_theme_vocabulary, implementation_sha256=theme_vocabulary_fingerprint(),
+            build=lambda: builder.build_theme_vocabulary(chunks, summaries, settings.max_theme_vocabulary),
+        )
+        if not theme_vocabulary.themes:
+            logger.warning("theme_vocabulary_empty; topics fall back to entity clustering")
+        else:
+            # Keying each document on its base signals means re-extracted signals are re-tagged.
+            base_keys = {
+                document: hashlib.sha256(json.dumps(
+                    [base_signals[c.id].model_dump(mode="json") for c in doc_chunks if c.id in base_signals],
+                    ensure_ascii=False, sort_keys=True,
+                ).encode("utf-8")).hexdigest()
+                for document, doc_chunks in chunks_by_document.items()
+            }
+            signals = cache.load_node_signals(
+                chunks_by_document,
+                model=settings.generation_model, transport=settings.gemini_transport,
+                batch_chunks=settings.graph_extraction_batch_chunks,
+                implementation_sha256=theme_tagging_fingerprint(),
+                extract=lambda document, doc_chunks: builder.assign_document_themes(
+                    document, doc_chunks, base_signals, theme_vocabulary,
+                    settings.graph_extraction_batch_chunks * 3,
+                ),
+                max_concurrency=max_concurrency,
+                theme_signature="|".join(sorted(t.name for t in theme_vocabulary.themes)),
+                document_key_extra=base_keys,
+            )
 
     def build() -> GraphBundle:
         graph = builder.assemble_graph(
@@ -614,7 +641,10 @@ def main(argv: list[str] | None = None) -> int:
                 "generation_fingerprint": graph_build_fingerprint(),
             },
         ) as manifest:
-            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+            generator = SilverSetGenerator(
+                llm, settings.generation_model, progress_enabled,
+                embedder=_embedder(settings, llm, _workflow_cache(args, settings)),
+            )
             merged, revary_diagnostics = generator.regenerate_variations(
                 questions,
                 variation_budget=args.variation_count,
@@ -622,6 +652,9 @@ def main(argv: list[str] | None = None) -> int:
                 max_candidate_rounds=settings.max_candidate_rounds,
                 excluded_questions=excluded_questions,
                 stable_question_ids=settings.stable_question_ids,
+                batch_size=settings.variation_batch_size,
+                semantic_duplicate_threshold=settings.semantic_duplicate_threshold,
+                continue_on_call_failure=settings.continue_on_call_failure,
             )
             csv_path, jsonl_path = write_questions(merged, args.output)
             manifest.complete(
@@ -662,7 +695,9 @@ def main(argv: list[str] | None = None) -> int:
             chunks, _ = cache.load_chunks(
                 args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled,
             )
-            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled)
+            generator = SilverSetGenerator(
+                llm, settings.generation_model, progress_enabled, embedder=_embedder(settings, llm, cache),
+            )
             target_ids = {q.id for q in targets}
             regrounded_count = 0
             failures: list[dict] = []
@@ -736,6 +771,10 @@ def main(argv: list[str] | None = None) -> int:
                     else args.verify_answer_completeness
                 ),
                 "max_concurrency": settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
+                "embedding_model": settings.embedding_model,
+                "verify_unanswerable": settings.verify_unanswerable,
+                "filter_closed_book_answerable": settings.filter_closed_book_answerable,
+                "continue_on_call_failure": settings.continue_on_call_failure,
                 "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
                 "resume": args.resume,
             },
@@ -768,6 +807,12 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 completeness_evidence_limit=settings.completeness_evidence_limit,
                 max_cluster_nodes=settings.max_cluster_nodes,
+                semantic_duplicate_threshold=settings.semantic_duplicate_threshold,
+                verify_unanswerable=settings.verify_unanswerable,
+                unanswerable_evidence_limit=settings.unanswerable_evidence_limit,
+                filter_closed_book_answerable=settings.filter_closed_book_answerable,
+                continue_on_call_failure=settings.continue_on_call_failure,
+                variation_batch_size=settings.variation_batch_size,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and
             # is not part of the checkpointed generation calls: its own per-document signal cache and
@@ -783,6 +828,7 @@ def main(argv: list[str] | None = None) -> int:
                 "options": options.__dict__,
                 "topics": [t.name for t in bundle.topics],
                 "model": settings.generation_model,
+                "embedding_model": settings.embedding_model,
                 "transport": settings.gemini_transport, "model_identity": model_identity(settings),
                 "implementation": graph_build_fingerprint(),
             }, ensure_ascii=False, sort_keys=True, default=list).encode("utf-8")).hexdigest()
@@ -790,7 +836,10 @@ def main(argv: list[str] | None = None) -> int:
             generation_llm = StructuredCallCheckpoint(
                 generation_checkpoint, llm, signature=generation_signature, resume=args.resume,
             )
-            generator = SilverSetGenerator(generation_llm, settings.generation_model, progress_enabled)
+            generator = SilverSetGenerator(
+                generation_llm, settings.generation_model, progress_enabled,
+                embedder=_embedder(settings, llm, cache),
+            )
             questions, topics = generator.generate(chunks, options, bundle=bundle)
             generation_diagnostics = dict(generator.last_generation_diagnostics)
             merge_diagnostics = None

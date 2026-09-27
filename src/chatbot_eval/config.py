@@ -64,9 +64,22 @@ class Settings:
     log_level: str
     prompt_instruction_profile: str = "guided"
     prompt_answer_policy: str = "balanced"
+    embedding_model: str = ""
+    semantic_duplicate_threshold: float = 0.92
+    verify_unanswerable: bool = False
+    unanswerable_evidence_limit: int = 16
+    filter_closed_book_answerable: bool = False
+    continue_on_call_failure: bool = False
+    variation_batch_size: int = 30
 
     def validate(self) -> "Settings":
         errors: list[str] = []
+        if not 0 < self.semantic_duplicate_threshold <= 1:
+            errors.append("generation.semantic_duplicate_threshold must be in (0, 1]")
+        if self.unanswerable_evidence_limit < 1:
+            errors.append("generation.unanswerable_evidence_limit must be positive")
+        if self.variation_batch_size < 1:
+            errors.append("generation.variation_batch_size must be positive")
         if self.prompt_instruction_profile not in {"compact", "guided"}:
             errors.append("generation.prompt_instruction_profile must be compact or guided")
         if self.prompt_answer_policy not in {"balanced", "conservative"}:
@@ -260,4 +273,18 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         log_level=str(_get(data, "runtime", "log_level", "INFO")),
         prompt_instruction_profile=str(_get(data, "generation", "prompt_instruction_profile", "guided")),
         prompt_answer_policy=str(_get(data, "generation", "prompt_answer_policy", "balanced")),
+        embedding_model=str(_get(data, "generation", "embedding_model", "")).strip(),
+        semantic_duplicate_threshold=float(_get(data, "generation", "semantic_duplicate_threshold", 0.92)),
+        verify_unanswerable=_as_bool(
+            _get(data, "generation", "verify_unanswerable", False), "generation.verify_unanswerable",
+        ),
+        unanswerable_evidence_limit=int(_get(data, "generation", "unanswerable_evidence_limit", 16)),
+        filter_closed_book_answerable=_as_bool(
+            _get(data, "generation", "filter_closed_book_answerable", False),
+            "generation.filter_closed_book_answerable",
+        ),
+        continue_on_call_failure=_as_bool(
+            _get(data, "generation", "continue_on_call_failure", False), "generation.continue_on_call_failure",
+        ),
+        variation_batch_size=int(_get(data, "generation", "variation_batch_size", 30)),
     ).validate()

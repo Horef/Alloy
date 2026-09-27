@@ -181,3 +181,18 @@ def test_configuration_rejects_nonpositive_theme_vocabulary(tmp_path):
     path.write_text("[generation]\nmax_theme_vocabulary = 0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="max_theme_vocabulary must be positive"):
         load_settings(path, require_api_key=False)
+
+
+def test_optional_generation_checks_default_off_and_are_validated(tmp_path):
+    default_path = tmp_path / "default.toml"
+    default_path.write_text("", encoding="utf-8")
+    settings = load_settings(default_path, require_api_key=False)
+    assert settings.embedding_model == ""
+    assert not settings.verify_unanswerable and not settings.filter_closed_book_answerable
+    assert not settings.continue_on_call_failure
+    assert settings.variation_batch_size == 30 and settings.semantic_duplicate_threshold == 0.92
+
+    bad_path = tmp_path / "bad.toml"
+    bad_path.write_text("[generation]\nsemantic_duplicate_threshold = 1.5\nvariation_batch_size = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="semantic_duplicate_threshold.*variation_batch_size"):
+        load_settings(bad_path, require_api_key=False)

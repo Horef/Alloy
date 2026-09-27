@@ -174,3 +174,44 @@ def test_failed_extraction_call_reports_incomplete_signals():
         GraphBuilder(FlakyLLM(), "m").extract_document_signals("a.md", chunks, batch_chunks=1)
     assert [s.chunk_id for s in caught.value.signals] == ["a#1", "a#2"]
     assert caught.value.signals[0].entities and not caught.value.signals[1].entities
+
+
+def test_theme_tagging_reuses_base_signals_and_snaps_to_vocabulary():
+    from chatbot_eval.models import ThemeAssignment, ThemeAssignmentBatch
+
+    prompts: list[str] = []
+
+    class TagLLM:
+        def generate(self, prompt, schema, model):
+            assert schema is ThemeAssignmentBatch
+            prompts.append(prompt)
+            return ThemeAssignmentBatch(assignments=[
+                ThemeAssignment(chunk_id="a#1", theme="שכר ותשלומים "),
+                ThemeAssignment(chunk_id="a#2", theme="נושא שהומצא"),
+            ])
+
+    vocab = ThemeVocabulary(themes=[GraphTopicLabel(name="שכר ותשלומים", description="שכר")])
+    chunks = [Chunk("a#1", "a.md", "d", "טקסט על שכר"), Chunk("a#2", "a.md", "d", "טקסט אחר")]
+    base = {
+        "a#1": NodeSignals(chunk_id="a#1", entities=["שכר"], summary="סיכום שכר"),
+        "a#2": NodeSignals(chunk_id="a#2", entities=["אחר"], summary="סיכום אחר"),
+    }
+    signals = GraphBuilder(TagLLM(), "m").assign_document_themes("a.md", chunks, base, vocab, batch_chunks=8)
+    assert [s.theme for s in signals] == ["שכר ותשלומים", ""]
+    assert signals[0].entities == ["שכר"] and "סיכום שכר" in prompts[0]
+    assert len(prompts) == 1
+
+
+def test_topic_labels_see_the_dominant_theme():
+    prompts: list[str] = []
+
+    class LabelLLM:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            return GraphTopicLabelBatch(labels=[GraphTopicLabel(name="שכר", description="d")])
+
+    from chatbot_eval.graph import GraphNode, KnowledgeGraph
+
+    graph = KnowledgeGraph([GraphNode("a#1", "a.md", "d", "x", entities=["e"], theme="שכר ותשלומים")], [])
+    GraphBuilder(LabelLLM(), "m").label_topics(graph, [["a#1"]])
+    assert "theme=שכר ותשלומים" in prompts[0]

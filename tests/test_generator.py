@@ -816,3 +816,181 @@ def test_revary_preserves_kept_ids_and_avoids_sequential_collisions():
     )
     assert len({q.id for q in merged}) == len(merged)
     assert merged[-1].id == "Q0004"
+
+
+def _boundary(question, kind="missing_detail"):
+    return GeneratedQuestion(
+        question=question, expected_answer="המידע חסר במסמכים", answerable=False, difficulty="medium",
+        rationale="גבול", source_ids=["a#1"], reference_claims=[], question_type=QuestionType.UNANSWERABLE,
+        boundary_kind=kind,
+    )
+
+
+def test_boundary_questions_record_kind_and_are_checked_against_the_whole_corpus():
+    from chatbot_eval.models import AnswerabilityCheck
+
+    checks = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is AnswerabilityCheck:
+                checks.append(prompt)
+                return AnswerabilityCheck(answerable_from_evidence="כמה מענק" in prompt)
+            if "boundary questions" in prompt:
+                return QuestionBatch(questions=[
+                    _boundary("כמה מענק חודשי מקבל חייל בודד?"),
+                    _boundary("האם מגיעה לי תוספת על כל יום שבת?", kind="false_premise"),
+                ])
+            return QuestionBatch(questions=[_candidate()])
+
+    chunks = [
+        Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם"),
+        Chunk("b#1", "b.md", "document", "מענק חודשי לחייל בודד בסך 500 שקלים"),
+    ]
+    generator = SilverSetGenerator(FakeLLM(), "test")
+    questions, _ = generator.generate(
+        chunks,
+        GenerationOptions(
+            max_questions=2, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0.5, max_candidate_rounds=1, verify_unanswerable=True,
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+
+    boundary = [q for q in questions if q.expected_behavior == ExpectedBehavior.ABSTAIN]
+    assert [q.boundary_kind for q in boundary] == ["false_premise"]
+    diagnostics = generator.last_generation_diagnostics
+    assert diagnostics["rejected"]["boundary_answerable_in_corpus"] == 1
+    assert diagnostics["accepted_by_boundary_kind"] == {"false_premise": 1}
+    assert diagnostics["boundary_evidence_scope"] == "cluster_excerpts+corpus_retrieval_check"
+    assert "b#1" in checks[0]
+
+
+def test_closed_book_filter_drops_questions_answerable_without_evidence():
+    from chatbot_eval.models import ClosedBookAnswer, ClosedBookGrade
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is ClosedBookAnswer:
+                return ClosedBookAnswer(answer="מחר" if "המדיניות" in prompt else "לא יודע")
+            if schema is ClosedBookGrade:
+                return ClosedBookGrade(claims_correctly_stated=1 if "CANDIDATE ANSWER:\nמחר" in prompt else 0)
+            return QuestionBatch(questions=[
+                _candidate(),
+                GeneratedQuestion(
+                    question="על מי חלה ההוראה?", expected_answer="על כולם", answerable=True, difficulty="easy",
+                    rationale="r", source_ids=["a#1"], reference_claims=["על כולם"],
+                    supporting_quotes=[EvidenceQuote(source_id="a#1", quote="על כולם")],
+                ),
+            ])
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    generator = SilverSetGenerator(FakeLLM(), "test")
+    questions, _ = generator.generate(
+        chunks,
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=1, filter_closed_book_answerable=True,
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+    assert [q.question for q in questions] == ["על מי חלה ההוראה?"]
+    assert generator.last_generation_diagnostics["rejected"]["answerable_without_evidence"] == 1
+
+
+def test_failed_calls_abort_by_default_and_are_reported_when_tolerated():
+    import pytest
+
+    class FailingLLM:
+        def generate(self, prompt, schema, model):
+            raise RuntimeError("gateway unavailable")
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    base = dict(max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+                unanswerable_ratio=0, max_candidate_rounds=2)
+    with pytest.raises(RuntimeError):
+        SilverSetGenerator(FailingLLM(), "test").generate(
+            chunks, GenerationOptions(**base), bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+        )
+    generator = SilverSetGenerator(FailingLLM(), "test")
+    questions, _ = generator.generate(
+        chunks, GenerationOptions(**base, continue_on_call_failure=True),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+    assert questions == []
+    assert generator.last_generation_diagnostics["rejected"]["llm_call_failed"] == 2
+
+
+def test_type_targets_relax_on_the_final_refill_round():
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            return QuestionBatch(questions=[_candidate()])
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    generator = SilverSetGenerator(FakeLLM(), "test")
+    questions, _ = generator.generate(
+        chunks,
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1, unanswerable_ratio=0,
+            max_candidate_rounds=2, question_type_targets=((QuestionType.TOPIC_INTEGRATION.value, 1.0),),
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+    assert len(questions) == 1
+    diagnostics = generator.last_generation_diagnostics
+    assert diagnostics["rejected"]["question_type_over_target"] == 1
+    assert diagnostics["events"]["question_type_target_relaxed"] == 1
+
+
+def test_variations_are_generated_in_parent_batches():
+    prompts = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            parent = re.findall(r'"id": "(Q\d)"', prompt)[0]
+            return VariationBatch(variations=[GeneratedVariation(
+                source_question_id=parent, question=f"ניסוח טבעי ושונה לגמרי עבור {parent}",
+                question_form="natural_user", rationale="r",
+            )])
+
+    parents = [
+        SilverQuestion(id=f"Q{i}", topic="t", question=f"שאלה קנונית מספר {i}", expected_answer="תשובה")
+        for i in (1, 2, 3)
+    ]
+    variations = SilverSetGenerator(FakeLLM(), "m").generate_variations(
+        parents, variation_budget=2, ambiguous_variation_share=0, max_candidate_rounds=1, batch_size=2,
+    )
+    assert len(prompts) == 2
+    assert '"Q3"' not in prompts[0] and '"Q3"' in prompts[1]
+    assert [v.parent_question_id for v in variations] == ["Q1", "Q3"]
+
+
+def test_semantic_duplicates_are_rejected_when_an_embedder_is_configured():
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            return QuestionBatch(questions=[
+                _candidate(),
+                GeneratedQuestion(
+                    question="מתי נכנס לתוקף הנוהל?", expected_answer="מחר", answerable=True, difficulty="easy",
+                    rationale="r", source_ids=["a#1"], reference_claims=["מחר"],
+                    supporting_quotes=[EvidenceQuote(source_id="a#1", quote="חלה מחר")],
+                ),
+            ])
+
+    class SameVector:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    generator = SilverSetGenerator(FakeLLM(), "test", embedder=SameVector())
+    questions, _ = generator.generate(
+        chunks,
+        GenerationOptions(
+            max_questions=2, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=1,
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+    assert len(questions) == 1
+    assert generator.last_generation_diagnostics["rejected"]["semantic_duplicate"] == 1

@@ -19,6 +19,7 @@ QUESTION_COLUMNS = [
     "question_form", "expected_behavior", "parent_question_id",
     "rationale", "reference_claims", "source_ids", "source_files", "source_locations", "source_excerpts", "supporting_quotes",
     "review_status", "reviewer_notes", "sources_json", "csv_escape_version",
+    "clarification_acceptable", "acceptable_clarification", "boundary_kind",
 ]
 
 
@@ -97,6 +98,9 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
                     [quote.model_dump() for quote in q.supporting_quotes], ensure_ascii=False,
                 ),
                 "review_status": q.review_status, "reviewer_notes": q.reviewer_notes,
+                "clarification_acceptable": str(q.clarification_acceptable).lower(),
+                "acceptable_clarification": q.acceptable_clarification,
+                "boundary_kind": q.boundary_kind,
             }))
         for q in items:
             jsonl_handle.write(q.model_dump_json() + "\n")

@@ -36,6 +36,24 @@ def test_question_csv_round_trip(tmp_path):
     assert loaded[0].parent_question_id == "Q0000"
 
 
+def test_question_csv_preserves_clarification_acceptance_and_boundary_kind(tmp_path):
+    answer_or_clarify = SilverQuestion(
+        id="V1", topic="t", question="מה התנאים?", expected_answer="תנאים לכל סוג", reference_claims=["תנאים"],
+        question_form=QuestionForm.AMBIGUOUS, parent_question_id="Q1",
+        clarification_acceptable=True, acceptable_clarification="לאיזה סוג הכוונה?",
+    )
+    boundary = SilverQuestion(
+        id="U1", topic="t", question="האם יש תוספת שבת?", expected_answer="לא מופיע", answerable=False,
+        expected_behavior=ExpectedBehavior.ABSTAIN, question_type=QuestionType.UNANSWERABLE,
+        boundary_kind="false_premise",
+    )
+    csv_path, _ = write_questions([answer_or_clarify, boundary], tmp_path)
+    loaded = {q.id: q for q in read_questions(csv_path)}
+    assert loaded["V1"].clarification_acceptable is True
+    assert loaded["V1"].acceptable_clarification == "לאיזה סוג הכוונה?"
+    assert loaded["U1"].boundary_kind == "false_premise"
+
+
 def test_question_csv_neutralizes_formulas_without_changing_round_trip(tmp_path):
     original = SilverQuestion(
         id="Q0001", topic="Policy", question="  =HYPERLINK(\"bad\")",

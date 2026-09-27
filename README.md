@@ -172,7 +172,7 @@ log_level = "INFO"
 | `generation.ambiguous_variation_share` | `0.33` | Fraction of the variation budget that should require clarification; valid range `[0, 1]`. The remainder is natural but answerable wording. |
 | `generation.max_candidate_rounds` | `3` | Bounded attempts to refill a quota after invalid or duplicate candidates are rejected. |
 | `generation.stable_question_ids` | `true` | Derive reproducible content IDs. Use `--sequential-ids` for legacy run-local IDs. |
-| `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Values must sum to 1. |
+| `generation.question_type_targets` | empty/best effort | Target proportions for answerable generated types. Unsupported document-wide or cross-document allocations are redistributed for the current corpus. Targets are enforced until the final refill round of each evidence window, where an over-target type is accepted (counted as `events.question_type_target_relaxed`) so a window that cannot supply the remaining types still fills its quota. Values must sum to 1. |
 | `generation.min_topic_questions` | `1` | Initial minimum allocation for represented topics while budget is available. |
 | `generation.max_topic_share` | `0.35` | Approximate maximum share assigned to one topic. |
 | `generation.graph_extraction_batch_chunks` | `8` | Chunks per knowledge-graph signal-extraction call. |
@@ -182,11 +182,18 @@ log_level = "INFO"
 | `generation.max_cluster_nodes` | `12` | Maximum graph nodes assembled as evidence for one topic's question batch. |
 | `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
 | `generation.max_cluster_size` | `40` | Clusters larger than this are split by weakest-edge removal so no single topic dominates. |
-| `generation.topic_mode` | `theme` | How topics are formed. `theme` (default) tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. `entity` clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin themes. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and re-extracts node signals once (a one-time cost). See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
+| `generation.topic_mode` | `theme` | How topics are formed. `theme` (default) tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. `entity` clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin themes. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and one cheap theme-tagging pass over chunk summaries (both cached per document). Returned themes are snapped onto the vocabulary. See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
 | `generation.extract_themes` | `false` | Tag chunks with a theme without switching clustering (useful for inspection). Implied by `topic_mode = "theme"`. |
 | `generation.max_theme_vocabulary` | `20` | Ceiling on the controlled theme-vocabulary size derived for the corpus. |
 | `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
 | `generation.completeness_evidence_limit` | `16` | Maximum candidate chunks re-selected per question during answer-completeness verification. Larger values widen the recall check at higher cost. |
+| `generation.embedding_model` | empty | Optional embedding model. When set, question-targeted retrieval fuses BM25 with dense ranking (reciprocal rank fusion) and near-duplicates are also detected semantically. Vectors are cached in `<cache>/embeddings/`. If the transport cannot embed, Alloy logs a warning and continues lexically. |
+| `generation.semantic_duplicate_threshold` | `0.92` | Cosine similarity at or above which two questions are duplicates (embedding model only). Variants are compared only with other variants. |
+| `generation.verify_unanswerable` | `false` | Re-check each boundary candidate against evidence retrieved from the whole corpus and reject it when that evidence answers it. One extra call per boundary candidate. |
+| `generation.unanswerable_evidence_limit` | `16` | Chunks retrieved per boundary candidate for that check. |
+| `generation.filter_closed_book_answerable` | `false` | Drop canonical questions whose every reference claim a model states with no evidence (general knowledge, not a test of the knowledge base). Two extra calls per canonical candidate. |
+| `generation.continue_on_call_failure` | `false` | Count a failed model call as `llm_call_failed` in the diagnostics and finish the run with a shortfall instead of aborting. The checkpoint does not record failures, so `--resume` retries them. |
+| `generation.variation_batch_size` | `30` | Canonical questions per variation-generation call; the variation budget is spread over batches. |
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
 | `generation.prompt_max_evaluation_chars` | `60000` | Maximum prior-evaluation evidence characters supplied to prompt revision. |
 | `generation.prompt_max_auxiliary_chars` | `30000` | Independent maximum for the current prompt and generated-insights context. |
@@ -282,7 +289,10 @@ Generation is staged rather than performed with one unconstrained prompt:
 11. **Remove near-duplicates**, including matches from an optional previous silver set.
 12. **Derive realistic user variations** from accepted canonical questions. Natural variants retain
     the same expected answer; deliberately ambiguous variants expect one focused follow-up question.
-13. **Generate boundary cases** using the budget reserved for unanswerable questions.
+13. **Generate boundary cases** using the budget reserved for unanswerable questions, as a mix of
+    `boundary_kind` values: `missing_detail` (in scope, answer not stated), `false_premise` (presumes
+    a rule the corpus does not establish), and `out_of_scope`. With `verify_unanswerable`, each is
+    re-checked against evidence retrieved from the whole corpus.
 14. **Assign reproducible content-derived IDs** and export for human review with
     `review_status=pending`.
 
@@ -390,7 +400,8 @@ An answerable candidate is retained only when:
   (so `ש״ח` matches `ש"ח`); a reworded quotation is still rejected;
 - every cited source has a quotation;
 - document-wide/cross-document structure matches its declared type; and
-- it is not a near-duplicate of an accepted or excluded question; and
+- it is not a near-duplicate of an accepted or excluded question (token overlap after Hebrew prefix
+  normalization, plus embedding similarity when `embedding_model` is set); and
 - it contains distinct atomic `reference_claims` for stable claim-level judging.
 
 Rejection counts are written to operational logs at `INFO` level and to the reviewable

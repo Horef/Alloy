@@ -97,6 +97,19 @@ class GraphTopicLabelBatch(BaseModel):
     labels: list[GraphTopicLabel]
 
 
+class ThemeAssignment(BaseModel):
+    chunk_id: str
+    theme: str
+
+
+class ThemeAssignmentBatch(BaseModel):
+    assignments: list[ThemeAssignment]
+
+
+# Boundary-question kinds. Empty means unspecified (legacy or model omitted it).
+BOUNDARY_KINDS = ("missing_detail", "false_premise", "out_of_scope")
+
+
 class GeneratedQuestion(BaseModel):
     question: str
     expected_answer: str
@@ -107,10 +120,28 @@ class GeneratedQuestion(BaseModel):
     question_type: QuestionType = QuestionType.BASIC_KNOWLEDGE
     reference_claims: list[str]
     supporting_quotes: list[EvidenceQuote] = Field(default_factory=list)
+    # Boundary questions only: one of BOUNDARY_KINDS.
+    boundary_kind: str = ""
 
 
 class QuestionBatch(BaseModel):
     questions: list[GeneratedQuestion]
+
+
+class AnswerabilityCheck(BaseModel):
+    """Whether corpus-wide retrieved evidence answers a proposed boundary question."""
+
+    answerable_from_evidence: bool
+    supporting_source_ids: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+
+
+class ClosedBookAnswer(BaseModel):
+    answer: str
+
+
+class ClosedBookGrade(BaseModel):
+    claims_correctly_stated: int = Field(ge=0)
 
 
 class AnswerCompletenessReview(BaseModel):
@@ -169,6 +200,7 @@ class SilverQuestion(BaseModel):
     # ``acceptable_clarification`` for reviewers. Empty/False for all other questions.
     clarification_acceptable: bool = False
     acceptable_clarification: str = ""
+    boundary_kind: str = ""
     review_status: str = "pending"
     reviewer_notes: str = ""
 

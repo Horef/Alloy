@@ -10,6 +10,46 @@ from chatbot_eval.config import load_settings
 from chatbot_eval.models import ChatbotResult, EvaluationInsights, EvaluationRecord, Outcome, SilverQuestion
 
 
+def test_theme_graph_build_tags_themes_without_reextracting_and_reuses_cache(tmp_path):
+    import re
+
+    from chatbot_eval.cache import CorpusAnalysisCache
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import (
+        GraphTopicLabel, GraphTopicLabelBatch, NodeSignals, NodeSignalsBatch,
+        ThemeAssignment, ThemeAssignmentBatch, ThemeVocabulary,
+    )
+
+    calls: list[str] = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            calls.append(schema.__name__)
+            ids = re.findall(r"\[chunk_id: (.*?)\]", prompt)
+            if schema is NodeSignalsBatch:
+                return NodeSignalsBatch(signals=[NodeSignals(chunk_id=i, entities=["e"], summary=f"s {i}") for i in ids])
+            if schema is ThemeVocabulary:
+                return ThemeVocabulary(themes=[GraphTopicLabel(name="שכר", description="d")])
+            if schema is ThemeAssignmentBatch:
+                return ThemeAssignmentBatch(assignments=[ThemeAssignment(chunk_id=i, theme="שכר") for i in ids])
+            if schema is GraphTopicLabelBatch:
+                return GraphTopicLabelBatch(labels=[GraphTopicLabel(name="שכר", description="d")])
+            raise AssertionError(schema)
+
+    config = tmp_path / "config.toml"
+    config.write_text('[generation]\ntopic_mode = "theme"\n', encoding="utf-8")
+    settings = load_settings(config, require_api_key=False)
+    chunks = [Chunk("a#1", "a.md", "d", "alpha"), Chunk("b#1", "b.md", "d", "beta")]
+
+    bundle = cli._build_graph_bundle(chunks, CorpusAnalysisCache(tmp_path / "cache"), settings, FakeLLM(), False)
+    assert {node.theme for node in bundle.graph.nodes} == {"שכר"}
+    assert calls.count("NodeSignalsBatch") == 2 and calls.count("ThemeAssignmentBatch") == 2
+
+    calls.clear()
+    cli._build_graph_bundle(chunks, CorpusAnalysisCache(tmp_path / "cache"), settings, FakeLLM(), False)
+    assert calls == []
+
+
 def test_optional_insights_returns_written_artifact(tmp_path, monkeypatch):
     expected = EvaluationInsights(
         executive_summary="סיכום", strengths=[], issues=[], methodology_note="שיטה",

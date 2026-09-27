@@ -50,6 +50,19 @@ max_theme_vocabulary = 20           # ceiling on the controlled theme vocabulary
 # selection. Costs one extra model call per answerable canonical candidate. Off by default.
 verify_answer_completeness = false
 completeness_evidence_limit = 16
+# Optional embedding model (empty = off). When set, retrieval fuses BM25 with dense ranking and
+# near-duplicate questions are also caught semantically. Vectors are cached under the cache dir.
+embedding_model = ""
+semantic_duplicate_threshold = 0.92
+# Re-check each boundary question against evidence retrieved from the whole corpus (one call each).
+verify_unanswerable = false
+unanswerable_evidence_limit = 16
+# Drop canonical questions a model answers fully without any evidence (two calls each).
+filter_closed_book_answerable = false
+# Record failed model calls as shortfalls and finish the run instead of aborting (then --resume later).
+continue_on_call_failure = false
+# Canonical questions sent per variation-generation call.
+variation_batch_size = 30
 # Independent prompt-generation budgets keep large corpora and prior runs from creating unbounded calls.
 prompt_max_document_chars = 100000
 prompt_max_evaluation_chars = 60000

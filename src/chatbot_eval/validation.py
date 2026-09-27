@@ -55,6 +55,7 @@ def normalize_question_payload(payload: dict[str, Any]) -> dict[str, Any]:
     behavior = data.get("expected_behavior")
     default_answerable = behavior != ExpectedBehavior.ABSTAIN
     data["answerable"] = parse_bool(data.get("answerable"), default_answerable)
+    data["clarification_acceptable"] = parse_bool(data.get("clarification_acceptable"), False)
     data["expected_behavior"] = behavior or ("answer" if data["answerable"] else "abstain")
     data["question_form"] = data.get("question_form") or ("ambiguous" if data["expected_behavior"] == "clarify" else "canonical")
     for name in ("reference_claims", "supporting_quotes", "sources"):
