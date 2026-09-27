@@ -43,6 +43,15 @@ _GERSHAYIM = re.compile(r"[\"'\u05F3\u05F4\u2018\u2019\u201C\u201D`]")
 _NON_WORD = re.compile(r"[^\w\u0590-\u05FF]+", re.UNICODE)
 
 
+class IncompleteExtraction(Exception):
+    """Signal extraction degraded after a model-call failure; ``signals`` are usable but must not be cached."""
+
+    def __init__(self, signals: list, failed_batches: int):
+        super().__init__(f"{failed_batches} signal-extraction batch(es) failed")
+        self.signals = signals
+        self.failed_batches = failed_batches
+
+
 def normalize_entity(surface: str) -> str:
     """Canonicalize an entity/keyphrase surface form losslessly for tolerant matching.
 
@@ -326,6 +335,11 @@ def _split_oversized(cluster: list[str], edges: list[GraphEdge], max_size: int) 
     internal = [e for e in edges if e.source_id in members and e.target_id in members]
     if not internal:
         return [cluster]
+    # A theme group is not formed from these edges, so it may already be disconnected; split along
+    # its existing components first instead of discarding the weakest band (which shatters it).
+    parts = _components_from_edges(cluster, internal)
+    if len(parts) > 1:
+        return [piece for part in parts for piece in _split_oversized(part, edges, max_size)]
     weights = sorted({e.weight for e in internal})
     # Raise the threshold one weight band at a time; stop at the first threshold that fragments the
     # component (or leaves isolated nodes), so we split at the weakest join rather than shattering.
@@ -404,6 +418,36 @@ def _cap_topic_count(
     return head + buckets
 
 
+def _pack_theme_fragments(fragments: list[list[str]], max_size: int) -> list[list[str]]:
+    """Re-pack one oversized theme's fragments into the fewest balanced groups under ``max_size``.
+
+    Splitting a theme by entity cohesion can leave many singletons. Packing them back within the
+    theme keeps them out of the cross-theme "other" buckets and stops one large theme from consuming
+    most of the topic budget as single-chunk topics.
+    """
+    pieces = [
+        fragment[start : start + max_size]
+        for fragment in fragments
+        for start in range(0, len(fragment), max_size)
+    ]
+    total = sum(len(piece) for piece in pieces)
+    if total == 0:
+        return []
+    bins = math.ceil(total / max_size)
+    target = math.ceil(total / bins)
+    buckets: list[list[str]] = [[] for _ in range(bins)]
+    # Largest first, then by id so chunks of the same document stay adjacent in one bucket.
+    for piece in sorted(pieces, key=lambda p: (-len(p), p[0])):
+        bucket = next((b for b in buckets if len(b) + len(piece) <= target), None)
+        if bucket is None:
+            bucket = min(buckets, key=len)
+            if len(bucket) + len(piece) > max_size:
+                bucket = []
+                buckets.append(bucket)
+        bucket.extend(piece)
+    return [bucket for bucket in buckets if bucket]
+
+
 def derive_theme_clusters(
     graph: KnowledgeGraph,
     *,
@@ -440,18 +484,24 @@ def derive_theme_clusters(
     clusters = list(themed.values())
     # Cluster the unthemed / "other" nodes among themselves by entity edges so they are not one lump.
     if unthemed:
+        unthemed_ids = set(unthemed)
         other_edges = _clustering_edges(
             [e for e in graph.edges
-             if e.source_id in set(unthemed) and e.target_id in set(unthemed)],
+             if e.source_id in unthemed_ids and e.target_id in unthemed_ids],
             min_cluster_edge_weight,
         )
         clusters.extend(_components_from_edges(unthemed, other_edges))
-    # A very large theme group is split by its internal entity cohesion so it does not dominate.
+    # A very large theme group is split by its internal entity cohesion so it does not dominate,
+    # then re-packed within the theme so its fragments remain coherent, balanced topics.
     if max_cluster_size is not None:
         clustering_edges = _clustering_edges(graph.edges, min_cluster_edge_weight)
         split: list[list[str]] = []
         for cluster in clusters:
-            split.extend(_split_oversized(cluster, clustering_edges, max_cluster_size))
+            if len(cluster) <= max_cluster_size:
+                split.append(cluster)
+                continue
+            fragments = _split_oversized(cluster, clustering_edges, max_cluster_size)
+            split.extend(_pack_theme_fragments(fragments, max_cluster_size))
         clusters = split
     return _cap_topic_count(clusters, max_topics=max_topics, max_cluster_size=max_cluster_size)
 

@@ -545,3 +545,39 @@ def test_node_signals_reextract_when_theme_signature_changes(tmp_path):
     calls.clear()
     CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, theme_signature="שכר|חופשות", **kwargs)
     assert calls == []
+
+
+def test_incomplete_node_signal_extraction_is_used_but_not_cached(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.graph import IncompleteExtraction
+    from chatbot_eval.models import NodeSignals
+
+    by_doc = {"a.md": [Chunk("a#1", "a.md", "d", "alpha")]}
+    calls: list[str] = []
+
+    def failing(document, chunks):
+        calls.append(document)
+        raise IncompleteExtraction([NodeSignals(chunk_id=c.id) for c in chunks], failed_batches=1)
+
+    kwargs = dict(model="m", transport="direct", batch_chunks=8, implementation_sha256="v1")
+    signals = CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, extract=failing, **kwargs)
+    assert set(signals) == {"a#1"}
+    CorpusAnalysisCache(tmp_path, enabled=True).load_node_signals(by_doc, extract=failing, **kwargs)
+    assert calls == ["a.md", "a.md"]
+
+
+def test_empty_theme_vocabulary_is_not_cached(tmp_path):
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import ThemeVocabulary
+
+    calls = {"n": 0}
+
+    def build():
+        calls["n"] += 1
+        return ThemeVocabulary(themes=[])
+
+    chunks = [Chunk("a#1", "a.md", "d", "alpha")]
+    kwargs = dict(model="m", transport="direct", max_themes=20, implementation_sha256="v1", build=build)
+    CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(chunks, **kwargs)
+    CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(chunks, **kwargs)
+    assert calls["n"] == 2

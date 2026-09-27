@@ -266,10 +266,12 @@ Generation is staged rather than performed with one unconstrained prompt:
    or are adjacent in the same document.
 5. **Derive prevalence-weighted topic clusters** (roughly 4-12) from strong semantic edges, splitting
    oversized clusters and merging tiny ones so no single hub entity fuses the whole corpus.
-6. **Allocate quotas** by cluster importance (corpus coverage), minimum topic allocation, and maximum
-   topic share.
+6. **Allocate quotas** in proportion to cluster size (corpus coverage), within the minimum topic
+   allocation and maximum topic share.
 7. **Assemble per-question evidence** as a bounded connected cluster of graph nodes (a topic's seed
-   nodes plus their strongest neighbors), so related facts across chunks are presented together.
+   nodes plus their strongest neighbors), so related facts across chunks are presented together. A
+   topic larger than `max_cluster_nodes` is split into contiguous evidence windows that share its
+   quota, so every chunk of the topic is shown to the model rather than only its first nodes.
 8. **Generate structured candidates** containing the question, answer, difficulty, type, rationale,
    exact source IDs, and verbatim supporting quotations.
 9. **Validate provenance and enforce the configured answerable question-type targets** deterministically.
@@ -383,7 +385,9 @@ An answerable candidate is retained only when:
 
 - all source IDs exist and are unique;
 - a source and supporting quotation are present;
-- each quotation occurs verbatim in its declared source after whitespace normalization;
+- each quotation occurs verbatim in its declared source after normalizing whitespace, Markdown
+  emphasis/heading markers, invisible bidi marks, niqqud, and Hebrew/typographic quote variants
+  (so `ש״ח` matches `ש"ח`); a reworded quotation is still rejected;
 - every cited source has a quotation;
 - document-wide/cross-document structure matches its declared type; and
 - it is not a near-duplicate of an accepted or excluded question; and
@@ -406,7 +410,7 @@ Rejection counts are written to operational logs at `INFO` level and to the revi
 | `--ambiguous-variation-share R` | config value | Share of variants expected to trigger clarification; `[0, 1]`. |
 | `--sequential-ids` | off | Use legacy `Q0001`-style run-local IDs instead of content-derived stable IDs. |
 | `--verify-answer-completeness` / `--no-verify-answer-completeness` | config value | Enable or disable the per-question answer-completeness verification pass for this run, overriding `generation.verify_answer_completeness`. |
-| `--merge-into PATH` | unset | Append the newly generated questions onto an existing silver CSV/JSONL. The existing questions are kept verbatim (reviewer decisions and grounding preserved), near-duplicate new questions are dropped, and content-derived stable IDs are recomputed across the combined set. Pair with `--topic` to add a focused subset (e.g. a missing topic) to an already-reviewed set without regenerating it. |
+| `--merge-into PATH` | unset | Append the newly generated questions onto an existing silver CSV/JSONL. The existing questions are kept verbatim, including their IDs (reviewer decisions, grounding, and links to earlier evaluations preserved); near-duplicate new questions, and variants whose parent was dropped, are not added; new questions get IDs that cannot collide with existing ones. Pair with `--topic` to add a focused subset (e.g. a missing topic) to an already-reviewed set without regenerating it. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
 | `--resume` | off | Replay successful structured calls from a compatible generation checkpoint, then continue after the interrupted call. |
 | `--checkpoint PATH` | `<output>/generation_checkpoint.jsonl` | Durable structured-call journal used by generation resume. |

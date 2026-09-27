@@ -153,3 +153,24 @@ def test_extraction_without_vocabulary_leaves_theme_empty():
     chunks = [Chunk("a#1", "a.md", "d", "x")]
     signals = GraphBuilder(SignalLLM(), "m").extract_document_signals("a.md", chunks, batch_chunks=8)
     assert signals[0].theme == ""
+
+
+def test_failed_extraction_call_reports_incomplete_signals():
+    import pytest
+
+    from chatbot_eval.graph import IncompleteExtraction
+
+    class FlakyLLM:
+        calls = 0
+
+        def generate(self, prompt, schema, model):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("transient")
+            return SignalLLM().generate(prompt, schema, model)
+
+    chunks = [Chunk("a#1", "a.md", "d", "x"), Chunk("a#2", "a.md", "d", "y")]
+    with pytest.raises(IncompleteExtraction) as caught:
+        GraphBuilder(FlakyLLM(), "m").extract_document_signals("a.md", chunks, batch_chunks=1)
+    assert [s.chunk_id for s in caught.value.signals] == ["a#1", "a#2"]
+    assert caught.value.signals[0].entities and not caught.value.signals[1].entities

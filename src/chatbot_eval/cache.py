@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .artifacts import atomic_write_text, file_sha256
 from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
-from .graph import GraphBundle
+from .graph import GraphBundle, IncompleteExtraction
 from .models import (
     EvaluationInsights,
     EvaluationRecord,
@@ -240,7 +240,11 @@ class CorpusAnalysisCache:
                     logger.warning("cache_invalid kind=theme_vocabulary path=%s error=%s", path, exc)
         vocabulary = build()
         self.events["theme_vocabulary"] = "refresh" if self.enabled and self.refresh else "miss"
-        if self.enabled:
+        if not vocabulary.themes:
+            # An empty vocabulary is the builder's failure fallback; persisting it would silently
+            # disable theme mode for this corpus until a manual --refresh-cache.
+            logger.warning("theme_vocabulary_empty_not_cached key=%s", key[:12])
+        elif self.enabled:
             atomic_write_text(path, json.dumps({
                 "schema_version": CACHE_SCHEMA_VERSION, "kind": "theme_vocabulary", "key": key,
                 "theme_vocabulary": vocabulary.model_dump(mode="json"),
@@ -299,7 +303,14 @@ class CorpusAnalysisCache:
                 missed.append(document)
 
         def _extract_and_store(document: str) -> tuple[str, list[NodeSignals]]:
-            document_signals = extract(document, chunks_by_document[document])
+            try:
+                document_signals = extract(document, chunks_by_document[document])
+            except IncompleteExtraction as exc:
+                logger.warning(
+                    "node_signals_incomplete_not_cached document=%s failed_batches=%d",
+                    document, exc.failed_batches,
+                )
+                return document, exc.signals
             if self.enabled:
                 atomic_write_text(cache_paths[document], json.dumps({
                     "schema_version": CACHE_SCHEMA_VERSION, "kind": "node_signals", "key": keys[document],

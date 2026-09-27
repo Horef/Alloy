@@ -5,9 +5,11 @@ import hashlib
 import math
 import logging
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .documents import Chunk
 from .graph import (
@@ -302,15 +304,23 @@ def _relevant_chunks(topic: TopicCandidate, chunks: list[Chunk], limit: int = 10
     return result
 
 
-def allocate_quotas(topics: list[TopicCandidate], total: int, minimum: int, max_share: float) -> dict[str, int]:
+def allocate_quotas(
+    topics: list[TopicCandidate],
+    total: int,
+    minimum: int,
+    max_share: float,
+    *,
+    weight: Callable[[TopicCandidate], float] | None = None,
+) -> dict[str, int]:
     if total <= 0 or not topics:
         return {}
+    weight = weight or (lambda topic: topic.importance)
     # The share is a hard diversity cap. A requested minimum that is larger
     # than the cap is infeasible and must not silently weaken that cap; any
     # remaining capacity is reported by the caller's generation diagnostics.
     cap = max(0, math.ceil(total * max_share))
     quotas = {topic.name: 0 for topic in topics}
-    ordered = sorted(topics, key=lambda t: t.importance, reverse=True)
+    ordered = sorted(topics, key=weight, reverse=True)
     remaining = total
     for topic in ordered:
         if remaining <= 0:
@@ -322,7 +332,7 @@ def allocate_quotas(topics: list[TopicCandidate], total: int, minimum: int, max_
         eligible = [topic for topic in topics if quotas[topic.name] < cap]
         if not eligible:
             break
-        topic = max(eligible, key=lambda t: t.importance / (quotas[t.name] + 1))
+        topic = max(eligible, key=lambda t: weight(t) / (quotas[t.name] + 1))
         quotas[topic.name] += 1
         remaining -= 1
     return quotas
@@ -358,10 +368,39 @@ def _nodes_matching_topic(graph: GraphBundle | KnowledgeGraph, topic_term: str, 
 def allocate_graph_quotas(topics: list[GraphTopic], total: int, minimum: int, max_share: float) -> dict[str, int]:
     """Prevalence-weighted quota allocation for graph topics.
 
-    ``allocate_quotas`` depends only on ``.name`` and ``.importance``, both of which ``GraphTopic``
-    exposes, so this simply reuses the same importance-ordered, share-capped allocation.
+    Quotas are proportional to cluster size (corpus coverage), within the same minimum and share
+    cap as ``allocate_quotas``. The 1-5 ``importance`` bucket is too coarse for this: it gave a
+    3-chunk topic two thirds of the questions of a 14-chunk topic, oversampling small topics.
     """
-    return allocate_quotas(topics, total, minimum, max_share)
+    return allocate_quotas(topics, total, minimum, max_share, weight=lambda t: max(1, len(t.node_ids)))
+
+
+def _evidence_windows(node_ids: list[str], max_nodes: int, wanted: int) -> list[list[str]]:
+    """Split a topic's seed nodes into contiguous windows that each fit one evidence prompt.
+
+    Evidence assembly keeps at most ``max_nodes`` nodes, so a larger topic would otherwise show the
+    model only its first nodes for every question. Contiguous windows keep chunks of a document
+    together; there are never more windows than questions wanted.
+    """
+    if not node_ids:
+        return [[]]
+    count = max(1, min(wanted, math.ceil(len(node_ids) / max(1, max_nodes))))
+    size = math.ceil(len(node_ids) / count)
+    return [node_ids[start : start + size] for start in range(0, len(node_ids), size)]
+
+
+def _retry_feedback(rejections: list[str], accepted_questions: list[str]) -> str:
+    sections = []
+    if accepted_questions:
+        sections.append(
+            "ALREADY ACCEPTED for this topic (do not repeat or paraphrase them; cover other facts):\n"
+            + "\n".join(f"- {question[:180]}" for question in accepted_questions[-20:])
+        )
+    if rejections:
+        sections.append(
+            "RETRY FEEDBACK (avoid repeating these rejected candidates):\n" + "\n".join(rejections[-12:])
+        )
+    return "\n".join(sections)
 
 
 def allocate_type_targets(
@@ -425,9 +464,42 @@ def _normalized(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def _assign_stable_ids(questions: list[SilverQuestion]) -> None:
+# Formatting the model routinely drops or rewrites when it copies a quote: Markdown emphasis and
+# heading markers, invisible bidi/zero-width marks, and Hebrew/typographic quote variants.
+_QUOTE_FORMATTING = re.compile(r"\*\*|__|~~|`|(?:(?<=\s)|^)#{1,6}(?=\s)|[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_QUOTE_CHARACTERS = str.maketrans({
+    "\u05f4": '"', "\u201c": '"', "\u201d": '"', "\u201e": '"',
+    "\u05f3": "'", "\u2018": "'", "\u2019": "'", "\u05be": "-",
+})
+_NIQQUD = re.compile(r"[\u0591-\u05c7]")
+
+
+def _quote_normalized(text: str) -> str:
+    """Normalize text for quote provenance checks without accepting reworded content."""
+    text = unicodedata.normalize("NFKC", text).translate(_QUOTE_CHARACTERS)
+    text = _NIQQUD.sub("", _QUOTE_FORMATTING.sub("", text))
+    return _normalized(text)
+
+
+def _next_sequential_number(questions: list[SilverQuestion]) -> int:
+    numbers = [int(match.group(1)) for q in questions if (match := re.fullmatch(r"Q(\d+)", q.id))]
+    return max(numbers, default=0) + 1
+
+
+def _renumber_sequential(questions: list[SilverQuestion], start: int) -> None:
+    """Give ``questions`` fresh run-local IDs from ``start``, remapping parents inside the list."""
+    old_to_new = {question.id: f"Q{start + index:04d}" for index, question in enumerate(questions)}
+    for question in questions:
+        question.id = old_to_new[question.id]
+        if question.parent_question_id:
+            question.parent_question_id = old_to_new.get(question.parent_question_id, question.parent_question_id)
+
+
+def _assign_stable_ids(questions: list[SilverQuestion], reserved: set[str] | frozenset[str] = frozenset()) -> None:
+    """Assign content-derived IDs. ``reserved`` IDs belong to questions outside ``questions``
+    (e.g. kept canonical parents) that must neither collide nor be remapped."""
     old_to_new: dict[str, str] = {}
-    used: set[str] = set()
+    used: set[str] = set(reserved)
     for question in questions:
         prefix = "V" if question.parent_question_id else ("U" if not question.answerable else "Q")
         identity = json.dumps(
@@ -451,7 +523,7 @@ def _assign_stable_ids(questions: list[SilverQuestion]) -> None:
         old_parent = question.parent_question_id
         question.id = old_to_new[question.id]
         if old_parent:
-            question.parent_question_id = old_to_new[old_parent]
+            question.parent_question_id = old_to_new.get(old_parent, old_parent)
 
 
 def merge_question_sets(
@@ -463,29 +535,41 @@ def merge_question_sets(
 ) -> tuple[list[SilverQuestion], dict]:
     """Append newly generated questions onto an existing silver set.
 
-    Existing questions are kept verbatim (their reviewer decisions and grounding are preserved). A
-    new question is dropped when it near-duplicates any existing question OR any already-accepted new
-    question, so re-running a topic-scoped generation does not reintroduce questions already present.
-    When ``stable_question_ids`` is set, content-derived IDs are recomputed across the combined set,
-    which also collapses any exact content duplicates to the same ID. Returns ``(merged, diagnostics)``.
+    Existing questions are kept verbatim, including their IDs, so reviewer decisions, grounding, and
+    links to earlier evaluation runs are preserved. A new question is dropped when it near-duplicates
+    any existing question OR any already-accepted new question, so re-running a topic-scoped
+    generation does not reintroduce questions already present; a new variant whose parent was
+    dropped is dropped with it rather than left pointing at a missing parent. New questions get
+    content-derived IDs (``stable_question_ids``) or sequential IDs after the existing ones, never
+    colliding with an existing ID. Returns ``(merged, diagnostics)``.
     """
     merged = list(existing)
     existing_texts = tuple(q.question for q in existing)
-    added = 0
+    added: list[SilverQuestion] = []
+    dropped_ids: set[str] = set()
     dropped_duplicate = 0
+    dropped_orphan = 0
     for question in new:
+        if question.parent_question_id and question.parent_question_id in dropped_ids:
+            dropped_orphan += 1
+            dropped_ids.add(question.id)
+            continue
         if _is_duplicate(question.question, merged, existing_texts, threshold=duplicate_threshold):
             dropped_duplicate += 1
+            dropped_ids.add(question.id)
             continue
         merged.append(question)
-        added += 1
+        added.append(question)
     if stable_question_ids:
-        _assign_stable_ids(merged)
+        _assign_stable_ids(added, reserved={q.id for q in existing})
+    else:
+        _renumber_sequential(added, _next_sequential_number(existing))
     diagnostics = {
         "existing_kept": len(existing),
         "new_generated": len(new),
-        "new_added": added,
+        "new_added": len(added),
         "new_dropped_duplicate": dropped_duplicate,
+        "new_dropped_orphan_variant": dropped_orphan,
         "merged_total": len(merged),
     }
     return merged, diagnostics
@@ -527,7 +611,8 @@ def validate_candidate(candidate: GeneratedQuestion, chunk_by_id: dict[str, Chun
         source = chunk_by_id.get(evidence.source_id)
         if evidence.source_id not in cited or source is None:
             return [], "quote_source_mismatch"
-        if _normalized(evidence.quote) not in _normalized(source.text):
+        quote = _quote_normalized(evidence.quote)
+        if len(quote) < 3 or quote not in _quote_normalized(source.text):
             return [], "quote_not_verbatim"
     quoted_sources = {evidence.source_id for evidence in candidate.supporting_quotes}
     if not cited.issubset(quoted_sources):
@@ -612,68 +697,36 @@ class SilverSetGenerator:
         rejected = Counter()
         completeness_outcomes = Counter()
         rendered_source_ids: dict[str, list[str]] = {}
+        boundary_rendered_source_ids: dict[str, list[str]] = {}
         for topic in track(topics, enabled=self.progress_enabled, description="Generating questions", total=len(topics)):
             wanted = quotas.get(topic.name, 0)
             if wanted <= 0 or produced_answerable >= answerable_budget:
                 continue
             wanted = min(wanted, answerable_budget - produced_answerable)
-            evidence_ids = cluster_evidence_ids(graph, topic.node_ids, max_nodes=options.max_cluster_nodes)
-            relevant = _renderable_chunks([chunk_by_id[node_id] for node_id in evidence_ids if node_id in chunk_by_id])
-            rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
-            if not relevant:
-                rejected["topic_no_rendered_evidence"] += 1
-                continue
-            # A candidate is only grounded by source IDs that were actually
-            # rendered in this call, rather than by an ID present elsewhere in
-            # the corpus but hidden by the rendering limit.
-            rendered_by_id = {chunk.id: chunk for chunk in relevant}
+            windows = _evidence_windows(topic.node_ids, options.max_cluster_nodes, wanted)
             topic_produced = 0
-            retry_feedback: list[str] = []
-            for _round in range(options.max_candidate_rounds):
-                missing = wanted - topic_produced
-                if missing <= 0:
-                    break
-                batch = self.llm.generate(
-                    QUESTION_PROMPT.format(
-                        count=missing, topic=topic.name, evidence=_render_chunks(relevant),
-                        type_targets=json.dumps(dict(type_remaining), ensure_ascii=False) if type_remaining else "best effort",
-                        retry_feedback=(
-                            "RETRY FEEDBACK (avoid repeating these rejected candidates):\n"
-                            + "\n".join(retry_feedback[-12:]) if retry_feedback else ""
-                        ),
-                    ),
-                    QuestionBatch,
-                    self.model,
+            topic_questions: list[str] = []
+            topic_rendered: list[str] = rendered_source_ids.setdefault(topic.name, [])
+            for window_index, window in enumerate(windows):
+                # Spread the quota over the windows; a window's shortfall rolls over to the next.
+                window_goal = math.ceil((wanted - topic_produced) / (len(windows) - window_index))
+                evidence_ids = cluster_evidence_ids(graph, window, max_nodes=options.max_cluster_nodes)
+                relevant = _renderable_chunks([chunk_by_id[node_id] for node_id in evidence_ids if node_id in chunk_by_id])
+                topic_rendered.extend(chunk.id for chunk in relevant if chunk.id not in topic_rendered)
+                if not relevant:
+                    rejected["topic_no_rendered_evidence"] += 1
+                    continue
+                # A candidate is only grounded by source IDs that were actually
+                # rendered in this call, rather than by an ID present elsewhere in
+                # the corpus but hidden by the rendering limit.
+                rendered_by_id = {chunk.id: chunk for chunk in relevant}
+                window_produced = self._generate_answerable_window(
+                    topic, relevant, rendered_by_id, window_goal, chunks, options,
+                    accepted=accepted, topic_questions=topic_questions, type_remaining=type_remaining,
+                    rejected=rejected, completeness_outcomes=completeness_outcomes,
                 )
-                for candidate in batch.questions[:missing]:
-                    if not candidate.answerable or _is_duplicate(candidate.question, accepted, options.excluded_questions):
-                        rejected["wrong_answerability_or_duplicate"] += 1
-                        retry_feedback.append(f"wrong_answerability_or_duplicate: {candidate.question[:180]}")
-                        continue
-                    if type_remaining and type_remaining[candidate.question_type.value] <= 0:
-                        rejected["question_type_over_target"] += 1
-                        retry_feedback.append(f"question_type_over_target: {candidate.question[:180]}")
-                        continue
-                    valid, reason = validate_candidate(candidate, rendered_by_id)
-                    if reason:
-                        rejected[reason] += 1
-                        retry_feedback.append(f"{reason}: {candidate.question[:180]}")
-                        continue
-                    if options.verify_answer_completeness:
-                        candidate, valid, verdict = self.verify_candidate_completeness(
-                            candidate, valid, chunks, evidence_limit=options.completeness_evidence_limit,
-                        )
-                        completeness_outcomes[verdict.split(":", 1)[0]] += 1
-                        if verdict.startswith("rejected:"):
-                            reject_reason = verdict.split(":", 1)[1]
-                            rejected[reject_reason] += 1
-                            retry_feedback.append(f"{reject_reason}: {candidate.question[:180]}")
-                            continue
-                    accepted.append(self._to_silver(candidate, topic.name, valid, len(accepted) + 1))
-                    topic_produced += 1
-                    produced_answerable += 1
-                    if type_remaining:
-                        type_remaining[candidate.question_type.value] -= 1
+                topic_produced += window_produced
+                produced_answerable += window_produced
 
         canonical_questions = list(accepted)
         if variation_budget and canonical_questions:
@@ -698,13 +751,14 @@ class SilverSetGenerator:
                     break
                 evidence_ids = cluster_evidence_ids(graph, topic.node_ids, max_nodes=options.max_cluster_nodes)
                 relevant = _renderable_chunks([chunk_by_id[node_id] for node_id in evidence_ids if node_id in chunk_by_id])
-                rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
+                boundary_rendered_source_ids[topic.name] = [chunk.id for chunk in relevant]
                 if not relevant:
                     rejected["topic_no_rendered_evidence"] += 1
                     continue
                 rendered_by_id = {chunk.id: chunk for chunk in relevant}
                 wanted = min(per_topic, unanswerable_budget)
                 topic_produced = 0
+                topic_questions = []
                 retry_feedback = []
                 for _round in range(options.max_candidate_rounds):
                     missing = min(wanted - topic_produced, unanswerable_budget)
@@ -713,15 +767,14 @@ class SilverSetGenerator:
                     batch = self.llm.generate(
                         UNANSWERABLE_PROMPT.format(
                             count=missing, topic=topic.name, evidence=_render_chunks(relevant),
-                            retry_feedback=(
-                                "RETRY FEEDBACK (avoid repeating these rejected candidates):\n"
-                                + "\n".join(retry_feedback[-12:]) if retry_feedback else ""
-                            ),
+                            retry_feedback=_retry_feedback(retry_feedback, topic_questions),
                         ),
                         QuestionBatch,
                         self.model,
                     )
-                    for candidate in batch.questions[:missing]:
+                    for candidate in batch.questions:
+                        if topic_produced >= wanted or unanswerable_budget <= 0:
+                            break
                         if candidate.answerable or _is_duplicate(candidate.question, accepted, options.excluded_questions):
                             rejected["wrong_answerability_or_duplicate"] += 1
                             retry_feedback.append(f"wrong_answerability_or_duplicate: {candidate.question[:180]}")
@@ -732,6 +785,7 @@ class SilverSetGenerator:
                             retry_feedback.append(f"{reason}: {candidate.question[:180]}")
                             continue
                         accepted.append(self._to_silver(candidate, topic.name, valid, len(accepted) + 1))
+                        topic_questions.append(candidate.question)
                         topic_produced += 1
                         unanswerable_budget -= 1
         if rejected:
@@ -753,6 +807,7 @@ class SilverSetGenerator:
             ),
             "topic_quotas": dict(quotas),
             "rendered_source_ids": rendered_source_ids,
+            "boundary_rendered_source_ids": boundary_rendered_source_ids,
             "boundary_evidence_scope": "cluster_excerpts" if boundary_requested else "not_requested",
             "knowledge_graph": {
                 "nodes": len(graph.nodes),
@@ -772,6 +827,71 @@ class SilverSetGenerator:
         if len(accepted) < planned:
             logger.info("generation_shortfall diagnostics=%s", self.last_generation_diagnostics)
         return accepted, topics
+
+    def _generate_answerable_window(
+        self,
+        topic: GraphTopic,
+        relevant: list[Chunk],
+        rendered_by_id: dict[str, Chunk],
+        goal: int,
+        chunks: list[Chunk],
+        options: GenerationOptions,
+        *,
+        accepted: list[SilverQuestion],
+        topic_questions: list[str],
+        type_remaining: Counter,
+        rejected: Counter,
+        completeness_outcomes: Counter,
+    ) -> int:
+        """Run the bounded refill rounds for one evidence window; returns the number accepted."""
+        produced = 0
+        retry_feedback: list[str] = []
+        for _round in range(options.max_candidate_rounds):
+            missing = goal - produced
+            if missing <= 0:
+                break
+            batch = self.llm.generate(
+                QUESTION_PROMPT.format(
+                    count=missing, topic=topic.name, evidence=_render_chunks(relevant),
+                    type_targets=json.dumps(dict(type_remaining), ensure_ascii=False) if type_remaining else "best effort",
+                    retry_feedback=_retry_feedback(retry_feedback, topic_questions),
+                ),
+                QuestionBatch,
+                self.model,
+            )
+            # Every returned candidate is considered, so valid extras can replace invalid ones.
+            for candidate in batch.questions:
+                if produced >= goal:
+                    break
+                if not candidate.answerable or _is_duplicate(candidate.question, accepted, options.excluded_questions):
+                    rejected["wrong_answerability_or_duplicate"] += 1
+                    retry_feedback.append(f"wrong_answerability_or_duplicate: {candidate.question[:180]}")
+                    continue
+                if type_remaining and type_remaining[candidate.question_type.value] <= 0:
+                    rejected["question_type_over_target"] += 1
+                    retry_feedback.append(f"question_type_over_target: {candidate.question[:180]}")
+                    continue
+                valid, reason = validate_candidate(candidate, rendered_by_id)
+                if reason:
+                    rejected[reason] += 1
+                    retry_feedback.append(f"{reason}: {candidate.question[:180]}")
+                    continue
+                if options.verify_answer_completeness:
+                    candidate, valid, verdict = self.verify_candidate_completeness(
+                        candidate, valid, chunks, evidence_limit=options.completeness_evidence_limit,
+                    )
+                    completeness_outcomes[verdict.split(":", 1)[0]] += 1
+                    if verdict.startswith("rejected:"):
+                        reject_reason = verdict.split(":", 1)[1]
+                        rejected[reject_reason] += 1
+                        retry_feedback.append(f"{reject_reason}: {candidate.question[:180]}")
+                        continue
+                accepted.append(self._to_silver(candidate, topic.name, valid, len(accepted) + 1))
+                topic_questions.append(candidate.question)
+                produced += 1
+                if type_remaining:
+                    type_remaining[candidate.question_type.value] -= 1
+        return produced
 
     def verify_candidate_completeness(
         self, candidate: GeneratedQuestion, valid_chunks: list[Chunk], chunks: list[Chunk],
@@ -1022,12 +1142,14 @@ class SilverSetGenerator:
             ambiguous_variation_share=ambiguous_variation_share,
             max_candidate_rounds=max_candidate_rounds,
             excluded_questions=excluded_questions,
-            start_number=len(kept) + 1,
+            start_number=_next_sequential_number(kept),
             rejected=rejected,
         ) if budget > 0 else []
-        merged = kept + variations
+        # Kept questions retain their IDs (a reviewed or regrounded question's content no longer
+        # hashes to its ID); only the new variants get IDs, which must not collide with kept ones.
         if stable_question_ids:
-            _assign_stable_ids(merged)
+            _assign_stable_ids(variations, reserved={q.id for q in kept})
+        merged = kept + variations
         diagnostics = {
             "canonical_kept": len(kept),
             "previous_variants_dropped": len(previous_variants),

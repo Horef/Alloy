@@ -18,6 +18,7 @@ from .documents import Chunk
 from .graph import (
     GraphNode,
     GraphTopic,
+    IncompleteExtraction,
     KnowledgeGraph,
     build_edges,
     cluster_importance,
@@ -148,8 +149,10 @@ class GraphBuilder:
 
         Extraction is scoped to a single document so its result is cacheable by that document's
         content hash. Missing or malformed per-chunk results degrade gracefully to empty signals so
-        a single bad chunk never fails the whole build. When ``theme_vocabulary`` is supplied, each
-        chunk is additionally tagged with one theme chosen from that shared vocabulary.
+        a single bad chunk never fails the whole build. A failed model call still degrades to empty
+        signals, but raises :class:`IncompleteExtraction` carrying them so the caller does not
+        persist a transient failure as this document's permanent signals. When ``theme_vocabulary``
+        is supplied, each chunk is additionally tagged with one theme chosen from that vocabulary.
         """
         prompt_template = SIGNALS_PROMPT
         if theme_vocabulary and theme_vocabulary.themes:
@@ -160,6 +163,7 @@ class GraphBuilder:
             )
         by_id = {chunk.id: chunk for chunk in chunks}
         collected: dict[str, NodeSignals] = {}
+        failed_batches = 0
         starts = range(0, len(chunks), max(1, batch_chunks))
         for start in starts:
             batch = chunks[start : start + max(1, batch_chunks)]
@@ -169,14 +173,18 @@ class GraphBuilder:
             except Exception:
                 logger.exception("graph_signal_extraction_failed file=%s batch_start=%d", file, start)
                 result = NodeSignalsBatch(signals=[])
+                failed_batches += 1
             for item in result.signals:
                 if item.chunk_id in by_id and item.chunk_id not in collected:
                     collected[item.chunk_id] = item
         # Guarantee one signal record per chunk, in chunk order.
-        return [
+        signals = [
             collected.get(chunk.id, NodeSignals(chunk_id=chunk.id))
             for chunk in chunks
         ]
+        if failed_batches:
+            raise IncompleteExtraction(signals, failed_batches)
+        return signals
 
     def label_topics(self, graph: KnowledgeGraph, clusters: list[list[str]]) -> list[GraphTopic]:
         """Turn node clusters into named, importance-weighted topics.

@@ -1,3 +1,5 @@
+import re
+
 from chatbot_eval.documents import Chunk
 from chatbot_eval.generator import (
     GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate, _render_chunks,
@@ -668,3 +670,149 @@ def test_generate_completeness_pass_off_by_default_makes_no_review_call():
     )
     assert len(questions) == 1
     assert generator.last_generation_diagnostics["answer_completeness_verification"] == {"enabled": False}
+
+
+def test_quote_validation_tolerates_markdown_and_hebrew_punctuation_but_not_rewording():
+    chunks = {"a#1": Chunk("a#1", "a.md", "document", '- **חיילים נשואים:** זכאים למענק בסך 500 ש״ח\u200e בחודש.')}
+    tolerant = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote='חיילים נשואים: זכאים למענק בסך 500 ש"ח בחודש')])
+    assert validate_candidate(tolerant, chunks)[1] is None
+
+    reworded = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote="חיילים נשואים זכאים למענק של 500 ש״ח")])
+    assert validate_candidate(reworded, chunks)[1] == "quote_not_verbatim"
+
+    formatting_only = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote="**:**")])
+    assert validate_candidate(formatting_only, chunks)[1] == "quote_not_verbatim"
+
+
+def test_graph_quotas_follow_cluster_size_not_coarse_importance():
+    from chatbot_eval.generator import allocate_graph_quotas
+
+    topics = [
+        GraphTopic(name="big", description="", importance=3, node_ids=[f"b{i}" for i in range(14)]),
+        GraphTopic(name="small", description="", importance=2, node_ids=["s1", "s2", "s3"]),
+    ]
+    quotas = allocate_graph_quotas(topics, total=17, minimum=1, max_share=1)
+    assert quotas == {"big": 14, "small": 3}
+
+
+def test_large_topic_evidence_is_spread_over_windows_so_every_node_is_shown():
+    rendered_ids: list[set[str]] = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            ids = set(re.findall(r"\[SOURCE_ID: (.*?)\]", prompt))
+            rendered_ids.append(ids)
+            source = sorted(ids)[0]
+            return QuestionBatch(questions=[GeneratedQuestion(
+                question=f"שאלה על {source} בנושא ייחודי", expected_answer="תשובה", answerable=True,
+                difficulty="easy", rationale="r", source_ids=[source], reference_claims=["תשובה"],
+                supporting_quotes=[EvidenceQuote(source_id=source, quote="עובדה")],
+            )])
+
+    chunks = [Chunk(f"d{i}#1", f"d{i}.md", "document", f"עובדה מספר {i}") for i in range(6)]
+    generator = SilverSetGenerator(FakeLLM(), "test")
+    questions, _ = generator.generate(
+        chunks,
+        GenerationOptions(
+            max_questions=3, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=1, max_cluster_nodes=2,
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, [c.id for c in chunks])]),
+    )
+
+    assert len(questions) == 3
+    assert set().union(*rendered_ids) == {c.id for c in chunks}
+    assert set(generator.last_generation_diagnostics["rendered_source_ids"]["נושא"]) == {c.id for c in chunks}
+
+
+def test_retry_prompt_lists_already_accepted_questions_and_extra_candidates_are_used():
+    prompts = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                # Asked for two; the first is invalid and the extra third candidate replaces it.
+                return QuestionBatch(questions=[
+                    _candidate(quotes=[EvidenceQuote(source_id="a#1", quote="לא קיים")]),
+                    _candidate(),
+                    GeneratedQuestion(
+                        question="על מי חלה המדיניות?", expected_answer="על כולם", answerable=True,
+                        difficulty="easy", rationale="r", source_ids=["a#1"], reference_claims=["על כולם"],
+                        supporting_quotes=[EvidenceQuote(source_id="a#1", quote="על כולם")],
+                    ),
+                ])
+            raise AssertionError("quota already met; no retry expected")
+
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+    questions, _ = SilverSetGenerator(FakeLLM(), "test").generate(
+        chunks,
+        GenerationOptions(
+            max_questions=2, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=2,
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+    assert len(questions) == 2 and len(prompts) == 1
+
+    from chatbot_eval.generator import _retry_feedback
+    feedback = _retry_feedback(["quote_not_verbatim: x"], ["מה המדיניות?"])
+    assert "ALREADY ACCEPTED" in feedback and "מה המדיניות?" in feedback and "quote_not_verbatim" in feedback
+
+
+def test_merge_keeps_existing_ids_and_drops_orphaned_variants():
+    from chatbot_eval.generator import merge_question_sets
+
+    existing = [
+        SilverQuestion(id="Q0001", topic="t", question="כמה ימי חופשה מגיעים לחייל?", expected_answer="20"),
+        SilverQuestion(id="Q0002", topic="t", question="מי מאשר יציאה לחופשה?", expected_answer="המפקד"),
+    ]
+    new = [
+        SilverQuestion(id="Q0001", topic="t", question="כמה ימי חופשה מגיעים לחייל", expected_answer="20"),
+        SilverQuestion(id="Q0002", topic="שכר", question="כיצד מחושב התמריץ הכספי?", expected_answer="לפי קבוצה"),
+        SilverQuestion(id="Q0003", topic="t", question="כמה חופש יש לי?", expected_answer="20",
+                       question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0001"),
+        SilverQuestion(id="Q0004", topic="שכר", question="איך מחשבים לי את התמריץ?", expected_answer="לפי קבוצה",
+                       question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0002"),
+    ]
+    merged, diag = merge_question_sets(existing, new, stable_question_ids=False)
+
+    assert [q.id for q in merged] == ["Q0001", "Q0002", "Q0003", "Q0004"]
+    assert merged[2].question == "כיצד מחושב התמריץ הכספי?"
+    assert merged[3].parent_question_id == "Q0003"
+    assert diag["new_dropped_duplicate"] == 1 and diag["new_dropped_orphan_variant"] == 1
+
+
+def test_revary_preserves_kept_ids_and_avoids_sequential_collisions():
+    edited = SilverQuestion(id="Q-reviewed", topic="t", question="שאלה שנערכה בביקורת", expected_answer="תשובה",
+                            reference_claims=["תשובה"])
+    sequential = [
+        SilverQuestion(id="Q0001", topic="t", question="שאלה קנונית", expected_answer="תשובה", reference_claims=["תשובה"]),
+        SilverQuestion(id="Q0003", topic="t", question="שאלה גבולית", expected_answer="חסר מידע", answerable=False,
+                       expected_behavior=ExpectedBehavior.ABSTAIN, question_type=QuestionType.UNANSWERABLE),
+        SilverQuestion(id="Q0002", topic="t", question="ניסוח ישן", expected_answer="תשובה",
+                       question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0001"),
+    ]
+
+    class VarLLM:
+        def __init__(self, parent):
+            self.parent = parent
+
+        def generate(self, prompt, schema, model):
+            return VariationBatch(variations=[GeneratedVariation(
+                source_question_id=self.parent, question="ניסוח חדש וטבעי לגמרי",
+                question_form="natural_user", rationale="r",
+            )])
+
+    merged, _ = SilverSetGenerator(VarLLM("Q-reviewed"), "m").regenerate_variations(
+        [edited], variation_budget=1, ambiguous_variation_share=0, max_candidate_rounds=1,
+    )
+    assert merged[0].id == "Q-reviewed"
+    assert merged[1].parent_question_id == "Q-reviewed" and merged[1].id.startswith("V-")
+
+    merged, _ = SilverSetGenerator(VarLLM("Q0001"), "m").regenerate_variations(
+        sequential, variation_budget=1, ambiguous_variation_share=0, max_candidate_rounds=1,
+        stable_question_ids=False,
+    )
+    assert len({q.id for q in merged}) == len(merged)
+    assert merged[-1].id == "Q0004"

@@ -222,3 +222,29 @@ def test_theme_clusters_are_capped_at_max_topics():
     assert len(clusters) <= 3
     covered = sorted(n for c in clusters for n in c)
     assert covered == sorted(node.chunk_id for node in nodes)
+
+
+def test_oversized_theme_splits_by_existing_components_not_into_singletons():
+    nodes = [
+        GraphNode("g1a", "f.md", "d", "x", entities=["p", "q"], theme="שכר"),
+        GraphNode("g1b", "f.md", "d", "x", entities=["p", "q"], theme="שכר"),
+        GraphNode("g2a", "f.md", "d", "x", entities=["r", "s"], theme="שכר"),
+        GraphNode("g2b", "f.md", "d", "x", entities=["r", "s"], theme="שכר"),
+    ]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_theme_clusters(graph, max_topics=40, max_cluster_size=2)
+    assert sorted(sorted(c) for c in clusters) == [["g1a", "g1b"], ["g2a", "g2b"]]
+
+
+def test_oversized_theme_is_repacked_into_balanced_groups_within_the_theme():
+    # Ten weakly connected pay chunks and one leave chunk: the pay theme must become two balanced
+    # pay-only topics rather than singletons that get mixed with other themes.
+    nodes = [GraphNode(f"pay#{i}", f"p{i}.md", "d", "x", entities=[f"e{i}"], theme="שכר") for i in range(10)]
+    nodes.append(GraphNode("leave#1", "l.md", "d", "x", entities=["חופשה"], theme="חופשות"))
+    nodes[0].entities, nodes[1].entities = ["a", "b"], ["a", "b"]
+    graph = KnowledgeGraph(nodes, build_edges(nodes))
+    clusters = derive_theme_clusters(graph, max_topics=40, max_cluster_size=6)
+    pay = [c for c in clusters if any(n.startswith("pay") for n in c)]
+    assert sorted(len(c) for c in pay) == [5, 5]
+    assert all(all(n.startswith("pay") for n in c) for c in pay)
+    assert ["leave#1"] in clusters
