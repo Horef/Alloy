@@ -85,6 +85,30 @@ def test_review_merge_preserves_technical_columns_on_status_only_edit(tmp_path):
     assert merged_q.question_type == original.question_type
 
 
+def test_review_shows_variant_context_read_only(tmp_path):
+    original = _question(
+        "Q0002", question_form=QuestionForm.AMBIGUOUS, parent_question_id="Q0001",
+        clarification_acceptable=True, acceptable_clarification="לאיזה מסלול הכוונה?",
+        closed_book_answerable=True,
+    )
+    review_csv, md_path = write_review_file([original], tmp_path)
+
+    def tamper(rows):
+        rows[0]["parent_question_id"] = "Q9999"
+        rows[0]["acceptable_clarification"] = "אחר"
+        rows[0]["closed_book_answerable"] = "false"
+        return rows
+
+    rows = list(csv.DictReader(review_csv.open(encoding="utf-8-sig", newline="")))
+    assert rows[0]["parent_question_id"] == "Q0001" and rows[0]["closed_book_answerable"] == "true"
+    assert "לאיזה מסלול הכוונה?" in md_path.read_text(encoding="utf-8")
+    _edit_review_csv(review_csv, tamper)
+    merged = merge_review_file([original], review_csv)[0]
+    assert (merged.parent_question_id, merged.acceptable_clarification, merged.closed_book_answerable) == (
+        "Q0001", "לאיזה מסלול הכוונה?", True,
+    )
+
+
 def test_review_merge_drops_questions_deleted_by_reviewer(tmp_path):
     canonical = [_question("Q0001"), _question("Q0002"), _question("Q0003")]
     review_csv, _ = write_review_file(canonical, tmp_path)

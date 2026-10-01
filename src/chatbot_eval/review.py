@@ -51,6 +51,10 @@ REVIEW_COLUMNS = [
     "question_form",
     "expected_behavior",
     "difficulty",
+    "parent_question_id",
+    "boundary_kind",
+    "acceptable_clarification",
+    "closed_book_answerable",
     "sources_readable",
     "supporting_quotes_readable",
     "review_status",
@@ -84,6 +88,10 @@ HEBREW_COLUMN_LABELS = {
     "question_form": "צורת שאלה",
     "expected_behavior": "התנהגות מצופה",
     "difficulty": "רמת קושי",
+    "parent_question_id": "שאלת מקור (לקריאה בלבד)",
+    "boundary_kind": "סוג גבול (לקריאה בלבד)",
+    "acceptable_clarification": "שאלת הבהרה מקובלת (לקריאה בלבד)",
+    "closed_book_answerable": "ניתנת למענה ללא מסמכים (לקריאה בלבד)",
     "sources_readable": "מקורות (לקריאה בלבד)",
     "supporting_quotes_readable": "ציטוטים תומכים (לקריאה בלבד)",
     "review_status": "סטטוס סקירה",
@@ -124,6 +132,10 @@ def _review_row(question: SilverQuestion) -> dict:
         "question_form": question.question_form.value,
         "expected_behavior": question.expected_behavior.value,
         "difficulty": question.difficulty,
+        "parent_question_id": question.parent_question_id,
+        "boundary_kind": question.boundary_kind,
+        "acceptable_clarification": question.acceptable_clarification,
+        "closed_book_answerable": "true" if question.closed_book_answerable else "false",
         "sources_readable": _flatten_sources(question),
         "supporting_quotes_readable": _flatten_quotes(question),
         "review_status": question.review_status,
@@ -203,6 +215,18 @@ def _render_markdown(items: list[SilverQuestion], csv_name: str = "questions_for
             f"| {question.difficulty} | {question.review_status} |"
         )
         lines.append("")
+        if question.parent_question_id:
+            lines.append(f"**שאלת מקור:** {question.parent_question_id}")
+            lines.append("")
+        if question.boundary_kind:
+            lines.append(f"**סוג גבול:** {question.boundary_kind}")
+            lines.append("")
+        if question.acceptable_clarification:
+            lines.append(f"**שאלת הבהרה מקובלת:** {question.acceptable_clarification}")
+            lines.append("")
+        if question.closed_book_answerable:
+            lines.append("**ניתנת למענה גם ללא המסמכים (ידע כללי).**")
+            lines.append("")
         sources = _flatten_sources(question)
         if sources:
             lines.append("**מקורות:**")

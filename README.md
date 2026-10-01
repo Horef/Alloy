@@ -606,8 +606,10 @@ chatbot-eval --config config.toml review-export \
 ```
 
 `questions_for_review.csv` contains `id`, `topic`, `question`, `expected_answer`, `answerable`,
-`question_form`, `expected_behavior`, `difficulty`, two read-only reference columns
-(`sources_readable`, `supporting_quotes_readable`), and the decision columns `review_status` and
+`question_form`, `expected_behavior`, `difficulty`, read-only context columns (`parent_question_id`
+for variants, `boundary_kind` for unanswerable questions, `acceptable_clarification` for ambiguous
+variants, `closed_book_answerable`, `sources_readable`, `supporting_quotes_readable`), and the
+decision columns `review_status` and
 `reviewer_notes`. `questions_for_review.md` is a formatted, read-only view for reading only.
 
 | Option | Required/default | Meaning |
