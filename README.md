@@ -163,6 +163,7 @@ log_level = "INFO"
 | `gemini.apigee_base_url` | preprod `/ai_gateway/v1/hr` | HTTPS client-specific AI Gateway base URL. Change the environment/client segment only according to registered access. |
 | `gemini.generation_model` | `gemini-2.5-flash` | Topic-discovery and question-generation model. The example config explicitly selects another model. |
 | `gemini.judge_model` | `gemini-2.5-flash` | Answer-judging, topic-inference, and insights model. |
+| `gemini.seed` | `7` | Fixed sampling seed for every structured call, so identical prompts give identical responses (verified through the Apigee gateway). Use `-1` for fresh sampling. |
 | `generation.max_questions` | `30` | Maximum requested questions. This is a ceiling, not a guaranteed count. |
 | `generation.chunk_chars` | `12000` | Maximum normalized characters in one document chunk. The shipped example and corpus configs use `2000` (~500 tokens): smaller chunks give each document multiple knowledge-graph nodes (enabling `document_wide` questions and finer edges) and are easier for smaller models to process, while staying large enough to keep a typical rule intact. |
 | `generation.chunk_overlap_chars` | `800` | Overlap between consecutive chunks; must be smaller than `chunk_chars`. The example/corpus configs use `200` to match the smaller chunk size. |
@@ -195,6 +196,15 @@ log_level = "INFO"
 | `generation.filter_closed_book_answerable` | `false` | Drop canonical questions whose every reference claim a model states with no evidence (general knowledge, not a test of the knowledge base). Two extra calls per canonical candidate. |
 | `generation.continue_on_call_failure` | `false` | Count a failed model call as `llm_call_failed` in the diagnostics and finish the run with a shortfall instead of aborting. The checkpoint does not record failures, so `--resume` retries them. |
 | `generation.variation_batch_size` | `30` | Canonical questions per variation-generation call; the variation budget is spread over batches. |
+| `generation.questions_per_call` | `8` | Most questions requested from one model call. A larger topic quota is spread over more, smaller evidence windows instead of one oversized request. |
+| `generation.context_nodes` | `4` | Neighbor chunks shown with each focus window as context for integration questions; questions are based mainly on the window's focus chunks. |
+| `generation.closed_book_check` | `off` | `tag` marks questions a model answers fully without the documents (`closed_book_answerable=true`) and keeps them; `reject` drops them. Rejecting removes legitimate questions whose answers are also public, so `tag` is recommended. Costs two small calls per canonical candidate. |
+| `planning.coverage_target` | `0.35` | Share of each chunk's information units its questions should touch (see *Automatic sizing*). |
+| `planning.claims_per_question` | `3.2` | Average atomic claims per canonical question (measured on hova/keva). |
+| `planning.margin_of_error` | `0.20` | 95% CI half-width for each topic's accuracy; sets a per-topic minimum (25 at 0.20). `0` disables it. |
+| `planning.max_topic_coverage` | `0.6` | The per-topic minimum never asks a topic for more than this share of its information units. |
+| `planning.variation_share` | `0.5` | Natural + ambiguous variants per canonical question; `generation.ambiguous_variation_share` sets the ambiguous part and `generation.unanswerable_ratio` the boundary share of the whole set. |
+| `planning.min_boundary_per_topic` | `2` | Minimum boundary questions per topic. |
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
 | `generation.prompt_max_evaluation_chars` | `60000` | Maximum prior-evaluation evidence characters supplied to prompt revision. |
 | `generation.prompt_max_auxiliary_chars` | `30000` | Independent maximum for the current prompt and generated-insights context. |
@@ -258,6 +268,44 @@ chatbot-eval --config config.toml --no-progress --log-level INFO \
 ```
 
 ## Workflow 1: generate a silver question set
+
+### Automatic sizing (`plan`)
+
+How many questions a knowledge base needs depends on how much it says, so Alloy can measure that
+instead of guessing a `max_questions`:
+
+```bash
+chatbot-eval --config hova_config.toml plan --documents hova_knowledge_base --output outputs/plan
+# review or edit outputs/plan/generation_plan.json, then:
+chatbot-eval --config hova_config.toml generate --documents hova_knowledge_base \
+  --plan outputs/plan/generation_plan.json --output outputs/questions --max-concurrency 6
+```
+
+The planner counts *information units* per chunk (distinct factual statements: sentences, list
+items, table rows of at least four words) and builds the topic graph (cached; no question
+generation). Each topic's canonical quota is the larger of
+
+- **content**: every chunk gets at least one question, and a chunk with *u* units gets
+  `round(u × coverage_target / claims_per_question)`, so dense chunks are covered more deeply; and
+- **precision**: enough questions for a per-topic accuracy estimate within `margin_of_error`
+  (25 at ±20%), capped at what the topic's content supports (`max_topic_coverage`).
+
+Variations are `variation_share` of the canonical questions and boundary questions are
+`unanswerable_ratio` of the set, at least `min_boundary_per_topic` per topic. The plan also suggests
+topic granularity and window size for the corpus size (`plan --auto-graph` applies them). On hova
+(85 chunks, ~1,400 units) it proposes ~420 questions; on keva (240 chunks, ~4,300 units) ~830.
+
+`generation_plan.json` lists totals, per-topic `canonical` and `boundary` quotas with the rule
+that set each, and the graph settings used. Edit any number; `generate --plan` uses the per-topic
+numbers exactly and recomputes the totals from them. If documents or graph settings changed since
+planning, the topics no longer match and `generate` asks you to re-plan. `generate --auto-plan`
+plans and generates in one step and saves the plan in the output directory.
+
+### Reproducibility
+
+Given the same documents, settings, and seed, a run reproduces the same questions: model calls are
+seeded, topic and boundary workers keep independent state and are merged in topic order (so
+`--max-concurrency` does not change the result), and `--resume` replays the checkpointed responses.
 
 ### Generation logic
 

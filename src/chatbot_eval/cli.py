@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from .adapters import HttpChatbotAdapter
@@ -30,6 +31,7 @@ from .io import read_questions, write_evaluations, write_questions
 from .llm import GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, SilverQuestion
+from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .prompt_policy import POLICY_VERSION
 from .report import write_report
@@ -88,8 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--resume", action="store_true", help="Resume successful structured generation calls")
     generate.add_argument("--checkpoint", type=Path, help="Generation-call checkpoint; defaults inside output")
+    plan_source = generate.add_mutually_exclusive_group()
+    plan_source.add_argument("--plan", type=Path, help="generation_plan.json from `plan` (possibly hand-edited); sets exact budgets and per-topic quotas, overriding --max-questions and the ratios")
+    plan_source.add_argument("--auto-plan", action="store_true", help="Size the set automatically from the corpus (see `plan`) and save the plan in the output directory")
     generate.add_argument("--max-concurrency", type=int, help="Concurrent workers for knowledge-graph extraction, per-topic question generation, and embeddings; default is config value 1")
     _add_cache_arguments(generate)
+
+    plan = commands.add_parser(
+        "plan",
+        help="Measure a knowledge base and propose an editable question-set size and split (generation_plan.json)",
+    )
+    plan.add_argument("--documents", type=Path, required=True)
+    plan.add_argument("--output", type=Path, default=Path("outputs/plan"))
+    plan.add_argument("--auto-graph", action="store_true", help="Apply the suggested topic granularity and window size instead of the configured ones")
+    plan.add_argument("--max-concurrency", type=int, help="Concurrent workers for knowledge-graph extraction")
+    _add_cache_arguments(plan)
 
     generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
     generate_prompt.add_argument("--documents", type=Path, required=True)
@@ -212,6 +227,42 @@ def _add_cache_arguments(parser: argparse.ArgumentParser) -> None:
         help="Keep superseded cache entries. By default the cache is swept after a run so entries "
              "no longer matching the current corpus and settings are deleted.",
     )
+
+
+def _graph_settings(settings) -> dict:
+    return {
+        "max_cluster_size": settings.max_cluster_size, "max_graph_topics": settings.max_graph_topics,
+        "max_cluster_nodes": settings.max_cluster_nodes,
+    }
+
+
+def _make_plan(chunks, bundle: GraphBundle, settings) -> GenerationPlan:
+    graph = {"used": _graph_settings(settings), "suggested": suggest_graph_parameters(
+        len(chunks), questions_per_call=settings.questions_per_call,
+    )}
+    return build_plan(chunks, bundle.topics, settings.planning_parameters(), graph=graph)
+
+
+def _write_plan(plan: GenerationPlan, output_dir: Path) -> Path:
+    path = output_dir / "generation_plan.json"
+    atomic_write_text(path, plan.model_dump_json(indent=2) + "\n")
+    return path
+
+
+def _print_plan(plan: GenerationPlan) -> None:
+    totals = plan.totals
+    print(
+        f"Corpus: {plan.corpus['documents']} documents, {plan.corpus['chunks']} chunks, "
+        f"{plan.corpus['information_units']} information units, {plan.corpus['topics']} topics.\n"
+        f"Proposed set: {totals['total']} questions = {totals['canonical']} canonical + "
+        f"{totals['natural_user']} natural + {totals['ambiguous']} ambiguous + {totals['boundary']} boundary "
+        f"(~{totals['estimated_model_calls']} model calls with all checks)."
+    )
+    for topic in plan.topics:
+        print(f"  {topic.canonical:4d} canonical {topic.boundary:3d} boundary  {topic.chunks:3d} chunks  {topic.name}")
+    suggested = plan.graph.get("suggested", {})
+    if suggested and {k: suggested[k] for k in plan.graph["used"]} != plan.graph["used"]:
+        print(f"Suggested graph settings (use `plan --auto-graph` to apply): {suggested}")
 
 
 def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAnalysisCache:
@@ -743,7 +794,35 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("command_completed command=reground regrounded=%d output=%s", regrounded_count, args.output)
         return 0
 
+    if args.command == "plan":
+        concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
+        if concurrency < 1:
+            raise ValueError("--max-concurrency must be positive")
+        if args.auto_graph:
+            chunks_for_size, _ = _analysis_cache(args, settings).load_chunks(
+                args.documents, settings.chunk_chars, settings.chunk_overlap_chars, False,
+            )
+            suggested = suggest_graph_parameters(len(chunks_for_size), questions_per_call=settings.questions_per_call)
+            settings = replace(settings, **{key: suggested[key] for key in _graph_settings(settings)})
+        cache = _analysis_cache(args, settings)
+        with RunManifest(
+            args.output, command=args.command, settings=settings, inputs=[args.documents],
+            parameters={"auto_graph": args.auto_graph, "planning": settings.planning_parameters().__dict__},
+        ) as manifest:
+            chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, max_concurrency=concurrency)
+            generation_plan = _make_plan(chunks, bundle, settings)
+            plan_path = _write_plan(generation_plan, args.output)
+            manifest.complete(totals=generation_plan.totals, cache=cache.summary(), outputs=input_inventory([plan_path]))
+        _print_plan(generation_plan)
+        print(f"Plan: {plan_path}\nEdit per-topic numbers or totals as needed, then run: generate --plan {plan_path}")
+        return 0
+
     if args.command == "generate":
+        generation_plan = GenerationPlan.model_validate_json(args.plan.read_text(encoding="utf-8")) if args.plan else None
+        if generation_plan is not None:
+            # The plan's quotas only fit the topics its graph settings produce.
+            settings = replace(settings, **generation_plan.graph["used"])
         maximum = settings.max_questions if args.max_questions is None else args.max_questions
         if maximum < 1:
             raise ValueError("--max-questions must be positive")
@@ -819,6 +898,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue_on_call_failure=settings.continue_on_call_failure,
                 variation_batch_size=settings.variation_batch_size,
                 questions_per_call=settings.questions_per_call,
+                context_nodes=settings.context_nodes,
                 concurrency=settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and
@@ -830,9 +910,26 @@ def main(argv: list[str] | None = None) -> int:
             bundle = _build_graph_bundle(
                 chunks, cache, settings, llm, progress_enabled, max_concurrency=graph_concurrency,
             )
+            plan_path = None
+            if args.auto_plan:
+                generation_plan = _make_plan(chunks, bundle, settings)
+                plan_path = _write_plan(generation_plan, args.output)
+                _print_plan(generation_plan)
+            if generation_plan is not None:
+                if args.topic:
+                    raise ValueError("--plan/--auto-plan size the whole corpus; do not combine them with --topic")
+                budgets, topic_quotas, boundary_quotas = plan_quotas(generation_plan, bundle.topics)
+                options = replace(
+                    options, planned_budgets=budgets, topic_quotas=topic_quotas, boundary_quotas=boundary_quotas,
+                    max_cluster_nodes=settings.max_cluster_nodes,
+                )
+                manifest.data["parameters"]["plan"] = {"totals": generation_plan.totals, "source": (
+                    str(args.plan) if args.plan else "auto"
+                )}
             generation_signature = hashlib.sha256(json.dumps({
                 "chunk_key": chunk_key,
-                "options": options.__dict__,
+                # Concurrency does not change the output, so a run may resume with a different value.
+                "options": {key: value for key, value in options.__dict__.items() if key != "concurrency"},
                 "topics": [t.name for t in bundle.topics],
                 "model": settings.generation_model,
                 "embedding_model": settings.embedding_model,
@@ -864,7 +961,9 @@ def main(argv: list[str] | None = None) -> int:
                 generation_diagnostics=generation_diagnostics,
                 cache=cache.summary(),
                 resumed_generation=args.resume,
-                outputs=input_inventory([csv_path, jsonl_path, diagnostics_path, generation_checkpoint]),
+                outputs=input_inventory(
+                    [csv_path, jsonl_path, diagnostics_path, generation_checkpoint] + ([plan_path] if plan_path else []),
+                ),
             )
         if merge_diagnostics:
             print(
@@ -877,8 +976,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Generated {len(questions)} questions across {len(topics)} discovered topics.")
         print(f"Review CSV: {csv_path}\nProvenance JSONL: {jsonl_path}\nGeneration diagnostics: {diagnostics_path}")
         generated_count = merge_diagnostics["new_generated"] if merge_diagnostics else len(questions)
-        if generated_count < maximum:
-            print(f"Note: generated fewer than requested ({generated_count}/{maximum}) because unsupported or duplicate candidates were discarded.")
+        requested_total = generation_diagnostics.get("planned_total", maximum)
+        if generated_count < requested_total:
+            print(
+                f"Note: generated fewer than planned ({generated_count}/{requested_total}); "
+                "see topic_shortfalls and rejected in the generation diagnostics."
+            )
         logger.info("command_completed command=generate question_count=%d output=%s", len(questions), args.output)
         return 0
 

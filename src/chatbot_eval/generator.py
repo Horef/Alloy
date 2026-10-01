@@ -303,6 +303,8 @@ class GenerationOptions:
     concurrency: int = 1
     # Most questions requested from one model call; larger quotas are spread over more windows.
     questions_per_call: int = 8
+    # Neighbor chunks shown with each focus window as context for integration questions.
+    context_nodes: int = 4
     # "off", "tag" (mark questions a model answers fully without evidence), or "reject" them.
     closed_book_check: str = "off"
     # From a generation plan: exact (canonical, variations, boundary) budgets and per-topic quotas.
@@ -483,10 +485,10 @@ def _window_goals(windows: list[list[str]], wanted: int, weights: dict[str, floa
 
 
 def _window_evidence(
-    window: list[str], graph: KnowledgeGraph, chunk_by_id: dict[str, Chunk], max_nodes: int,
+    window: list[str], graph: KnowledgeGraph, chunk_by_id: dict[str, Chunk], context_nodes: int,
 ) -> tuple[list[Chunk], list[str]]:
-    """Rendered evidence for a focus window: its nodes first, then strongest neighbors as context."""
-    evidence_ids = cluster_evidence_ids(graph, window, max_nodes=max(max_nodes, len(window)))
+    """Rendered evidence for a focus window: its nodes first, then up to ``context_nodes`` strongest neighbors."""
+    evidence_ids = cluster_evidence_ids(graph, window, max_nodes=len(window) + max(0, context_nodes))
     relevant = _renderable_chunks([chunk_by_id[node_id] for node_id in evidence_ids if node_id in chunk_by_id])
     rendered = {chunk.id for chunk in relevant}
     return relevant, [node_id for node_id in window if node_id in rendered]
@@ -965,7 +967,7 @@ class SilverSetGenerator:
             carry = 0
             for window, goal in zip(windows, _window_goals(windows, wanted, weights)):
                 target = goal + carry
-                relevant, focus = _window_evidence(window, graph, chunk_by_id, options.max_cluster_nodes)
+                relevant, focus = _window_evidence(window, graph, chunk_by_id, options.context_nodes)
                 result.rendered.extend(chunk.id for chunk in relevant if chunk.id not in result.rendered)
                 if target <= 0:
                     continue
@@ -1184,7 +1186,7 @@ class SilverSetGenerator:
         carry = 0
         for window, goal in zip(windows, _window_goals(windows, quota, weights)):
             target = goal + carry
-            relevant, focus = _window_evidence(window, graph, chunk_by_id, options.max_cluster_nodes)
+            relevant, focus = _window_evidence(window, graph, chunk_by_id, options.context_nodes)
             result.rendered.extend(chunk.id for chunk in relevant if chunk.id not in result.rendered)
             if target <= 0:
                 continue

@@ -74,6 +74,28 @@ class Settings:
     variation_batch_size: int = 30
     questions_per_call: int = 8
     seed: int | None = 7
+    context_nodes: int = 4
+    planning_coverage_target: float = 0.35
+    planning_claims_per_question: float = 3.2
+    planning_margin_of_error: float = 0.20
+    planning_max_topic_coverage: float = 0.6
+    planning_variation_share: float = 0.5
+    planning_min_boundary_per_topic: int = 2
+
+    def planning_parameters(self):
+        from .planning import PlanningParameters
+
+        return PlanningParameters(
+            coverage_target=self.planning_coverage_target,
+            claims_per_question=self.planning_claims_per_question,
+            margin_of_error=self.planning_margin_of_error,
+            max_topic_coverage=self.planning_max_topic_coverage,
+            variation_share=self.planning_variation_share,
+            ambiguous_share=self.ambiguous_variation_share,
+            boundary_share=self.unanswerable_ratio,
+            min_boundary_per_topic=self.planning_min_boundary_per_topic,
+            questions_per_call=self.questions_per_call,
+        )
 
     def validate(self) -> "Settings":
         errors: list[str] = []
@@ -89,6 +111,16 @@ class Settings:
             errors.append("generation.closed_book_check must be off, tag, or reject")
         if not 1 <= self.questions_per_call <= 20:
             errors.append("generation.questions_per_call must be in [1, 20]")
+        if self.context_nodes < 0:
+            errors.append("generation.context_nodes must be non-negative")
+        if not 0 < self.planning_coverage_target <= 1 or not 0 < self.planning_max_topic_coverage <= 1:
+            errors.append("planning.coverage_target and planning.max_topic_coverage must be in (0, 1]")
+        if self.planning_claims_per_question <= 0:
+            errors.append("planning.claims_per_question must be positive")
+        if not 0 <= self.planning_margin_of_error < 1:
+            errors.append("planning.margin_of_error must be in [0, 1) (0 disables the per-topic floor)")
+        if self.planning_variation_share < 0 or self.planning_min_boundary_per_topic < 0:
+            errors.append("planning.variation_share and planning.min_boundary_per_topic must be non-negative")
         if self.prompt_instruction_profile not in {"compact", "guided"}:
             errors.append("generation.prompt_instruction_profile must be compact or guided")
         if self.prompt_answer_policy not in {"balanced", "conservative"}:
@@ -296,6 +328,13 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         variation_batch_size=int(_get(data, "generation", "variation_batch_size", 30)),
         questions_per_call=int(_get(data, "generation", "questions_per_call", 8)),
         seed=_seed(_get(data, "gemini", "seed", 7)),
+        context_nodes=int(_get(data, "generation", "context_nodes", 4)),
+        planning_coverage_target=float(_get(data, "planning", "coverage_target", 0.35)),
+        planning_claims_per_question=float(_get(data, "planning", "claims_per_question", 3.2)),
+        planning_margin_of_error=float(_get(data, "planning", "margin_of_error", 0.20)),
+        planning_max_topic_coverage=float(_get(data, "planning", "max_topic_coverage", 0.6)),
+        planning_variation_share=float(_get(data, "planning", "variation_share", 0.5)),
+        planning_min_boundary_per_topic=int(_get(data, "planning", "min_boundary_per_topic", 2)),
     ).validate()
 
 
