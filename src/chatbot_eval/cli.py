@@ -556,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         apigee_api_key=settings.apigee_api_key,
         apigee_base_url=settings.apigee_base_url,
         request_timeout_seconds=settings.gemini_request_timeout_seconds,
+        seed=settings.seed,
     )
     if args.command == "generate-prompt":
         profile = args.instruction_profile or settings.prompt_instruction_profile
@@ -776,7 +777,8 @@ def main(argv: list[str] | None = None) -> int:
                 "max_concurrency": settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
                 "embedding_model": settings.embedding_model,
                 "verify_unanswerable": settings.verify_unanswerable,
-                "filter_closed_book_answerable": settings.filter_closed_book_answerable,
+                "closed_book_check": settings.closed_book_check,
+                "seed": settings.seed,
                 "continue_on_call_failure": settings.continue_on_call_failure,
                 "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
                 "resume": args.resume,
@@ -813,9 +815,10 @@ def main(argv: list[str] | None = None) -> int:
                 semantic_duplicate_threshold=settings.semantic_duplicate_threshold,
                 verify_unanswerable=settings.verify_unanswerable,
                 unanswerable_evidence_limit=settings.unanswerable_evidence_limit,
-                filter_closed_book_answerable=settings.filter_closed_book_answerable,
+                closed_book_check=settings.closed_book_check,
                 continue_on_call_failure=settings.continue_on_call_failure,
                 variation_batch_size=settings.variation_batch_size,
+                questions_per_call=settings.questions_per_call,
                 concurrency=settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and
@@ -833,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
                 "topics": [t.name for t in bundle.topics],
                 "model": settings.generation_model,
                 "embedding_model": settings.embedding_model,
+                "seed": settings.seed,
                 "transport": settings.gemini_transport, "model_identity": model_identity(settings),
                 "implementation": graph_build_fingerprint(),
             }, ensure_ascii=False, sort_keys=True, default=list).encode("utf-8")).hexdigest()

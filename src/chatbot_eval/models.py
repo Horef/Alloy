@@ -201,6 +201,9 @@ class SilverQuestion(BaseModel):
     clarification_acceptable: bool = False
     acceptable_clarification: str = ""
     boundary_kind: str = ""
+    # A model answered every reference claim without the documents (general knowledge); kept, but
+    # reported separately because it says less about retrieval.
+    closed_book_answerable: bool = False
     review_status: str = "pending"
     reviewer_notes: str = ""
 

@@ -867,7 +867,7 @@ def test_boundary_questions_record_kind_and_are_checked_against_the_whole_corpus
     assert "b#1" in checks[0]
 
 
-def test_closed_book_filter_drops_questions_answerable_without_evidence():
+def test_closed_book_check_tags_or_drops_questions_answerable_without_evidence():
     from chatbot_eval.models import ClosedBookAnswer, ClosedBookGrade
 
     class FakeLLM:
@@ -891,12 +891,22 @@ def test_closed_book_filter_drops_questions_answerable_without_evidence():
         chunks,
         GenerationOptions(
             max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
-            unanswerable_ratio=0, max_candidate_rounds=1, filter_closed_book_answerable=True,
+            unanswerable_ratio=0, max_candidate_rounds=1, closed_book_check="reject",
         ),
         bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
     )
     assert [q.question for q in questions] == ["על מי חלה ההוראה?"]
     assert generator.last_generation_diagnostics["rejected"]["answerable_without_evidence"] == 1
+
+    tagged, _ = SilverSetGenerator(FakeLLM(), "test").generate(
+        chunks,
+        GenerationOptions(
+            max_questions=1, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+            unanswerable_ratio=0, max_candidate_rounds=1, closed_book_check="tag",
+        ),
+        bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+    )
+    assert [(q.question, q.closed_book_answerable) for q in tagged] == [("מה המדיניות?", True)]
 
 
 def test_failed_calls_abort_by_default_and_are_reported_when_tolerated():
@@ -1027,10 +1037,48 @@ def test_concurrent_generation_matches_sequential_and_deduplicates_across_topics
 
     sequential, concurrent = run(1), run(4)
     shared = [q for q in concurrent if "משותפת" in q.question]
-    assert len(shared) == 1
-    assert len(concurrent) == len(sequential) == 5
-    assert [q.topic for q in concurrent] == sorted((q.topic for q in concurrent), key=lambda t: int(t.split()[-1]))
-    assert {q.question for q in concurrent if q not in shared} == {q.question for q in sequential if "משותפת" not in q.question}
+    assert len(shared) == 1 and shared[0].topic == "נושא 0"
+    assert len(concurrent) == 5
+    # Topic workers are independent and merged in topic order, so concurrency cannot change the output.
+    assert [(q.id, q.topic, q.question) for q in concurrent] == [(q.id, q.topic, q.question) for q in sequential]
+
+
+def test_evidence_windows_cover_every_node_within_size_and_call_limits():
+    from chatbot_eval.generator import _evidence_windows, _window_goals
+
+    for nodes in (1, 5, 12, 13, 25, 38, 60):
+        node_ids = [f"n{i}" for i in range(nodes)]
+        for wanted in (0, 1, 2, 7, 30, 90):
+            windows = _evidence_windows(node_ids, 12, wanted, per_call=8)
+            assert [n for window in windows for n in window] == node_ids
+            assert all(0 < len(window) <= 12 for window in windows)
+            goals = _window_goals(windows, wanted)
+            assert sum(goals) == wanted
+
+    weighted = _window_goals([["a"], ["b"]], 10, {"a": 9.0, "b": 1.0})
+    assert weighted == [9, 1]
+
+
+def test_large_quota_on_small_topic_is_split_into_bounded_calls():
+    counts = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            count = int(re.search(r"Create at most (\d+)", prompt).group(1))
+            counts.append(count)
+            sources = re.findall(r"\[SOURCE_ID: (.*?)\]", prompt)
+            return QuestionBatch(questions=[
+                _topic_question(sources[0], " ".join(f"מילה{len(counts)}x{i}x{j}" for j in range(5)))
+                for i in range(count)
+            ])
+
+    chunks = [Chunk(f"d{i}#1", f"d{i}.md", "document", f"עובדה {i}") for i in range(3)]
+    questions, _ = SilverSetGenerator(FakeLLM(), "test").generate(chunks, GenerationOptions(
+        max_questions=40, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+        unanswerable_ratio=0, max_candidate_rounds=1, questions_per_call=8,
+    ), bundle=_bundle(chunks, [("נושא", 3, [c.id for c in chunks])]))
+    assert max(counts) <= 8 and sum(counts) == 40
+    assert len(questions) == 40
 
 
 def test_natural_variant_must_be_simpler_than_its_parent():

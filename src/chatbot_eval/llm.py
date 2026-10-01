@@ -70,6 +70,7 @@ class GeminiStructuredLLM:
         apigee_base_url: str = "",
         request_timeout_seconds: int = 120,
         max_retry_delay_seconds: float = 60.0,
+        seed: int | None = None,
     ):
         if not isinstance(max_retries, int) or max_retries < 0:
             raise ValueError("max_retries must be a nonnegative integer")
@@ -78,6 +79,7 @@ class GeminiStructuredLLM:
         if not math.isfinite(max_retry_delay_seconds) or max_retry_delay_seconds < 0:
             raise ValueError("max_retry_delay_seconds must be finite and nonnegative")
         self._max_retry_delay_seconds = max_retry_delay_seconds
+        self._seed = seed
         http_options = types.HttpOptions(timeout=request_timeout_seconds * 1000)
         if transport == "direct":
             self._client = genai.Client(api_key=api_key, http_options=http_options)
@@ -158,6 +160,8 @@ class GeminiStructuredLLM:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_json_schema=response_json_schema,
+                    # A fixed seed makes identical prompts return (near-)identical responses.
+                    seed=getattr(self, "_seed", None),
                     # This pipeline never exposes tools to the model. Disable AFC explicitly
                     # so the SDK does not initialize its function-calling loop or log its
                     # default maximum-remote-calls message.

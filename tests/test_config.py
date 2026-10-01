@@ -188,9 +188,14 @@ def test_optional_generation_checks_default_off_and_are_validated(tmp_path):
     default_path.write_text("", encoding="utf-8")
     settings = load_settings(default_path, require_api_key=False)
     assert settings.embedding_model == ""
-    assert not settings.verify_unanswerable and not settings.filter_closed_book_answerable
+    assert not settings.verify_unanswerable and settings.closed_book_check == "off"
     assert not settings.continue_on_call_failure
     assert settings.variation_batch_size == 30 and settings.semantic_duplicate_threshold == 0.92
+    assert settings.questions_per_call == 8 and settings.seed == 7
+
+    legacy_path = tmp_path / "legacy.toml"
+    legacy_path.write_text("[generation]\nfilter_closed_book_answerable = true\n", encoding="utf-8")
+    assert load_settings(legacy_path, require_api_key=False).closed_book_check == "reject"
 
     bad_path = tmp_path / "bad.toml"
     bad_path.write_text("[generation]\nsemantic_duplicate_threshold = 1.5\nvariation_batch_size = 0\n", encoding="utf-8")

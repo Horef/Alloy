@@ -69,9 +69,11 @@ class Settings:
     semantic_duplicate_threshold: float = 0.92
     verify_unanswerable: bool = False
     unanswerable_evidence_limit: int = 16
-    filter_closed_book_answerable: bool = False
+    closed_book_check: str = "off"
     continue_on_call_failure: bool = False
     variation_batch_size: int = 30
+    questions_per_call: int = 8
+    seed: int | None = 7
 
     def validate(self) -> "Settings":
         errors: list[str] = []
@@ -83,6 +85,10 @@ class Settings:
             errors.append("generation.embedding_dimensions must be non-negative (0 = model default)")
         if self.variation_batch_size < 1:
             errors.append("generation.variation_batch_size must be positive")
+        if self.closed_book_check not in {"off", "tag", "reject"}:
+            errors.append("generation.closed_book_check must be off, tag, or reject")
+        if not 1 <= self.questions_per_call <= 20:
+            errors.append("generation.questions_per_call must be in [1, 20]")
         if self.prompt_instruction_profile not in {"compact", "guided"}:
             errors.append("generation.prompt_instruction_profile must be compact or guided")
         if self.prompt_answer_policy not in {"balanced", "conservative"}:
@@ -283,12 +289,27 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
             _get(data, "generation", "verify_unanswerable", False), "generation.verify_unanswerable",
         ),
         unanswerable_evidence_limit=int(_get(data, "generation", "unanswerable_evidence_limit", 16)),
-        filter_closed_book_answerable=_as_bool(
-            _get(data, "generation", "filter_closed_book_answerable", False),
-            "generation.filter_closed_book_answerable",
-        ),
+        closed_book_check=_closed_book_check(data),
         continue_on_call_failure=_as_bool(
             _get(data, "generation", "continue_on_call_failure", False), "generation.continue_on_call_failure",
         ),
         variation_batch_size=int(_get(data, "generation", "variation_batch_size", 30)),
+        questions_per_call=int(_get(data, "generation", "questions_per_call", 8)),
+        seed=_seed(_get(data, "gemini", "seed", 7)),
     ).validate()
+
+
+def _closed_book_check(data: dict[str, Any]) -> str:
+    mode = _get(data, "generation", "closed_book_check", None)
+    if mode is not None:
+        return str(mode).strip().lower()
+    # Legacy boolean from earlier configs: true meant reject.
+    legacy = _get(data, "generation", "filter_closed_book_answerable", False)
+    return "reject" if _as_bool(legacy, "generation.filter_closed_book_answerable") else "off"
+
+
+def _seed(value: Any) -> int | None:
+    # A negative or empty seed disables seeding (fresh sampling on every call).
+    if value in ("", None) or (isinstance(value, int) and value < 0):
+        return None
+    return int(value)

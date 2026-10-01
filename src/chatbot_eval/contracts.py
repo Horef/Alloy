@@ -36,4 +36,5 @@ def cache_identity(settings) -> dict:
     endpoint = getattr(settings, "apigee_base_url", "").rstrip("/") if transport == "apigee" else "direct"
     return {"contract_version": 3, "transport": transport,
             "endpoint_sha256": hashlib.sha256(endpoint.encode()).hexdigest(),
-            "structured_call_contract": STRUCTURED_CALL_CONTRACT}
+            "structured_call_contract": STRUCTURED_CALL_CONTRACT,
+            "seed": getattr(settings, "seed", None)}
