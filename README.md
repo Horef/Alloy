@@ -371,6 +371,16 @@ with no model calls. The assembled graph (deterministic edges plus labeled topic
 unit keyed by the full node-signal set, so it is rebuilt only when the corpus or graph parameters
 change. This keeps re-runs on a large, mostly-stable corpus cheap.
 
+Every seeded structured model call (question generation, completeness, closed-book and boundary
+checks, variations, judging, signal extraction) is also stored in a persistent, content-addressed
+**call cache** (`<cache>/llm_calls/`), keyed by model, schema, and the full prompt; the file name
+carries the transport, endpoint, seed, and call contract. Because a seeded identical call returns
+the same response, serving it from disk costs no quality: re-running generation, changing a plan
+for only some topics, or re-judging the same chatbot answers spends tokens only on calls whose
+prompt actually changed. Unseeded runs (`gemini.seed = -1`) never use it, `--refresh-cache`
+re-asks the model and replaces stored responses, and `--no-cache` bypasses it. The run manifest of
+`generate` reports call-cache hits and misses.
+
 Cache invalidation is based on supported document relative paths and SHA-256 content hashes,
 chunk size/overlap, per-document node signals, graph and clustering parameters, Gemini model and
 transport, cache schema, and the relevant implementation code. File modification timestamps are not

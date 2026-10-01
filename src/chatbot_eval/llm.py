@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import math
+import threading
 import time
+from pathlib import Path
 from typing import Protocol, TypeVar
 
 from google import genai
@@ -28,6 +32,70 @@ class StructuredLLM(Protocol):
         self, prompt: str, schema: type[T], model: str,
         *, required_fields: dict[str, int] | None = None,
     ) -> T: ...
+
+
+class CachedStructuredLLM:
+    """Persistent, content-addressed store of structured responses, shared by all runs and commands.
+
+    Only used with a fixed seed: then an identical model, schema, and prompt yield the same response,
+    so serving it from disk loses nothing while re-runs, partly changed plans, and re-judging the
+    same answers cost no tokens for their unchanged calls. The file name carries the transport,
+    endpoint, seed, and call contract; the entry key covers model, schema, and prompt.
+    """
+
+    def __init__(self, llm, path: Path, *, read: bool = True):
+        self._llm, self._path, self._read = llm, path, read
+        self._entries: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self.hits = self.misses = 0
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    item = json.loads(line)
+                    self._entries[item["key"]] = item["response"]
+                except (ValueError, KeyError, TypeError):
+                    logger.warning("llm_call_cache_line_invalid path=%s", path)
+
+    @staticmethod
+    def _key(prompt: str, schema, model: str, required_fields: dict[str, int] | None) -> str:
+        identity = {"model": model, "schema": schema.model_json_schema(), "prompt": prompt,
+                    "required_fields": required_fields or {}}
+        encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def generate(self, prompt: str, schema: type[T], model: str, *, required_fields: dict[str, int] | None = None) -> T:
+        key = self._key(prompt, schema, model, required_fields)
+        if self._read:
+            with self._lock:
+                cached = self._entries.get(key)
+            if cached is not None:
+                try:
+                    result = schema.model_validate(cached)
+                    with self._lock:
+                        self.hits += 1
+                    return result
+                except ValidationError:
+                    logger.warning("llm_call_cache_entry_invalid schema=%s", schema.__name__)
+        if required_fields:
+            result = self._llm.generate(prompt, schema, model, required_fields=required_fields)
+        else:
+            result = self._llm.generate(prompt, schema, model)
+        payload = result.model_dump(mode="json")
+        with self._lock:
+            self.misses += 1
+            self._entries[key] = payload
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"key": key, "response": payload}, ensure_ascii=False) + "\n")
+        return result
+
+    def embed(self, texts: list[str], model: str, dimensions: int | None = None) -> list[list[float]]:
+        if dimensions:
+            return self._llm.embed(texts, model, dimensions)
+        return self._llm.embed(texts, model)
+
+    def summary(self) -> dict[str, int]:
+        return {"hits": self.hits, "misses": self.misses, "stored": len(self._entries)}
 
 
 def _augment_required(json_schema: dict, required_fields: dict[str, int] | None) -> dict:

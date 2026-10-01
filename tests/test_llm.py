@@ -87,6 +87,37 @@ def test_structured_calls_explicitly_disable_afc():
     assert captured["config"].automatic_function_calling.disable is True
 
 
+def test_call_cache_serves_identical_calls_from_disk_across_instances(tmp_path):
+    from chatbot_eval.llm import CachedStructuredLLM
+    from chatbot_eval.models import ClosedBookAnswer, ClosedBookGrade
+
+    calls: list[str] = []
+
+    class Inner:
+        def generate(self, prompt, schema, model):
+            calls.append(prompt)
+            if schema is ClosedBookGrade:
+                return ClosedBookGrade(claims_correctly_stated=len(prompt))
+            return ClosedBookAnswer(answer=f"תשובה ל{prompt}")
+
+    path = tmp_path / "llm_calls" / "route.jsonl"
+    first = CachedStructuredLLM(Inner(), path)
+    assert first.generate("א", ClosedBookAnswer, "m").answer == "תשובה לא"
+    assert first.generate("א", ClosedBookAnswer, "m").answer == "תשובה לא"
+    first.generate("א", ClosedBookAnswer, "other-model")
+    first.generate("א", ClosedBookGrade, "m")
+    assert calls == ["א", "א", "א"] and first.summary() == {"hits": 1, "misses": 3, "stored": 3}
+
+    path.open("a", encoding="utf-8").write("not json\n")
+    second = CachedStructuredLLM(Inner(), path)
+    assert second.generate("א", ClosedBookAnswer, "m").answer == "תשובה לא"
+    assert len(calls) == 3
+
+    refreshed = CachedStructuredLLM(Inner(), path, read=False)
+    refreshed.generate("א", ClosedBookAnswer, "m")
+    assert len(calls) == 4
+
+
 def test_embed_returns_vectors_and_rejects_incomplete_responses():
     class Embedding:
         def __init__(self, values):

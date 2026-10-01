@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import logging
@@ -28,7 +29,7 @@ from .history import (
 )
 from .insights import generate_insights, insights_fingerprint, write_insights
 from .io import read_questions, write_evaluations, write_questions
-from .llm import GeminiStructuredLLM
+from .llm import CachedStructuredLLM, GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, SilverQuestion
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
@@ -281,6 +282,17 @@ def _workflow_cache(args, settings, corpus_root: Path | None = None) -> CorpusAn
         prune=not getattr(args, "keep_stale_cache", False),
         model_identity=cache_identity(settings),
     )
+
+
+def _call_cache(args, settings, llm) -> CachedStructuredLLM | None:
+    """Persistent response cache for seeded calls; unseeded sampling is never served from cache."""
+    if settings.seed is None:
+        return None
+    cache = _workflow_cache(args, settings)
+    if not cache.enabled:
+        return None
+    identity = hashlib.sha256(json.dumps(cache_identity(settings), sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return CachedStructuredLLM(llm, cache.directory / "llm_calls" / f"{identity}.jsonl", read=not cache.refresh)
 
 
 def _embedder(settings, llm, cache: CorpusAnalysisCache, concurrency: int = 4) -> CachedEmbedder | None:
@@ -609,6 +621,10 @@ def main(argv: list[str] | None = None) -> int:
         request_timeout_seconds=settings.gemini_request_timeout_seconds,
         seed=settings.seed,
     )
+    call_cache = _call_cache(args, settings, llm)
+    if call_cache is not None:
+        llm = call_cache
+        atexit.register(lambda: logger.info("llm_call_cache %s", call_cache.summary()))
     if args.command == "generate-prompt":
         profile = args.instruction_profile or settings.prompt_instruction_profile
         answer_policy = args.answer_policy or settings.prompt_answer_policy
@@ -961,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
                 generation_diagnostics=generation_diagnostics,
                 cache=cache.summary(),
                 resumed_generation=args.resume,
+                llm_call_cache=call_cache.summary() if call_cache is not None else {"enabled": False},
                 outputs=input_inventory(
                     [csv_path, jsonl_path, diagnostics_path, generation_checkpoint] + ([plan_path] if plan_path else []),
                 ),
