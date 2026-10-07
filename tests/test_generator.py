@@ -1207,6 +1207,29 @@ def test_keep_existing_only_fills_missing_natural_variants():
     assert '"needs_natural": false' in calls[0]
 
 
+def test_keep_existing_on_a_complete_user_facing_set_makes_no_calls():
+    answerable, boundary = _user_facing_set()
+    variants = [
+        SilverQuestion(id="V1", topic="t", question="איך מגישים?", expected_answer="x", reference_claims=["x"],
+                       question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1"),
+        SilverQuestion(id="V2", topic="t", question="מה הטלפון?", expected_answer="y", answerable=False,
+                       expected_behavior=ExpectedBehavior.ABSTAIN, question_form=QuestionForm.NATURAL_USER,
+                       parent_question_id="U1"),
+        SilverQuestion(id="V3", topic="t", question="איך עושים את זה?", expected_answer="באיזה תחום?",
+                       question_form=QuestionForm.AMBIGUOUS, expected_behavior=ExpectedBehavior.CLARIFY,
+                       parent_question_id="Q1"),
+    ]
+
+    class NeverCalled:
+        def generate(self, prompt, schema, model):
+            raise AssertionError("no variants are missing")
+
+    merged, diagnostics = SilverSetGenerator(NeverCalled(), "m").regenerate_variations(
+        [answerable, boundary, *variants], mode="user_facing", keep_existing=True,
+    )
+    assert len(merged) == 5 and diagnostics["new_variants"] == 0 and diagnostics["anchors"] == 2
+
+
 def test_standard_mode_never_marks_anchors():
     answerable, _ = _user_facing_set()
     variant = SilverQuestion(

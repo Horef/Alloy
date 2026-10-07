@@ -1884,7 +1884,14 @@ class SilverSetGenerator:
         kept = [q for q in questions if q.question_form not in variant_forms]
         previous_variants = [q for q in questions if q.question_form in variant_forms]
         retained = previous_variants if keep_existing else []
-        budget = variation_budget if variation_budget is not None else len(previous_variants)
+        if variation_budget is not None:
+            budget = variation_budget
+        elif mode == "user_facing":
+            # Natural phrasings cover every parent regardless; by default keep the ambiguous count.
+            previous_ambiguous = sum(q.question_form == QuestionForm.AMBIGUOUS for q in previous_variants)
+            budget = math.ceil(previous_ambiguous / ambiguous_variation_share) if ambiguous_variation_share else 0
+        else:
+            budget = len(previous_variants)
         rejected: Counter = Counter()
         variations = self.generate_variations(
             kept,

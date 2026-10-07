@@ -724,7 +724,7 @@ chatbot-eval --config config.toml revary \
 |---|---|---|
 | `--questions PATH` | required | Silver CSV/JSONL whose variations should be regenerated. |
 | `--output DIR` | `outputs/questions-revaried` | Destination for the refreshed silver CSV/JSONL. |
-| `--variation-count N` | previous count | Total variants to generate; defaults to the number previously present, preserving the mix size. |
+| `--variation-count N` | previous count | Total variants to generate; defaults to the number previously present, preserving the mix size. In `user_facing` mode every parent gets a natural phrasing regardless, and this only sizes the ambiguous variants (`N x share`); the default keeps the previous number of ambiguous variants. |
 | `--ambiguous-variation-share R` | config value | Share of variants that should be ambiguous; `[0, 1]`. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions must not be reproduced as variants. |
 | `--mode MODE` | `generation.mode` | `user_facing` gives every canonical and boundary question one natural phrasing and marks the canonical forms as anchors. |
