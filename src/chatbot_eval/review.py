@@ -62,6 +62,7 @@ REVIEW_COLUMNS = [
     "supporting_quotes_readable",
     "review_status",
     "reviewer_notes",
+    "source_hint",
 ]
 
 # Fields the reviewer is allowed to change directly. Everything else is preserved from the
@@ -70,7 +71,9 @@ EDITABLE_CONTENT_FIELDS = (
     "topic", "question", "expected_answer", "answerable",
     "question_form", "expected_behavior", "difficulty",
 )
-DECISION_FIELDS = ("review_status", "reviewer_notes")
+DECISION_FIELDS = ("review_status", "reviewer_notes", "source_hint")
+# Questions a reviewer added in the review app; merge turns them into new questions to re-ground.
+MANUAL_ID_PREFIX = "Q-manual-"
 
 # Editing one of these changes the evaluation task itself, so stored grounding may become
 # stale. Such edits are flagged during merge.
@@ -102,6 +105,7 @@ HEBREW_COLUMN_LABELS = {
     "supporting_quotes_readable": "ציטוטים תומכים (לקריאה בלבד)",
     "review_status": "סטטוס סקירה",
     "reviewer_notes": "הערות סוקר",
+    "source_hint": "מקור מוצע",
 }
 # Reverse lookup used by merge to accept Hebrew-headed files. Canonical keys map to
 # themselves so a mixed or English file still resolves.
@@ -152,6 +156,7 @@ def _review_row(question: SilverQuestion, parent_text: str = "") -> dict:
         "supporting_quotes_readable": _flatten_quotes(question),
         "review_status": question.review_status,
         "reviewer_notes": question.reviewer_notes,
+        "source_hint": question.source_hint,
     }
 
 
@@ -281,6 +286,8 @@ class MergeDiagnostics:
     content_edited: int = 0
     factual_edits_flagged: int = 0
     anchors_kept: int = 0
+    manual_added: int = 0
+    manual_skipped: list[str] = field(default_factory=list)
     unknown_ids: list[str] = field(default_factory=list)
     duplicate_review_ids: list[str] = field(default_factory=list)
 
@@ -290,6 +297,8 @@ class MergeDiagnostics:
             "review_total": self.review_total,
             "merged": self.merged,
             "anchors_kept": self.anchors_kept,
+            "manual_added": self.manual_added,
+            "manual_skipped": self.manual_skipped,
             "deleted_by_reviewer": self.deleted_by_reviewer,
             "content_edited": self.content_edited,
             "factual_edits_flagged": self.factual_edits_flagged,
@@ -370,6 +379,14 @@ def merge_review_file(
             raise ValueError(f"row {number}: duplicate id {identifier!r} in review file")
         seen.add(identifier)
         base = by_id.get(identifier)
+        if base is None and identifier.startswith(MANUAL_ID_PREFIX):
+            manual = _manual_question(identifier, row)
+            if manual is None:
+                diagnostics.manual_skipped.append(identifier)
+            else:
+                merged.append(manual)
+                diagnostics.manual_added += 1
+            continue
         if base is None:
             diagnostics.unknown_ids.append(identifier)
             raise ValueError(
@@ -388,6 +405,26 @@ def merge_review_file(
     diagnostics.anchors_kept = len(anchors)
     diagnostics.deleted_by_reviewer = len(by_id) - len(seen & set(by_id)) - len(anchors)
     return validate_question_set(anchors + merged)
+
+
+def _manual_question(identifier: str, row: dict) -> SilverQuestion | None:
+    """A reviewer-added question; it has no grounding yet, so it always needs reground."""
+    question, answer = (row.get("question") or "").strip(), (row.get("expected_answer") or "").strip()
+    if not question or not answer:
+        return None
+    return SilverQuestion(
+        id=identifier,
+        topic=(row.get("topic") or "").strip() or "לא סווג",
+        question=question,
+        expected_answer=answer,
+        question_form=(
+            QuestionForm.CANONICAL if (row.get("question_form") or "").strip() == "canonical" else QuestionForm.NATURAL_USER
+        ),
+        difficulty=(row.get("difficulty") or "").strip() or "medium",
+        reviewer_notes=row.get("reviewer_notes") or "",
+        source_hint=(row.get("source_hint") or "").strip(),
+        review_status="needs_reground",
+    )
 
 
 def _apply_edits(base: SilverQuestion, row: dict, diagnostics: MergeDiagnostics) -> SilverQuestion:
@@ -422,6 +459,8 @@ def _apply_edits(base: SilverQuestion, row: dict, diagnostics: MergeDiagnostics)
     # Decision fields overlay unconditionally.
     if "reviewer_notes" in row:
         updated.reviewer_notes = row["reviewer_notes"]
+    if "source_hint" in row:
+        updated.source_hint = row["source_hint"].strip()
     if "review_status" in row and row["review_status"].strip():
         updated.review_status = row["review_status"].strip()
 

@@ -255,6 +255,9 @@ class SilverQuestion(BaseModel):
     # answer names at least ``min_key_points`` of them. ``broad_level`` is corpus, population, or topic.
     min_key_points: int = 0
     broad_level: str = ""
+    # Reviewer-written pointer to where the answer is: document/page names, links, or pasted passages.
+    # reground uses it to find the evidence; it is never treated as evidence itself.
+    source_hint: str = ""
     review_status: str = "pending"
     reviewer_notes: str = ""
 

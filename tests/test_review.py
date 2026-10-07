@@ -47,6 +47,29 @@ def _edit_review_csv(path, mutate):
         writer.writerows(rows)
 
 
+def test_review_merge_keeps_source_hints_and_adds_manual_questions(tmp_path):
+    original = _question()
+    review_csv, _ = write_review_file([original], tmp_path)
+
+    def edit(rows):
+        rows[0]["source_hint"] = "דף מדיניות, סעיף התנאים"
+        manual = dict(rows[0], id="Q-manual-abc", question="מי מאשר?", expected_answer="המפקד מאשר",
+                      question_form="ambiguous", review_status="needs_reground", source_hint="דף אישורים")
+        empty = dict(manual, id="Q-manual-empty", expected_answer="")
+        return rows + [manual, empty]
+
+    _edit_review_csv(review_csv, edit)
+    diagnostics = MergeDiagnostics()
+    merged = {q.id: q for q in merge_review_file([original], review_csv, diagnostics=diagnostics)}
+    assert merged["Q0001"].source_hint == "דף מדיניות, סעיף התנאים"
+    manual = merged["Q-manual-abc"]
+    assert (manual.review_status, manual.source_hint, manual.question_form) == (
+        "needs_reground", "דף אישורים", QuestionForm.NATURAL_USER,
+    )
+    assert manual.sources == [] and manual.reference_claims
+    assert diagnostics.manual_added == 1 and diagnostics.manual_skipped == ["Q-manual-empty"]
+
+
 def test_review_export_only_has_readable_columns(tmp_path):
     csv_path, md_path = write_review_file([_question()], tmp_path)
     with csv_path.open(encoding="utf-8-sig", newline="") as handle:

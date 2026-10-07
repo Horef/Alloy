@@ -20,7 +20,7 @@ QUESTION_COLUMNS = [
     "rationale", "reference_claims", "source_ids", "source_files", "source_locations", "source_excerpts", "supporting_quotes",
     "review_status", "reviewer_notes", "sources_json", "csv_escape_version",
     "clarification_acceptable", "acceptable_clarification", "boundary_kind", "closed_book_answerable",
-    "anchor", "min_key_points", "broad_level",
+    "anchor", "min_key_points", "broad_level", "source_hint",
 ]
 
 
@@ -106,6 +106,7 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
                 "anchor": str(q.anchor).lower(),
                 "min_key_points": q.min_key_points,
                 "broad_level": q.broad_level,
+                "source_hint": q.source_hint,
             }))
         for q in items:
             jsonl_handle.write(q.model_dump_json() + "\n")

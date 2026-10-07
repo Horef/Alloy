@@ -493,6 +493,56 @@ def test_reground_one_regenerates_grounding_and_resets_status():
     assert updated.question == "מהו הסכום?"
 
 
+def _hint_corpus():
+    return [
+        Chunk("a.md#chunk-1", "a.md", "d", "---\nid: aaa-111\ntitle: \"חופשות למשרתים\"\n---\nחופשה שנתית של 18 יום."),
+        Chunk("a.md#chunk-2", "a.md", "d", "חופשת אבל של שבעה ימים לכל קרוב מדרגה ראשונה."),
+        Chunk("מענק-שחרור.md#chunk-1", "מענק-שחרור.md", "d", "---\ntitle: \"מענק שחרור\"\n---\nהמענק משולם בתום השירות."),
+        Chunk("c.md#chunk-1", "c.md", "d", "---\ntitle: \"כוורת\"\n---\nהנחות ברשת כוורת לכל החיילים."),
+    ]
+
+
+def test_source_hint_finds_documents_by_link_title_or_id_and_passages():
+    from urllib.parse import quote
+
+    from chatbot_eval.generator import _hinted_chunks
+    from chatbot_eval.retrieval import ChunkRetriever
+
+    chunks = _hint_corpus()
+    retriever = ChunkRetriever(chunks)
+    by_link = _hinted_chunks(f"https://hova.digital.idf.il/{quote('מענק-שחרור')}", chunks, retriever, "מתי משולם?")
+    assert [c.id for c in by_link] == ["מענק-שחרור.md#chunk-1"]
+    by_title = _hinted_chunks("בעמוד חופשות למשרתים", chunks, retriever, "כמה ימי אבל?")
+    assert {c.file for c in by_title} == {"a.md"}
+    by_passage = _hinted_chunks("כתוב שם: \"חופשת אבל של שבעה ימים לכל קרוב\"", chunks, retriever, "q")
+    assert by_passage[0].id == "a.md#chunk-2"
+    assert _hinted_chunks("משהו לא קשור בכלל", chunks, retriever, "q") == []
+
+
+def test_reground_puts_hinted_evidence_first_and_shows_the_hint():
+    chunks = _hint_corpus()
+    prompts: list[str] = []
+
+    class RegroundLLM:
+        def generate(self, prompt, schema, model, *, required_fields=None):
+            prompts.append(prompt)
+            return QuestionBatch(questions=[GeneratedQuestion(
+                question="כמה ימי אבל מגיעים?", expected_answer="שבעה ימים", answerable=True, difficulty="easy",
+                rationale="", source_ids=["a.md#chunk-2"], question_type=QuestionType.BASIC_KNOWLEDGE,
+                reference_claims=["שבעה ימים"],
+                supporting_quotes=[EvidenceQuote(source_id="a.md#chunk-2", quote="חופשת אבל של שבעה ימים")],
+            )])
+
+    question = SilverQuestion(
+        id="Q-manual-1", topic="t", question="כמה ימי אבל מגיעים?", expected_answer="שבעה ימים",
+        review_status="needs_reground", source_hint="דף חופשות למשרתים, הסעיף על אבל",
+    )
+    updated, reason = SilverSetGenerator(RegroundLLM(), "m").reground_one(question, chunks, evidence_limit=2)
+    assert reason is None and updated.sources[0].source_id == "a.md#chunk-2"
+    assert "דף חופשות למשרתים, הסעיף על אבל" in prompts[0]
+    assert "[SOURCE_ID: c.md#chunk-1]" not in prompts[0]
+
+
 def test_reground_one_rejects_non_verbatim_quote():
     chunks = [Chunk("a.md#chunk-1", "a.md", "document", "הסכום הוא 100 שקלים.")]
 

@@ -617,7 +617,8 @@ chatbot-eval --config config.toml review-export \
 and `parent_question_id` for variants, `boundary_kind` for unanswerable questions, `acceptable_clarification` for ambiguous
 variants, `closed_book_answerable`, `sources_readable`, `supporting_quotes_readable`), and the
 decision columns `review_status` and
-`reviewer_notes`. `questions_for_review.md` is a formatted, read-only view for reading only.
+`reviewer_notes`, and the editable `source_hint` (where the answer is: document or page names,
+links, or the relevant passage; `reground` uses it to find the evidence). `questions_for_review.md` is a formatted, read-only view for reading only.
 
 | Option | Required/default | Meaning |
 |---|---|---|
@@ -661,8 +662,11 @@ so a `needs_reground` row is excluded there and included (with its stale groundi
 grounding of flagged questions, use the dedicated `reground` command (Workflow 3 below), which
 regenerates their sources, supporting quotes, and reference claims from the documents and resets them
 to `pending` for a fresh approval.
-- **Rows with an `id` not in the canonical set** are rejected. New questions cannot be grounded from
-  the review file; generate them instead. Duplicate `id`s in the review file are also rejected.
+- **Rows with an `id` not in the canonical set** are rejected, except questions a reviewer added in
+  the review app (`Q-manual-...`): they become new `natural_user` (or `canonical`) answer questions
+  with `review_status=needs_reground` and no grounding yet, so `reground` grounds them, using their
+  `source_hint`. A manual row without a question or expected answer is skipped and listed in
+  `manual_skipped`. Duplicate `id`s in the review file are also rejected.
 
 A `merge_diagnostics` block (removed / edited / factual-edit counts, unknown IDs) is printed and
 recorded in `run_manifest.json`. The merged `silver_questions.csv`/`.jsonl` flows directly into
@@ -691,6 +695,12 @@ for that exact question. The model is required to echo the fixed text unchanged;
 question or answer, or if the grounding fails validation, the row is left untouched and the reason is
 recorded. Successfully regrounded rows are reset to `review_status=pending` so a human re-approves
 them before evaluation.
+
+A reviewer's `source_hint` guides the evidence search. Documents it names by file name, page link
+(the page slug), front-matter `id`, or title contribute their chunks most related to the question,
+and any passage it quotes (20+ characters, matched after normalizing formatting and quote marks)
+puts the chunk containing it first. The hint is also shown to the model, but only as a locator:
+quotes must still come verbatim from the evidence.
 
 | Option | Required/default | Meaning |
 |---|---|---|
