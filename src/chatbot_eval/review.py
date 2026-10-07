@@ -51,6 +51,7 @@ REVIEW_COLUMNS = [
     "question_form",
     "expected_behavior",
     "difficulty",
+    "parent_question",
     "parent_question_id",
     "boundary_kind",
     "acceptable_clarification",
@@ -88,6 +89,7 @@ HEBREW_COLUMN_LABELS = {
     "question_form": "צורת שאלה",
     "expected_behavior": "התנהגות מצופה",
     "difficulty": "רמת קושי",
+    "parent_question": "הניסוח המקורי (לקריאה בלבד)",
     "parent_question_id": "שאלת מקור (לקריאה בלבד)",
     "boundary_kind": "סוג גבול (לקריאה בלבד)",
     "acceptable_clarification": "שאלת הבהרה מקובלת (לקריאה בלבד)",
@@ -122,7 +124,7 @@ def _flatten_quotes(question: SilverQuestion) -> str:
     return "\n".join(lines)
 
 
-def _review_row(question: SilverQuestion) -> dict:
+def _review_row(question: SilverQuestion, parent_text: str = "") -> dict:
     return {
         "id": question.id,
         "topic": question.topic,
@@ -132,6 +134,7 @@ def _review_row(question: SilverQuestion) -> dict:
         "question_form": question.question_form.value,
         "expected_behavior": question.expected_behavior.value,
         "difficulty": question.difficulty,
+        "parent_question": parent_text,
         "parent_question_id": question.parent_question_id,
         "boundary_kind": question.boundary_kind,
         "acceptable_clarification": question.acceptable_clarification,
@@ -149,6 +152,7 @@ def write_review_file(
     *,
     hebrew_columns: bool = False,
     basename: str = "questions_for_review",
+    include_anchors: bool = False,
 ) -> tuple[Path, Path]:
     """Export a reviewer-friendly CSV and a read-only Markdown view.
 
@@ -156,10 +160,14 @@ def write_review_file(
     ``id`` column). ``review-merge`` reads either language, so the choice is purely
     cosmetic for the reviewer. ``basename`` sets the file stem (e.g. a per-corpus name like
     ``questions_for_review_hova``) so multiple exports can live side by side without manual
-    renaming. Returns the CSV path (the file the reviewer edits) and the Markdown path.
+    renaming. Anchors (canonical intents behind user phrasings) are shown only as each variant's
+    ``parent_question`` unless ``include_anchors`` is set. Returns the CSV path (the file the
+    reviewer edits) and the Markdown path.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    items = validate_question_set(list(questions))
+    everything = validate_question_set(list(questions))
+    text_by_id = {question.id: question.question for question in everything}
+    items = [question for question in everything if include_anchors or not question.anchor]
     safe_basename = "".join(ch for ch in basename if ch.isalnum() or ch in ("_", "-")).strip("_-") or "questions_for_review"
     csv_path = output_dir / f"{safe_basename}.csv"
     markdown_path = output_dir / f"{safe_basename}.md"
@@ -174,11 +182,14 @@ def write_review_file(
             # Neutralize spreadsheet formula injection per cell. The review file has no
             # csv_escape_version column, so read-back uses the legacy restore path in
             # csv_question_row, which strips a single leading apostrophe before a formula.
-            row = {key: _safe_csv_value(value) for key, value in _review_row(question).items()}
+            row = {
+                key: _safe_csv_value(value)
+                for key, value in _review_row(question, text_by_id.get(question.parent_question_id, "")).items()
+            }
             if hebrew_columns:
                 row = {HEBREW_COLUMN_LABELS[key]: value for key, value in row.items()}
             writer.writerow(row)
-        md_handle.write(_render_markdown(items, csv_path.name))
+        md_handle.write(_render_markdown(items, csv_path.name, text_by_id))
         for handle, temporary, destination in (
             (csv_handle, csv_temporary, csv_path),
             (md_handle, md_temporary, markdown_path),
@@ -189,7 +200,9 @@ def write_review_file(
     return csv_path, markdown_path
 
 
-def _render_markdown(items: list[SilverQuestion], csv_name: str = "questions_for_review.csv") -> str:
+def _render_markdown(
+    items: list[SilverQuestion], csv_name: str = "questions_for_review.csv", text_by_id: dict[str, str] | None = None,
+) -> str:
     lines = [
         "# שאלות לסקירה אנושית",
         "",
@@ -216,7 +229,8 @@ def _render_markdown(items: list[SilverQuestion], csv_name: str = "questions_for
         )
         lines.append("")
         if question.parent_question_id:
-            lines.append(f"**שאלת מקור:** {question.parent_question_id}")
+            parent_text = (text_by_id or {}).get(question.parent_question_id, "")
+            lines.append(f"**שאלת מקור:** {question.parent_question_id}" + (f" — {parent_text}" if parent_text else ""))
             lines.append("")
         if question.boundary_kind:
             lines.append(f"**סוג גבול:** {question.boundary_kind}")
@@ -251,6 +265,7 @@ class MergeDiagnostics:
     deleted_by_reviewer: int = 0
     content_edited: int = 0
     factual_edits_flagged: int = 0
+    anchors_kept: int = 0
     unknown_ids: list[str] = field(default_factory=list)
     duplicate_review_ids: list[str] = field(default_factory=list)
 
@@ -259,6 +274,7 @@ class MergeDiagnostics:
             "canonical_total": self.canonical_total,
             "review_total": self.review_total,
             "merged": self.merged,
+            "anchors_kept": self.anchors_kept,
             "deleted_by_reviewer": self.deleted_by_reviewer,
             "content_edited": self.content_edited,
             "factual_edits_flagged": self.factual_edits_flagged,
@@ -348,8 +364,15 @@ def merge_review_file(
         merged.append(_apply_edits(base, row, diagnostics))
 
     diagnostics.merged = len(merged)
-    diagnostics.deleted_by_reviewer = len(by_id) - len(seen & set(by_id))
-    return validate_question_set(merged)
+    # Anchors are not exported for review; keep each one whose user-phrased variant survived.
+    surviving_parents = {question.parent_question_id for question in merged}
+    anchors = [
+        question.model_copy(deep=True) for question in canonical
+        if question.anchor and question.id not in seen and question.id in surviving_parents
+    ]
+    diagnostics.anchors_kept = len(anchors)
+    diagnostics.deleted_by_reviewer = len(by_id) - len(seen & set(by_id)) - len(anchors)
+    return validate_question_set(anchors + merged)
 
 
 def _apply_edits(base: SilverQuestion, row: dict, diagnostics: MergeDiagnostics) -> SilverQuestion:

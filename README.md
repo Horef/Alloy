@@ -196,6 +196,8 @@ log_level = "INFO"
 | `generation.filter_closed_book_answerable` | `false` | Drop canonical questions whose every reference claim a model states with no evidence (general knowledge, not a test of the knowledge base). Two extra calls per canonical candidate. |
 | `generation.continue_on_call_failure` | `false` | Count a failed model call as `llm_call_failed` in the diagnostics and finish the run with a shortfall instead of aborting. The checkpoint does not record failures, so `--resume` retries them. |
 | `generation.variation_batch_size` | `30` | Canonical questions per variation-generation call; the variation budget is spread over batches. |
+| `generation.mode` | `standard` | `standard`: user variants for part of the canonical questions. `user_facing`: every canonical and boundary question gets exactly one `natural_user` phrasing and becomes its **anchor** (`anchor=true`); ambiguous variants are sized as in standard mode. The anchor keeps the grounded intent, the user phrasing is what reviewers see and what is scored. |
+| `evaluation.canonical_scoring` | `gap` | How anchors are scored. `gap`: judged, left out of headline metrics, reported as the **phrasing gap** (anchor success minus user-phrasing success on the same pairs). `include`: also counted in headline metrics. `exclude`: not sent to the chatbot. Has no effect on sets without anchors. |
 | `generation.questions_per_call` | `8` | Most questions requested from one model call. A larger topic quota is spread over more, smaller evidence windows instead of one oversized request. |
 | `generation.context_nodes` | `4` | Neighbor chunks shown with each focus window as context for integration questions; questions are based mainly on the window's focus chunks. |
 | `generation.closed_book_check` | `off` | `tag` marks questions a model answers fully without the documents (`closed_book_answerable=true`) and keeps them; `reject` drops them. Rejecting removes legitimate questions whose answers are also public, so `tag` is recommended. Costs two small calls per canonical candidate. |
@@ -606,8 +608,8 @@ chatbot-eval --config config.toml review-export \
 ```
 
 `questions_for_review.csv` contains `id`, `topic`, `question`, `expected_answer`, `answerable`,
-`question_form`, `expected_behavior`, `difficulty`, read-only context columns (`parent_question_id`
-for variants, `boundary_kind` for unanswerable questions, `acceptable_clarification` for ambiguous
+`question_form`, `expected_behavior`, `difficulty`, read-only context columns (`parent_question`
+and `parent_question_id` for variants, `boundary_kind` for unanswerable questions, `acceptable_clarification` for ambiguous
 variants, `closed_book_answerable`, `sources_readable`, `supporting_quotes_readable`), and the
 decision columns `review_status` and
 `reviewer_notes`. `questions_for_review.md` is a formatted, read-only view for reading only.
@@ -618,6 +620,7 @@ decision columns `review_status` and
 | `--output DIR` | `outputs/review` | Destination for the review CSV and `.md`. |
 | `--name STEM` | `questions_for_review` | Base filename (stem) for the exported CSV/`.md`, e.g. `questions_for_review_hova`, so per-corpus exports do not need manual renaming. Unsafe characters are stripped. |
 | `--hebrew-columns` | off | Write Hebrew column headers for Hebrew-speaking reviewers. The `id` column keeps its English name because it is the machine join key. `review-merge` reads either language, so this choice is purely cosmetic. |
+| `--include-anchors` | off | Also export anchor rows. By default anchors are not reviewed as separate rows: each user phrasing shows its anchor's text in `parent_question`. `review-merge` keeps every anchor whose variant survived review, and `evaluate --approved-only` includes an anchor when its variant is approved. |
 
 ### review-merge
 
@@ -719,6 +722,14 @@ chatbot-eval --config config.toml revary \
 | `--variation-count N` | previous count | Total variants to generate; defaults to the number previously present, preserving the mix size. |
 | `--ambiguous-variation-share R` | config value | Share of variants that should be ambiguous; `[0, 1]`. |
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions must not be reproduced as variants. |
+| `--mode MODE` | `generation.mode` | `user_facing` gives every canonical and boundary question one natural phrasing and marks the canonical forms as anchors. |
+| `--keep-existing` | off | Keep the existing variants (with their review state) and only add what is missing, e.g. a natural phrasing for every parent that has none. |
+| `--documents DIR` | unset | With `generation.verify_unanswerable`, each boundary rewrite is re-checked against the whole corpus and rejected (`boundary_variant_answerable`) if the looser wording became answerable. |
+
+A natural variant often asks only the main part of a multi-part question, so the model also names
+which of the parent's reference claims the shorter question still asks for (`kept_claim_ids`); the
+variant is graded only on those (an invalid ID rejects it as `invalid_kept_claims`). Boundary
+rewrites keep the parent's abstain task and `boundary_kind`.
 
 New variants are written with `review_status=pending` and (for ambiguous ones) classified as
 `must_clarify` or `answer_or_clarify`; review and approve them before evaluating. A

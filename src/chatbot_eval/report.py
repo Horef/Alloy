@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .artifacts import atomic_write_text
 from .labels import EXPECTED_BEHAVIOR_HEBREW, OUTCOME_COLORS, OUTCOME_HEBREW, QUESTION_FORM_HEBREW
-from .models import EvaluationInsights, EvaluationRecord, ExpectedBehavior, Outcome
+from .models import EvaluationInsights, EvaluationRecord, ExpectedBehavior, Outcome, QuestionForm
 
 ANSWER_SUCCESS = {Outcome.CORRECT_ANSWER}
 ANSWER_USEFUL = {Outcome.CORRECT_ANSWER, Outcome.PARTIAL_TOO_LITTLE, Outcome.PARTIAL_TOO_MUCH, Outcome.CORRECT_CLARIFICATION}
@@ -76,6 +76,36 @@ def _paired_variant_metrics(records: list[EvaluationRecord]) -> dict:
 BEHAVIOR_FAILURE_OUTCOMES = {
     Outcome.MISSING_CLARIFICATION, Outcome.INCORRECT_ABSTENTION, Outcome.SHOULD_HAVE_ABSTAINED,
 }
+
+
+def _phrasing_gap(records: list[EvaluationRecord]) -> dict:
+    """Anchor (canonical intent) versus its natural user phrasing, on pairs where both were judged."""
+    evaluable = {
+        record.question.id: record for record in records
+        if record.outcome not in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}
+    }
+    counts = Counter()
+    for child in evaluable.values():
+        parent = evaluable.get(child.question.parent_question_id)
+        if child.question.question_form != QuestionForm.NATURAL_USER or parent is None or not parent.question.anchor:
+            continue
+        counts[(parent.outcome in PIPELINE_SUCCESS, child.outcome in PIPELINE_SUCCESS)] += 1
+    pairs = sum(counts.values())
+    canonical_success = counts[(True, True)] + counts[(True, False)]
+    user_success = counts[(True, True)] + counts[(False, True)]
+    canonical_rate, user_rate = _rate(canonical_success, pairs), _rate(user_success, pairs)
+    return {
+        "pairs": pairs,
+        "canonical_success_rate": canonical_rate,
+        "user_success_rate": user_rate,
+        "gap": None if not pairs else canonical_rate - user_rate,
+        "canonical_only": counts[(True, False)],
+        "user_only": counts[(False, True)],
+        "both": counts[(True, True)],
+        "neither": counts[(False, False)],
+        "canonical_success_interval_95": _wilson_interval(canonical_success, pairs),
+        "user_success_interval_95": _wilson_interval(user_success, pairs),
+    }
 
 
 def _metric_hit(record: EvaluationRecord, key: str) -> bool:
@@ -146,7 +176,11 @@ def _retrieval_good(record: EvaluationRecord) -> bool:
     )
 
 
-def build_summary(records: list[EvaluationRecord]) -> dict:
+def build_summary(records: list[EvaluationRecord], canonical_scoring: str = "gap") -> dict:
+    """Headline metrics; anchors count toward them only when ``canonical_scoring`` is "include"."""
+    all_records = records
+    if canonical_scoring != "include":
+        records = [record for record in records if not record.question.anchor]
     counts = Counter(record.outcome.value for record in records)
     evaluable = [r for r in records if r.outcome not in {Outcome.CHATBOT_ERROR, Outcome.JUDGE_ERROR}]
     answerable = [r for r in evaluable if r.question.answerable]
@@ -305,7 +339,10 @@ def build_summary(records: list[EvaluationRecord]) -> dict:
         "pipeline": dict(pipeline), "by_topic": by_topic,
         "pipeline_evaluable": len(answer_tasks),
         "minimum_topic_sample": MIN_TOPIC_SAMPLE,
-        "paired_variants": _paired_variant_metrics(records),
+        "paired_variants": _paired_variant_metrics(all_records),
+        "canonical_scoring": canonical_scoring,
+        "anchor_records": sum(record.question.anchor for record in all_records),
+        "phrasing_gap": _phrasing_gap(all_records),
     }
 
 
@@ -316,10 +353,11 @@ def build_comparison(
     current_contract: dict | None = None,
     previous_contract: dict | None = None,
     soft_compare: bool = False,
+    canonical_scoring: str = "gap",
 ) -> dict:
     """Compare whole-run KPIs and like-for-like question outcomes."""
-    current_summary = build_summary(current_records)
-    previous_summary = build_summary(previous_records)
+    current_summary = build_summary(current_records, canonical_scoring)
+    previous_summary = build_summary(previous_records, canonical_scoring)
     current_groups: dict[str, list[EvaluationRecord]] = defaultdict(list)
     previous_groups: dict[str, list[EvaluationRecord]] = defaultdict(list)
     for record in current_records:
@@ -743,13 +781,14 @@ def write_report(
     current_contract: dict | None = None,
     previous_contract: dict | None = None,
     soft_compare: bool = False,
+    canonical_scoring: str = "gap",
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    summary = build_summary(records)
+    summary = build_summary(records, canonical_scoring)
     comparison = build_comparison(
         records, previous_records,
         current_contract=current_contract, previous_contract=previous_contract,
-        soft_compare=soft_compare,
+        soft_compare=soft_compare, canonical_scoring=canonical_scoring,
     ) if previous_records else None
     if comparison:
         summary["comparison"] = comparison
@@ -797,6 +836,13 @@ def write_report(
         for form, data in paired["by_form"].items()
     )
     paired_panel = "" if not paired["pairs"] else f'''<div class="panel"><h2>עמידות לניסוחי משתמש</h2><div class="note">המדדים משווים כל וריאציה רק לשאלת המקור שלה. <b>שימור הצלחה</b> הוא שיעור הווריאציות שהצליחו כאשר שאלת המקור הצליחה; <b>הידרדרות</b> היא המקרה ההפוך.</div><div class="cards"><div class="card">זוגות שנבדקו<b>{paired["pairs"]}</b></div><div class="card">הצלחת וריאציות<b>{_pct(paired["variant_success_rate"])}</b></div><div class="card">שימור הצלחה<b>{_pct(paired["robustness_when_parent_succeeds"])}</b></div><div class="card">הידרדרות בניסוח<b>{_pct(paired["degradation_rate"])}</b></div></div><table><thead><tr><th>סוג וריאציה</th><th>זוגות</th><th>הצלחת וריאציה</th><th>שימור הצלחה</th><th>הידרדרות</th></tr></thead><tbody>{paired_rows}</tbody></table></div>'''
+    gap = summary["phrasing_gap"]
+    anchor_note = (
+        f'<div class="note">{summary["anchor_records"]} שאלות עוגן (הניסוח המקורי של שאלות המשתמש) '
+        + ("נכללות במדדים הראשיים." if summary["canonical_scoring"] == "include" else "אינן נכללות במדדים הראשיים ומשמשות רק למדידת פער הניסוח.")
+        + "</div>"
+    ) if summary["anchor_records"] else ""
+    gap_panel = "" if not gap["pairs"] else f'''<div class="panel"><h2>פער הניסוח: שאלה מקורית מול ניסוח משתמש</h2>{anchor_note}<div class="note">כל זוג משווה שאלה בניסוח המקורי לעומת אותה שאלה כפי שמשתמש היה שואל. פער חיובי פירושו שהצ׳אטבוט יודע את התשובה אך מתקשה להבין את ניסוח המשתמש.</div><div class="cards"><div class="card">זוגות<b>{gap["pairs"]}</b></div><div class="card">הצלחה בניסוח המקורי<b>{_pct(gap["canonical_success_rate"])}</b></div><div class="card">הצלחה בניסוח המשתמש<b>{_pct(gap["user_success_rate"])}</b></div><div class="card">פער הניסוח<b>{_pct(gap["gap"])}</b><small>{gap["canonical_only"]} הצליחו רק בניסוח המקורי · {gap["user_only"]} רק בניסוח המשתמש</small></div></div></div>'''
     details = "".join(_details(record) for record in records)
     outcome_options = "".join(f'<option value="{o.value}">{_esc(OUTCOME_HEBREW[o])}</option>' for o in Outcome if o.value in summary["outcomes"])
     topic_options = "".join(f'<option value="{_esc(topic)}">{_esc(topic)}</option>' for topic in summary["by_topic"])
@@ -831,6 +877,7 @@ def write_report(
 <div class="grid"><div class="panel"><h2>התפלגות תוצאות</h2>{outcome_bars}<div class="note"><b>תשובה שימושית</b> היא תשובה נכונה, תשובה חלקית שיש בה מידע נכון או שאלת הבהרה מתאימה כשחסר פרט מהותי. <b>מידע מטעה (הזיה)</b> הוא תשובה שגויה או סותרת שעלולה להטעות — זהו מדד הבטיחות העיקרי. כשלי התנהגות (מענה במקום הימנעות, היעדר בירור נדרש) נמדדים בנפרד תחת <b>כשל במדיניות המענה</b>.</div></div><div class="panel"><h2>אבחון צינור האחזור והיצירה</h2>{pipeline_bars}<div class="note"><b>אחזור טוב</b> פירושו שכל הפרטים הנדרשים נמצאו, ללא מקטע שסותר את תשובת הייחוס. <b>אחזור חלש</b> פירושו שחסר לפחות פרט נדרש אחד או שנמצא מקטע סותר. אחזור טוב עם תשובה לא תקינה מצביע על כשל בשלב יצירת התשובה.</div></div></div>
 <div class="grid"><div class="panel"><h2>מדדי מידע בתשובות</h2>{answer_scores}<div class="note"><b>כיסוי</b> הוא שיעור הפרטים הנדרשים שנענו נכון. <b>דיוק בפרטים שנענו</b> בודק כמה מהפרטים שהצ׳אטבוט ניסה לענות עליהם היו נכונים. בנוסף נמצאו בסך הכול: {answer_metrics['false_claims_total']} טענות שגויות, {answer_metrics['unsupported_claims_total']} טענות לא מבוססות ו-{answer_metrics['extraneous_claims_total']} טענות עודפות.</div></div><div class="panel"><h2>מדדי מידע באחזור</h2>{retrieval_scores}<div class="note"><b>כיסוי המידע</b> הוא מספר הפרטים הנדרשים שנמצאו במקטעים. <b>שיעור מקטעים רלוונטיים</b> מראה כמה מהמקטעים תרמו למענה. נמצאו {retrieval_metrics['irrelevant_chunks_total']} מקטעים לא רלוונטיים ו-{retrieval_metrics['contradictory_chunks_total']} מקטעים סותרים. המדדים מחושבים רק עבור שאלות שבהן סופקו מקטעים. היעדר מקטעים הוא היעדר נתוני אחזור, ואינו הוכחה לכשל אחזור.</div></div></div>
 {paired_panel}
+{gap_panel}
 <div class="panel"><h2>ביצועים לפי נושא</h2><div class="note">כל מדדי הביצוע מוצגים בפורמט <b>אחוז (מונה/מכנה)</b> עם רווח סמך וילסון של 95%. נושאים עם פחות מ-{summary['minimum_topic_sample']} תוצאות מסומנים כמדגם קטן. מדד התשובות הנכונות כולל רק משימות שבהן נדרש מענה עובדתי; הבהרה והימנעות נמדדות בנפרד. עמודת <b>מידע מטעה (הזיות)</b> סופרת רק תשובות שגויות או סותרות שעלולות להטעות, מתוך כלל התשובות שנבדקו בנושא.</div><table><thead><tr><th>נושא</th><th>שאלות</th>{correct_topic_header}<th>תשובות שימושיות</th><th>מידע מטעה (הזיות)</th><th>אחזור טוב</th></tr></thead><tbody>{topic_rows}</tbody></table></div>
 {insights_html}
 <div class="panel" style="margin-top:16px"><h2>פירוט לפי שאלה</h2><div class="filters"><input id="search" placeholder="חיפוש בשאלה, בתשובה או במזהה"><select id="topic"><option value="">כל הנושאים</option>{topic_options}</select><select id="outcome"><option value="">כל התוצאות</option>{outcome_options}</select></div><div id="visibleCount"></div>{details}</div></main>

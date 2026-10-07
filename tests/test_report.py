@@ -454,3 +454,30 @@ def test_soft_compare_bridges_eligible_population_change_from_errors():
     assert metric["soft_denominator"] == 2
     assert metric["soft_delta"] == 0.5
     assert metric["soft_favorable"] is True
+
+
+def _anchor_pair(parent_outcome, child_outcome):
+    parent = SilverQuestion(id="Q1", topic="t", question="מהו הנוהל המלא להגשת בקשה?", expected_answer="a", anchor=True)
+    child = SilverQuestion(
+        id="V1", topic="t", question="איך מגישים?", expected_answer="a",
+        question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1",
+    )
+    return [
+        EvaluationRecord(question=parent, result=ChatbotResult(question_id="Q1", answer="a"),
+                         outcome=parent_outcome, scores=_judged()),
+        EvaluationRecord(question=child, result=ChatbotResult(question_id="V1", answer="b"),
+                         outcome=child_outcome, scores=_judged()),
+    ]
+
+
+def test_anchors_are_reported_as_phrasing_gap_not_headline_by_default(tmp_path):
+    records = _anchor_pair(Outcome.CORRECT_ANSWER, Outcome.INCORRECT_ABSTENTION)
+    summary = build_summary(records)
+    assert summary["total"] == 1 and summary["anchor_records"] == 1
+    assert summary["correct_answer_count"] == 0
+    gap = summary["phrasing_gap"]
+    assert (gap["pairs"], gap["canonical_only"], gap["gap"]) == (1, 1, 1.0)
+    included = build_summary(records, "include")
+    assert included["total"] == 2 and included["correct_answer_count"] == 1
+    _, report_path = write_report(records, tmp_path)
+    assert "פער הניסוח" in report_path.read_text(encoding="utf-8")

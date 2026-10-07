@@ -9,6 +9,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from .models import CANONICAL_SCORING, GENERATION_MODES
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -81,6 +83,8 @@ class Settings:
     planning_max_topic_coverage: float = 0.6
     planning_variation_share: float = 0.5
     planning_min_boundary_per_topic: int = 2
+    generation_mode: str = "standard"
+    canonical_scoring: str = "gap"
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -95,6 +99,7 @@ class Settings:
             boundary_share=self.unanswerable_ratio,
             min_boundary_per_topic=self.planning_min_boundary_per_topic,
             questions_per_call=self.questions_per_call,
+            mode=self.generation_mode,
         )
 
     def validate(self) -> "Settings":
@@ -109,6 +114,10 @@ class Settings:
             errors.append("generation.variation_batch_size must be positive")
         if self.closed_book_check not in {"off", "tag", "reject"}:
             errors.append("generation.closed_book_check must be off, tag, or reject")
+        if self.generation_mode not in GENERATION_MODES:
+            errors.append("generation.mode must be standard or user_facing")
+        if self.canonical_scoring not in CANONICAL_SCORING:
+            errors.append("evaluation.canonical_scoring must be gap, include, or exclude")
         if not 1 <= self.questions_per_call <= 20:
             errors.append("generation.questions_per_call must be in [1, 20]")
         if self.context_nodes < 0:
@@ -335,6 +344,8 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         planning_max_topic_coverage=float(_get(data, "planning", "max_topic_coverage", 0.6)),
         planning_variation_share=float(_get(data, "planning", "variation_share", 0.5)),
         planning_min_boundary_per_topic=int(_get(data, "planning", "min_boundary_per_topic", 2)),
+        generation_mode=str(_get(data, "generation", "mode", "standard")).strip().lower(),
+        canonical_scoring=str(_get(data, "evaluation", "canonical_scoring", "gap")).strip().lower(),
     ).validate()
 
 

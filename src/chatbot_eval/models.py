@@ -108,6 +108,10 @@ class ThemeAssignmentBatch(BaseModel):
 
 # Boundary-question kinds. Empty means unspecified (legacy or model omitted it).
 BOUNDARY_KINDS = ("missing_detail", "false_premise", "out_of_scope")
+# "standard": canonical questions plus variants for some of them; "user_facing": every canonical and
+# boundary question gets one user phrasing and becomes its anchor.
+GENERATION_MODES = ("standard", "user_facing")
+CANONICAL_SCORING = ("gap", "include", "exclude")
 
 
 class GeneratedQuestion(BaseModel):
@@ -171,6 +175,9 @@ class GeneratedVariation(BaseModel):
     # means the interpretations are all safe to present, so a correct comprehensive answer (covering
     # every interpretation) is just as acceptable as a clarifying question.
     ambiguity_kind: Literal["must_clarify", "answer_or_clarify"] = "must_clarify"
+    # natural_user of an answerable source: 1-based IDs of the source's reference claims the variant
+    # still asks for (empty = all of them).
+    kept_claim_ids: list[int] = Field(default_factory=list)
     rationale: str
 
 
@@ -204,6 +211,9 @@ class SilverQuestion(BaseModel):
     # A model answered every reference claim without the documents (general knowledge); kept, but
     # reported separately because it says less about retrieval.
     closed_book_answerable: bool = False
+    # A canonical question kept only as the grounded intent behind its user-phrased variant
+    # (generation mode "user_facing"); scored per evaluation.canonical_scoring.
+    anchor: bool = False
     review_status: str = "pending"
     reviewer_notes: str = ""
 

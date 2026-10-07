@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import atexit
 import hashlib
 import json
 import logging
 import os
 import shutil
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -178,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     review_export.add_argument("--output", type=Path, default=Path("outputs/review"), help="Destination for the review CSV/.md")
     review_export.add_argument("--name", default="questions_for_review", help="Base filename (stem) for the exported CSV/.md, e.g. 'questions_for_review_hova'")
     review_export.add_argument("--hebrew-columns", action="store_true", help="Write Hebrew column headers for reviewers (the 'id' column stays English); review-merge reads either language")
+    review_export.add_argument("--include-anchors", action="store_true", help="Also export anchor (canonical intent) rows; by default they appear only as each variant's parent_question")
 
     review_merge = commands.add_parser(
         "review-merge",
@@ -196,6 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
     revary.add_argument("--variation-count", type=int, help="Total variants to generate; defaults to the number previously present")
     revary.add_argument("--ambiguous-variation-share", type=float, help="Share of variants that should be ambiguous; defaults to config value")
     revary.add_argument("--exclude-questions", type=Path, help="Existing silver CSV/JSONL whose questions must not be reproduced as variants")
+    revary.add_argument("--mode", choices=["standard", "user_facing"], help="Variation mode; defaults to config generation.mode. user_facing gives every canonical and boundary question one natural phrasing and makes it an anchor")
+    revary.add_argument("--keep-existing", action="store_true", help="Keep existing variants (and their review state) and only add missing ones")
+    revary.add_argument("--documents", type=Path, help="Document root; with generation.verify_unanswerable, boundary rewrites are re-checked against the whole corpus")
+    _add_cache_arguments(revary)
 
     reground = commands.add_parser(
         "reground",
@@ -555,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
                 show_correct_answer_metrics=not args.hide_correct_answer_metrics,
                 previous_records=previous_records,
                 current_contract=current_contract, previous_contract=previous_contract,
-                soft_compare=args.soft_compare,
+                soft_compare=args.soft_compare, canonical_scoring=settings.canonical_scoring,
             )
             manifest.complete(record_count=len(records), outputs=input_inventory([summary_json, report_html]))
         print(f"Generated report from {len(records)} completed records.\nSummary: {summary_json}\nReport: {report_html}")
@@ -571,14 +576,17 @@ def main(argv: list[str] | None = None) -> int:
         ) as manifest:
             review_csv, review_md = write_review_file(
                 questions, args.output, hebrew_columns=args.hebrew_columns, basename=args.name,
+                include_anchors=args.include_anchors,
             )
             manifest.complete(
                 question_count=len(questions),
                 outputs=input_inventory([review_csv, review_md]),
             )
+        exported = len(questions) if args.include_anchors else sum(not q.anchor for q in questions)
         print(
-            f"Exported {len(questions)} questions for human review.\n"
-            f"Edit this file: {review_csv}\nRead-only view: {review_md}\n"
+            f"Exported {exported} questions for human review"
+            + (f" ({len(questions) - exported} anchors shown as parent_question)" if exported < len(questions) else "")
+            + f".\nEdit this file: {review_csv}\nRead-only view: {review_md}\n"
             "After review, run 'review-merge' with the original silver file to rebuild the full technical set."
         )
         logger.info("command_completed command=review-export question_count=%d output=%s", len(questions), args.output)
@@ -624,7 +632,6 @@ def main(argv: list[str] | None = None) -> int:
     call_cache = _call_cache(args, settings, llm)
     if call_cache is not None:
         llm = call_cache
-        atexit.register(lambda: logger.info("llm_call_cache %s", call_cache.summary()))
     if args.command == "generate-prompt":
         profile = args.instruction_profile or settings.prompt_instruction_profile
         answer_policy = args.answer_policy or settings.prompt_answer_policy
@@ -703,19 +710,34 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--ambiguous-variation-share must be in [0, 1]")
         if args.variation_count is not None and args.variation_count < 0:
             raise ValueError("--variation-count must be non-negative")
+        mode = args.mode or settings.generation_mode
+        cache = _workflow_cache(args, settings)
         with RunManifest(
-            args.output, command=args.command, settings=settings, inputs=[args.questions],
+            args.output, command=args.command, settings=settings,
+            inputs=[args.questions] + ([args.documents] if args.documents else []),
             parameters={
                 "total_questions": len(questions),
                 "variation_count": args.variation_count,
                 "ambiguous_variation_share": ambiguous_share,
+                "mode": mode, "keep_existing": args.keep_existing,
+                "verify_boundary_variants": bool(args.documents and settings.verify_unanswerable),
                 "generation_fingerprint": graph_build_fingerprint(),
             },
         ) as manifest:
             generator = SilverSetGenerator(
                 llm, settings.generation_model, progress_enabled,
-                embedder=_embedder(settings, llm, _workflow_cache(args, settings)),
+                embedder=_embedder(settings, llm, cache),
             )
+            boundary_check = None
+            if args.documents and settings.verify_unanswerable:
+                chunks, _ = _analysis_cache(args, settings).load_chunks(
+                    args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled,
+                )
+                revary_rejected: Counter = Counter()
+                boundary_check = lambda text: generator._answerable_in_corpus(  # noqa: E731
+                    text, chunks, evidence_limit=settings.unanswerable_evidence_limit,
+                    tolerate=settings.continue_on_call_failure, rejected=revary_rejected,
+                )
             merged, revary_diagnostics = generator.regenerate_variations(
                 questions,
                 variation_budget=args.variation_count,
@@ -726,17 +748,22 @@ def main(argv: list[str] | None = None) -> int:
                 batch_size=settings.variation_batch_size,
                 semantic_duplicate_threshold=settings.semantic_duplicate_threshold,
                 continue_on_call_failure=settings.continue_on_call_failure,
+                mode=mode, keep_existing=args.keep_existing, boundary_check=boundary_check,
             )
+            if boundary_check is not None:
+                revary_diagnostics["boundary_check_rejected"] = dict(revary_rejected)
             csv_path, jsonl_path = write_questions(merged, args.output)
             manifest.complete(
                 question_count=len(merged), revary_diagnostics=revary_diagnostics,
+                llm_call_cache=call_cache.summary() if call_cache is not None else {"enabled": False},
                 outputs=input_inventory([csv_path, jsonl_path]),
             )
         print(
-            f"Regenerated variations: kept {revary_diagnostics['canonical_kept']} canonical, "
+            f"Regenerated variations ({mode}): kept {revary_diagnostics['canonical_kept']} canonical"
+            f" and {revary_diagnostics['previous_variants_kept']} existing variants, "
             f"dropped {revary_diagnostics['previous_variants_dropped']} old variants, "
             f"created {revary_diagnostics['new_variants']} new "
-            f"({revary_diagnostics['new_variants_by_form']}).\n"
+            f"({revary_diagnostics['new_variants_by_form']}); {revary_diagnostics['anchors']} anchors.\n"
             f"Silver CSV: {csv_path}\nProvenance JSONL: {jsonl_path}\n"
             "New variants are review_status=pending; review and approve them before evaluating."
         )
@@ -915,6 +942,7 @@ def main(argv: list[str] | None = None) -> int:
                 variation_batch_size=settings.variation_batch_size,
                 questions_per_call=settings.questions_per_call,
                 context_nodes=settings.context_nodes,
+                mode=settings.generation_mode,
                 concurrency=settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and
@@ -1019,6 +1047,8 @@ def main(argv: list[str] | None = None) -> int:
             args.results, sheet_name=args.sheet, columns=columns, progress_enabled=progress_enabled,
             strict=args.strict, diagnostics=import_diagnostics,
         )
+        if settings.canonical_scoring == "exclude":
+            pairs = [(question, result) for question, result in pairs if not question.anchor]
         concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
         if concurrency < 1:
             raise ValueError("--max-concurrency must be positive")
@@ -1074,7 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
                 show_correct_answer_metrics=not args.hide_correct_answer_metrics,
                 previous_records=previous_records,
                 current_contract=contract, previous_contract=previous_contract,
-                soft_compare=args.soft_compare,
+                soft_compare=args.soft_compare, canonical_scoring=settings.canonical_scoring,
             )
             output_paths = [details_csv, details_jsonl, summary_json, report_html, checkpoint_path, args.output / "evaluation_insights_status.json"]
             if insights_path:
@@ -1092,7 +1122,16 @@ def main(argv: list[str] | None = None) -> int:
 
     previous_records = read_evaluation_records(args.compare_with) if args.compare_with else None
     previous_contract = read_evaluation_contract(args.compare_with) if args.compare_with else None
-    questions = read_questions(args.questions, approved_only=args.approved_only)
+    questions = read_questions(args.questions)
+    if args.approved_only:
+        approved = [q for q in questions if q.review_status.lower() == "approved"]
+        # Anchors are not shown to reviewers; one is in scope when its user-phrased variant is approved.
+        approved_parents = {q.parent_question_id for q in approved}
+        questions = approved + [
+            q for q in questions if q.anchor and q.review_status.lower() != "approved" and q.id in approved_parents
+        ]
+    if settings.canonical_scoring == "exclude":
+        questions = [question for question in questions if not question.anchor]
     if not questions:
         raise ValueError("No questions selected for evaluation")
     concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
@@ -1158,7 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
             show_correct_answer_metrics=not args.hide_correct_answer_metrics,
             previous_records=previous_records,
             current_contract=contract, previous_contract=previous_contract,
-            soft_compare=args.soft_compare,
+            soft_compare=args.soft_compare, canonical_scoring=settings.canonical_scoring,
         )
         output_paths = [details_csv, details_jsonl, summary_json, report_html, checkpoint_path, args.output / "evaluation_insights_status.json"]
         if insights_path:

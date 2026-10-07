@@ -57,6 +57,7 @@ def normalize_question_payload(payload: dict[str, Any]) -> dict[str, Any]:
     data["answerable"] = parse_bool(data.get("answerable"), default_answerable)
     data["clarification_acceptable"] = parse_bool(data.get("clarification_acceptable"), False)
     data["closed_book_answerable"] = parse_bool(data.get("closed_book_answerable"), False)
+    data["anchor"] = parse_bool(data.get("anchor"), False)
     data["expected_behavior"] = behavior or ("answer" if data["answerable"] else "abstain")
     data["question_form"] = data.get("question_form") or ("ambiguous" if data["expected_behavior"] == "clarify" else "canonical")
     for name in ("reference_claims", "supporting_quotes", "sources"):
@@ -100,6 +101,8 @@ def validate_question_set(questions: list[SilverQuestion]) -> list[SilverQuestio
 
         if question.clarification_acceptable and question.expected_behavior != ExpectedBehavior.ANSWER:
             errors.append(f"{prefix} sets clarification_acceptable but is not an answer task")
+        if question.anchor and question.question_form != QuestionForm.CANONICAL:
+            errors.append(f"{prefix} is marked as an anchor but is not a canonical question")
 
         if question.expected_behavior == ExpectedBehavior.ANSWER:
             if not question.answerable:

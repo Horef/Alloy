@@ -4,7 +4,7 @@ from collections import Counter
 from chatbot_eval.documents import Chunk
 from chatbot_eval.generator import (
     GenerationOptions, SilverSetGenerator, _assign_stable_ids, _is_duplicate, _render_chunks,
-    allocate_quotas, allocate_type_targets, validate_candidate,
+    allocate_quotas, allocate_type_targets, mark_anchors, validate_candidate,
 )
 from chatbot_eval.graph import GraphBundle, GraphNode, GraphTopic, KnowledgeGraph, build_edges
 from chatbot_eval.graph_build import GraphBuilder
@@ -1102,3 +1102,110 @@ def test_natural_variant_must_be_simpler_than_its_parent():
     )
     assert [v.question for v in variations] == ["מה להגיש כדי שיזינו לי תואר?"]
     assert rejected["natural_not_simpler"] == 1
+
+
+def _user_facing_set():
+    answerable = SilverQuestion(
+        id="Q1", topic="t", expected_answer="מגישים טופס א׳ ומקבלים החזר תוך חודש",
+        question="מהו הנוהל להגשת בקשה להחזר הוצאות נסיעה ותוך כמה זמן מתקבל ההחזר בפועל?",
+        reference_claims=["מגישים טופס א׳", "ההחזר מתקבל תוך חודש"],
+    )
+    boundary = SilverQuestion(
+        id="U1", topic="t", question="מהו מספר הטלפון הישיר של מדור ההחזרים בבסיס הקליטה והמיון?",
+        expected_answer="מספר הטלפון אינו מופיע במסמכים", answerable=False,
+        expected_behavior=ExpectedBehavior.ABSTAIN, question_type=QuestionType.UNANSWERABLE,
+        boundary_kind="missing_detail",
+    )
+    return answerable, boundary
+
+
+def test_user_facing_mode_phrases_every_parent_keeps_claim_subsets_and_marks_anchors():
+    answerable, boundary = _user_facing_set()
+    prompts: list[str] = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            return VariationBatch(variations=[
+                GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
+                                   question="איך מגישים החזר נסיעות?", kept_claim_ids=[1]),
+                GeneratedVariation(source_question_id="U1", question_form="natural_user", rationale="r",
+                                   question="מה הטלפון של מדור ההחזרים?"),
+                GeneratedVariation(source_question_id="U1", question_form="ambiguous", rationale="r",
+                                   question="למי מתקשרים?", required_clarification="באיזה נושא?"),
+            ])
+
+    merged, diagnostics = SilverSetGenerator(FakeLLM(), "m").regenerate_variations(
+        [answerable, boundary], variation_budget=0, max_candidate_rounds=1, stable_question_ids=False,
+        mode="user_facing",
+    )
+    natural = {q.parent_question_id: q for q in merged if q.question_form == QuestionForm.NATURAL_USER}
+    assert set(natural) == {"Q1", "U1"}
+    assert natural["Q1"].reference_claims == ["מגישים טופס א׳"]
+    assert natural["U1"].expected_behavior == ExpectedBehavior.ABSTAIN and not natural["U1"].answerable
+    assert natural["U1"].boundary_kind == "missing_detail" and natural["U1"].reference_claims == []
+    assert all(q.anchor for q in merged if q.question_form == QuestionForm.CANONICAL)
+    assert diagnostics["anchors"] == 2 and diagnostics["parents_without_natural"] == []
+    assert diagnostics["rejected"]["ambiguous_from_boundary"] == 1
+    assert '"needs_natural": true' in prompts[0] and '"kind": "boundary"' in prompts[0]
+
+
+def test_user_facing_rejects_boundary_variant_that_became_answerable_and_invalid_claims():
+    answerable, boundary = _user_facing_set()
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            return VariationBatch(variations=[
+                GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
+                                   question="איך מגישים החזר נסיעות?", kept_claim_ids=[7]),
+                GeneratedVariation(source_question_id="U1", question_form="natural_user", rationale="r",
+                                   question="איך מקבלים החזר נסיעות?"),
+            ])
+
+    rejected = Counter()
+    variations = SilverSetGenerator(FakeLLM(), "m").generate_variations(
+        [answerable, boundary], variation_budget=0, ambiguous_variation_share=0, max_candidate_rounds=1,
+        rejected=rejected, mode="user_facing", boundary_check=lambda text: "החזר" in text,
+    )
+    assert variations == []
+    assert rejected["invalid_kept_claims"] == 1 and rejected["boundary_variant_answerable"] == 1
+
+
+def test_keep_existing_only_fills_missing_natural_variants():
+    answerable, boundary = _user_facing_set()
+    existing = SilverQuestion(
+        id="V-old", topic="t", question="איך מגישים החזר נסיעות?", expected_answer=answerable.expected_answer,
+        reference_claims=answerable.reference_claims, question_form=QuestionForm.NATURAL_USER,
+        parent_question_id="Q1", review_status="approved",
+    )
+    calls: list[str] = []
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            calls.append(prompt)
+            return VariationBatch(variations=[
+                GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
+                                   question="כמה זמן לוקח ההחזר?", kept_claim_ids=[2]),
+                GeneratedVariation(source_question_id="U1", question_form="natural_user", rationale="r",
+                                   question="מה הטלפון של מדור ההחזרים?"),
+            ])
+
+    merged, diagnostics = SilverSetGenerator(FakeLLM(), "m").regenerate_variations(
+        [answerable, boundary, existing], max_candidate_rounds=1, mode="user_facing", keep_existing=True,
+    )
+    by_parent = Counter(q.parent_question_id for q in merged if q.question_form == QuestionForm.NATURAL_USER)
+    assert by_parent == {"Q1": 1, "U1": 1}
+    assert any(q.id == "V-old" and q.review_status == "approved" for q in merged)
+    assert diagnostics["previous_variants_kept"] == 1 and diagnostics["rejected"]["natural_parent_already_covered"] == 1
+    assert '"needs_natural": false' in calls[0]
+
+
+def test_standard_mode_never_marks_anchors():
+    answerable, _ = _user_facing_set()
+    variant = SilverQuestion(
+        id="V1", topic="t", question="איך מגישים?", expected_answer="x", reference_claims=["x"],
+        question_form=QuestionForm.NATURAL_USER, parent_question_id="Q1",
+    )
+    answerable.anchor = True
+    assert mark_anchors([answerable, variant], "standard") == 0 and not answerable.anchor
+    assert mark_anchors([answerable, variant], "user_facing") == 1 and answerable.anchor

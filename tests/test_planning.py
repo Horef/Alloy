@@ -38,6 +38,17 @@ def test_plan_represents_every_chunk_and_scales_with_density():
     assert all(topic.boundary >= 2 for topic in plan.topics)
 
 
+def test_user_facing_plan_phrases_every_canonical_and_boundary_question():
+    chunks = [_chunk("a.md#1", 20), _chunk("b.md#1", 20)]
+    topics = [GraphTopic("A", "", 1, ["a.md#1"]), GraphTopic("B", "", 1, ["b.md#1"])]
+    standard = build_plan(chunks, topics, PlanningParameters(margin_of_error=0), graph={}).totals
+    user = build_plan(chunks, topics, PlanningParameters(margin_of_error=0, mode="user_facing"), graph={}).totals
+    assert user["natural_user"] == user["canonical"] + user["boundary"]
+    assert user["ambiguous"] == standard["ambiguous"] and user["variations"] == standard["variations"]
+    assert user["user_facing"] == user["natural_user"] + user["ambiguous"]
+    assert user["total"] == user["canonical"] + user["boundary"] + user["user_facing"]
+
+
 def test_precision_floor_is_capped_by_what_the_content_supports():
     chunks = [_chunk("a.md#1", 50), _chunk("a.md#2", 50), _chunk("a.md#3", 50), _chunk("b.md#1", 40)]
     topics = [

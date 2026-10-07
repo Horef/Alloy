@@ -64,6 +64,8 @@ class PlanningParameters:
     boundary_share: float = 0.10
     min_boundary_per_topic: int = 2
     questions_per_call: int = 8
+    # "user_facing": every canonical and boundary question also gets one natural_user phrasing.
+    mode: str = "standard"
 
 
 class TopicPlan(BaseModel):
@@ -163,7 +165,9 @@ def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -
     )
     for plan in topic_plans:
         plan.boundary = boundary_quotas.get(plan.name, 0)
-    total = canonical_total + variations + boundary
+    user_facing = parameters.mode == "user_facing"
+    natural = canonical_total + boundary if user_facing else variations - ambiguous
+    total = canonical_total + boundary + natural + ambiguous
     unit_values = sorted(units.values())
     return GenerationPlan(
         corpus={
@@ -174,9 +178,10 @@ def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -
         parameters=asdict(parameters),
         graph=graph,
         totals={
-            "canonical": canonical_total, "variations": variations, "natural_user": variations - ambiguous,
+            "canonical": canonical_total, "variations": variations, "natural_user": natural,
             "ambiguous": ambiguous, "boundary": boundary, "total": total,
-            "estimated_model_calls": _estimated_calls(canonical_total, variations, boundary, parameters),
+            "user_facing": natural + ambiguous if user_facing else total,
+            "estimated_model_calls": _estimated_calls(canonical_total, natural + ambiguous, boundary, parameters),
         },
         topics=topic_plans,
         topics_fingerprint=topics_fingerprint(topics),
@@ -189,7 +194,10 @@ def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -
             f"Variations are {parameters.variation_share:.0%} of canonical questions "
             f"({parameters.ambiguous_share:.0%} of them ambiguous); boundary questions are "
             f"{parameters.boundary_share:.0%} of the set with at least {parameters.min_boundary_per_topic} per topic.",
-        ],
+        ] + ([
+            "user_facing mode: every canonical and boundary question also gets one natural_user phrasing; "
+            "the canonical forms become anchors, so the user-facing set is natural_user + ambiguous.",
+        ] if user_facing else []),
     )
 
 

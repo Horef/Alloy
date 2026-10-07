@@ -252,3 +252,24 @@ def test_review_merge_reads_hebrew_factual_edit_and_flags(tmp_path):
     merged = merge_review_file([original], review_csv)
     assert merged[0].expected_answer == "תשובה חדשה"
     assert merged[0].review_status == "needs_reground"
+
+
+def test_review_export_hides_anchors_behind_parent_text_and_merge_keeps_them(tmp_path):
+    anchor = _question("Q0001", question="מהו הנוהל המלא להגשת בקשה להחזר?", anchor=True)
+    variant = _question(
+        "V0001", question="איך מגישים החזר?", question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0001",
+    )
+    orphan_anchor = _question("Q0002", question="שאלה אחרת לגמרי?", anchor=True)
+    orphan_variant = _question(
+        "V0002", question="ומה עם זה?", question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0002",
+    )
+    review_csv, md_path = write_review_file([anchor, variant, orphan_anchor, orphan_variant], tmp_path)
+    rows = list(csv.DictReader(review_csv.open(encoding="utf-8-sig", newline="")))
+    assert [row["id"] for row in rows] == ["V0001", "V0002"]
+    assert rows[0]["parent_question"] == "מהו הנוהל המלא להגשת בקשה להחזר?"
+    assert "מהו הנוהל המלא" in md_path.read_text(encoding="utf-8")
+    _edit_review_csv(review_csv, lambda rows: [row for row in rows if row["id"] != "V0002"])
+    diagnostics = MergeDiagnostics()
+    merged = merge_review_file([anchor, variant, orphan_anchor, orphan_variant], review_csv, diagnostics=diagnostics)
+    assert {q.id for q in merged} == {"Q0001", "V0001"}
+    assert diagnostics.anchors_kept == 1 and diagnostics.deleted_by_reviewer == 2

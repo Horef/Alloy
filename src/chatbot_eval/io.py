@@ -20,6 +20,7 @@ QUESTION_COLUMNS = [
     "rationale", "reference_claims", "source_ids", "source_files", "source_locations", "source_excerpts", "supporting_quotes",
     "review_status", "reviewer_notes", "sources_json", "csv_escape_version",
     "clarification_acceptable", "acceptable_clarification", "boundary_kind", "closed_book_answerable",
+    "anchor",
 ]
 
 
@@ -102,6 +103,7 @@ def write_questions(questions: Iterable[SilverQuestion], output_dir: Path) -> tu
                 "acceptable_clarification": q.acceptable_clarification,
                 "boundary_kind": q.boundary_kind,
                 "closed_book_answerable": str(q.closed_book_answerable).lower(),
+                "anchor": str(q.anchor).lower(),
             }))
         for q in items:
             jsonl_handle.write(q.model_dump_json() + "\n")
