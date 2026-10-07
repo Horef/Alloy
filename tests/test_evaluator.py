@@ -50,6 +50,19 @@ def test_answer_or_clarify_accepts_either_comprehensive_answer_or_clarification(
     assert classify(plain, scores(clarification=True)) != Outcome.CORRECT_CLARIFICATION
 
 
+def test_broad_question_needs_only_min_key_points_and_tolerates_long_overviews():
+    from chatbot_eval.models import QuestionForm
+
+    item = SilverQuestion(
+        id="B1", topic="x", question="מה מגיע לי?", expected_answer="a", reference_claims=["א", "ב", "ג", "ד"],
+        question_form=QuestionForm.BROAD, clarification_acceptable=True, min_key_points=2,
+    )
+    assert classify(item, scores(required=4, addressed=2, correct=2, scope="too_much")) == Outcome.CORRECT_ANSWER
+    assert classify(item, scores(required=4, addressed=2, correct=1, scope="too_little")) == Outcome.PARTIAL_TOO_LITTLE
+    assert classify(item, scores(required=4, correct=0, addressed=0, clarification=True)) == Outcome.CORRECT_CLARIFICATION
+    assert classify(item, scores(required=4, false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
+
+
 def test_clarification_is_a_distinct_expected_behavior():
     item = question(True)
     item.expected_behavior = ExpectedBehavior.CLARIFY

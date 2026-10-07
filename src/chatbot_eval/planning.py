@@ -66,6 +66,8 @@ class PlanningParameters:
     questions_per_call: int = 8
     # "user_facing": every canonical and boundary question also gets one natural_user phrasing.
     mode: str = "standard"
+    # Corpus + population broad questions when enabled (one per topic is added); -1 = disabled.
+    broad_estimate: int = -1
 
 
 class TopicPlan(BaseModel):
@@ -167,7 +169,9 @@ def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -
         plan.boundary = boundary_quotas.get(plan.name, 0)
     user_facing = parameters.mode == "user_facing"
     natural = canonical_total + boundary if user_facing else variations - ambiguous
-    total = canonical_total + boundary + natural + ambiguous
+    # Broad questions are an upper bound: population questions exist only for populations the documents address.
+    broad = parameters.broad_estimate + len(topic_plans) if parameters.broad_estimate >= 0 else 0
+    total = canonical_total + boundary + natural + ambiguous + broad
     unit_values = sorted(units.values())
     return GenerationPlan(
         corpus={
@@ -179,8 +183,8 @@ def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -
         graph=graph,
         totals={
             "canonical": canonical_total, "variations": variations, "natural_user": natural,
-            "ambiguous": ambiguous, "boundary": boundary, "total": total,
-            "user_facing": natural + ambiguous if user_facing else total,
+            "ambiguous": ambiguous, "boundary": boundary, "broad_max": broad, "total": total,
+            "user_facing": natural + ambiguous + broad if user_facing else total,
             "estimated_model_calls": _estimated_calls(canonical_total, natural + ambiguous, boundary, parameters),
         },
         topics=topic_plans,

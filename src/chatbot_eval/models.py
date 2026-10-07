@@ -32,6 +32,8 @@ class QuestionForm(str, Enum):
     CANONICAL = "canonical"
     NATURAL_USER = "natural_user"
     AMBIGUOUS = "ambiguous"
+    # A very general user question ("מה הזכויות שלי?") answered by an overview of the main areas.
+    BROAD = "broad"
 
 
 class ExpectedBehavior(str, Enum):
@@ -185,6 +187,41 @@ class VariationBatch(BaseModel):
     variations: list[GeneratedVariation]
 
 
+BROAD_LEVELS = ("corpus", "population", "topic")
+
+
+class BroadKeyPoint(BaseModel):
+    point: str
+    document_ids: list[str] = Field(default_factory=list)
+
+
+class GeneratedBroadQuestion(BaseModel):
+    question: str
+    level: Literal["corpus", "population", "topic"]
+    scope: str = ""
+    key_points: list[BroadKeyPoint]
+    min_key_points: int = Field(ge=1)
+    expected_answer: str
+    acceptable_clarification: str = ""
+    rationale: str = ""
+
+
+class BroadQuestionBatch(BaseModel):
+    questions: list[GeneratedBroadQuestion]
+
+
+class BroadPointVerdict(BaseModel):
+    point_id: int
+    supported: bool
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class BroadSupportCheck(BaseModel):
+    """Which key points of a broad question the cited documents' text actually states."""
+
+    verdicts: list[BroadPointVerdict]
+
+
 class SilverQuestion(BaseModel):
     id: str
     topic: str
@@ -214,6 +251,10 @@ class SilverQuestion(BaseModel):
     # A canonical question kept only as the grounded intent behind its user-phrased variant
     # (generation mode "user_facing"); scored per evaluation.canonical_scoring.
     anchor: bool = False
+    # Broad questions: the reference claims are the main areas an overview should name; a correct
+    # answer names at least ``min_key_points`` of them. ``broad_level`` is corpus, population, or topic.
+    min_key_points: int = 0
+    broad_level: str = ""
     review_status: str = "pending"
     reviewer_notes: str = ""
 

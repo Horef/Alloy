@@ -6,6 +6,7 @@ QUESTION_FORM_HEBREW = {
     QuestionForm.CANONICAL: "שאלה מנוסחת היטב",
     QuestionForm.NATURAL_USER: "ניסוח משתמש טבעי",
     QuestionForm.AMBIGUOUS: "שאלה הדורשת הבהרה",
+    QuestionForm.BROAD: "שאלה כללית",
 }
 
 EXPECTED_BEHAVIOR_HEBREW = {

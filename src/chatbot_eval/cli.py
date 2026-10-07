@@ -17,7 +17,7 @@ from .artifacts import (
 from .cache import CorpusAnalysisCache
 from .config import load_settings
 from .evaluator import Evaluator, judge_contract_fingerprint
-from .generator import GenerationOptions, SilverSetGenerator, merge_question_sets, reground_fingerprint
+from .generator import GenerationOptions, SilverSetGenerator, _assign_stable_ids, merge_question_sets, reground_fingerprint
 from .graph import GraphBundle, derive_theme_clusters, derive_topic_clusters
 from .graph_build import (
     GraphBuilder, graph_build_fingerprint, group_chunks_by_document, signals_fingerprint,
@@ -31,7 +31,7 @@ from .insights import generate_insights, insights_fingerprint, write_insights
 from .io import read_questions, write_evaluations, write_questions
 from .llm import CachedStructuredLLM, GeminiStructuredLLM
 from .logging_utils import configure_logging
-from .models import ChatbotResult, Outcome, SilverQuestion
+from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .prompt_policy import POLICY_VERSION
@@ -212,6 +212,17 @@ def build_parser() -> argparse.ArgumentParser:
     reground.add_argument("--all", action="store_true", help="Re-ground every answerable question, not only those marked needs_reground")
     reground.add_argument("--evidence-limit", type=int, default=12, help="Maximum candidate chunks offered to the model per question")
     _add_cache_arguments(reground)
+
+    add_broad = commands.add_parser(
+        "add-broad",
+        help="Add broad overview questions (corpus, population, and per-topic) to an existing silver set without regenerating it",
+    )
+    add_broad.add_argument("--questions", type=Path, required=True, help="Silver CSV/JSONL to extend; its existing broad questions are replaced")
+    add_broad.add_argument("--documents", type=Path, required=True, help="Document root the set was generated from")
+    add_broad.add_argument("--output", type=Path, default=Path("outputs/questions-broad"), help="Destination for the extended silver CSV/JSONL")
+    add_broad.add_argument("--plan", type=Path, help="generation_plan.json the set was generated with, so the same topics are used")
+    add_broad.add_argument("--max-concurrency", type=int, help="Concurrent broad-question calls; default is config value")
+    _add_cache_arguments(add_broad)
 
     report = commands.add_parser("report", help="Regenerate a report from completed Alloy evaluation JSONL")
     report.add_argument("--results", type=Path, required=True, help="Current output directory or evaluation_details.jsonl")
@@ -837,6 +848,54 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("command_completed command=reground regrounded=%d output=%s", regrounded_count, args.output)
         return 0
 
+    if args.command == "add-broad":
+        questions = read_questions(args.questions)
+        if args.plan:
+            settings = replace(settings, **GenerationPlan.model_validate_json(args.plan.read_text(encoding="utf-8")).graph["used"])
+        concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
+        if concurrency < 1:
+            raise ValueError("--max-concurrency must be positive")
+        cache = _analysis_cache(args, settings)
+        kept = [q for q in questions if q.question_form != QuestionForm.BROAD]
+        with RunManifest(
+            args.output, command=args.command, settings=settings,
+            inputs=[args.questions, args.documents] + ([args.plan] if args.plan else []),
+            parameters={
+                "broad_corpus_questions": settings.broad_corpus_questions,
+                "broad_population_limit": settings.broad_population_limit,
+                "broad_min_key_points": settings.broad_min_key_points,
+                "replaced_broad": len(questions) - len(kept),
+            },
+        ) as manifest:
+            chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, max_concurrency=concurrency)
+            generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled, embedder=_embedder(settings, llm, cache))
+            rejected: Counter = Counter()
+            broad = generator.generate_broad(
+                chunks, bundle, corpus_questions=settings.broad_corpus_questions,
+                population_limit=settings.broad_population_limit, min_points=settings.broad_min_key_points,
+                existing=tuple(q.question for q in kept), concurrency=concurrency,
+                tolerate=settings.continue_on_call_failure, rejected=rejected,
+            )
+            if settings.stable_question_ids:
+                _assign_stable_ids(broad, reserved={q.id for q in kept})
+            csv_path, jsonl_path = write_questions(kept + broad, args.output)
+            diagnostics = {
+                "added": len(broad), "by_level": dict(Counter(q.broad_level for q in broad)),
+                "rejected": dict(rejected),
+            }
+            manifest.complete(
+                question_count=len(kept) + len(broad), broad_diagnostics=diagnostics, cache=cache.summary(),
+                llm_call_cache=call_cache.summary() if call_cache is not None else {"enabled": False},
+                outputs=input_inventory([csv_path, jsonl_path]),
+            )
+        print(
+            f"Added {len(broad)} broad questions ({diagnostics['by_level']}) to {len(kept)} existing ones.\n"
+            f"Silver CSV: {csv_path}\nProvenance JSONL: {jsonl_path}"
+        )
+        logger.info("command_completed command=add-broad added=%d output=%s", len(broad), args.output)
+        return 0
+
     if args.command == "plan":
         concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
         if concurrency < 1:
@@ -943,6 +1002,10 @@ def main(argv: list[str] | None = None) -> int:
                 questions_per_call=settings.questions_per_call,
                 context_nodes=settings.context_nodes,
                 mode=settings.generation_mode,
+                broad_questions=settings.broad_questions,
+                broad_corpus_questions=settings.broad_corpus_questions,
+                broad_population_limit=settings.broad_population_limit,
+                broad_min_key_points=settings.broad_min_key_points,
                 concurrency=settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and

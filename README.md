@@ -198,6 +198,10 @@ log_level = "INFO"
 | `generation.variation_batch_size` | `30` | Canonical questions per variation-generation call; the variation budget is spread over batches. |
 | `generation.mode` | `standard` | `standard`: user variants for part of the canonical questions. `user_facing`: every canonical and boundary question gets exactly one `natural_user` phrasing and becomes its **anchor** (`anchor=true`); ambiguous variants are sized as in standard mode. The anchor keeps the grounded intent, the user phrasing is what reviewers see and what is scored. |
 | `evaluation.canonical_scoring` | `gap` | How anchors are scored. `gap`: judged, left out of headline metrics, reported as the **phrasing gap** (anchor success minus user-phrasing success on the same pairs). `include`: also counted in headline metrics. `exclude`: not sent to the chatbot. Has no effect on sets without anchors. |
+| `generation.broad_questions` | `false` | Add `broad` overview questions: corpus and population questions from a map of all documents (front-matter title/subtitle/category and topics), plus one per topic from its documents' chunk summaries. Each key point must cite a document and is confirmed against the text of that document's most related chunks (one check call per question). |
+| `generation.broad_corpus_questions` | `2` | Corpus-level broad questions. |
+| `generation.broad_population_limit` | `8` | Most population-level broad questions; only populations the documents explicitly address are used. |
+| `generation.broad_min_key_points` | `3` | Fewest confirmed key points a broad question keeps. A correct answer must name about half of them (`min_key_points`, at least 2). |
 | `generation.questions_per_call` | `8` | Most questions requested from one model call. A larger topic quota is spread over more, smaller evidence windows instead of one oversized request. |
 | `generation.context_nodes` | `4` | Neighbor chunks shown with each focus window as context for integration questions; questions are based mainly on the window's focus chunks. |
 | `generation.closed_book_check` | `off` | `tag` marks questions a model answers fully without the documents (`closed_book_answerable=true`) and keeps them; `reject` drops them. Rejecting removes legitimate questions whose answers are also public, so `tag` is recommended. Costs two small calls per canonical candidate. |
@@ -442,9 +446,10 @@ evidence but changes the behavior expected from the chatbot.
 | `question_form` | Meaning | `expected_behavior` |
 |---|---|---|
 | `canonical` | Clean, explicit review question generated directly from evidence. | `answer` for supported questions, `abstain` for boundary questions. |
-| `natural_user` | How a real soldier types into a chat box: short (usually 4-10 words, about a third of the canonical length), first person or a situational opener, everyday words instead of official terms, one recognizable anchor term, and only the main part of a multi-part question. It may drop expert discriminators the canonical question spells out as long as the parent reference answer is still the natural, correct response. A rewrite that is not noticeably shorter than a non-trivial parent is rejected (`natural_not_simpler`). | `answer`; the parent reference answer is reused. |
+| `natural_user` | How a real soldier types into a chat box: short (usually 4-10 words, about a third of the canonical length), first person or a situational opener, everyday words instead of official terms, one recognizable anchor term, and only the main part of a multi-part question. It may drop expert discriminators the canonical question spells out as long as the parent reference answer is still the natural, correct response. A rewrite that is not noticeably shorter than a non-trivial parent is rejected (`natural_not_simpler`). | The parent's task: `answer` (graded only on the reference claims it still asks for) or, for a boundary parent in `user_facing` mode, `abstain`. |
 | `ambiguous` (`must_clarify`) | Plausible request missing a material discriminator, where a direct single-interpretation answer could be materially wrong or harmful. | `clarify`; `expected_answer` holds the ideal focused follow-up (only clarifying succeeds). |
 | `ambiguous` (`answer_or_clarify`) | Plausible request missing a discriminator, but where the interpretations are all safe to present together, so a comprehensive answer covering every interpretation is just as good as clarifying. | `answer` against the parent's comprehensive reference, **and** a clarifying question is accepted too (`clarification_acceptable=true`; the focused follow-up is kept in `acceptable_clarification`). |
+| `broad` | A very general question real users ask ("מה הזכויות שלי?", "אני חייל בודד, מה מגיע לי?", "מה יש לגבי דיור?") at `broad_level` corpus, population, or topic. Its reference claims are the main areas an overview names, each confirmed against the text of the documents it cites. | `answer`: correct when at least `min_key_points` areas are named correctly with no false claim (a long overview is not penalized); a focused clarifying question is accepted too. |
 
 Every variant stores `parent_question_id`. This makes it possible to compare whether a chatbot can
 handle both the clean formulation and realistic user language without treating the variants as
@@ -736,6 +741,24 @@ New variants are written with `review_status=pending` and (for ambiguous ones) c
 `revary_diagnostics` block records how many canonical questions were kept, how many old variants
 were dropped, and the new variant mix.
 
+## Workflow 3c: add broad overview questions
+
+`add-broad` adds `broad` questions to an existing set without regenerating it (existing broad
+questions are replaced). It reuses the cached chunks and knowledge graph; pass the plan the set was
+generated with so the same topics are used.
+
+```bash
+chatbot-eval --config config.toml add-broad \
+  --questions ./outputs/questions/silver_questions.jsonl \
+  --documents ./knowledge_base --plan ./outputs/plan/generation_plan.json \
+  --output ./outputs/questions-broad
+```
+
+The manifest's `broad_diagnostics` lists questions added per level and rejections
+(`broad_point_without_document`, `broad_point_unsupported`, `broad_too_few_supported_points`,
+`broad_level_over_budget`, `broad_duplicate`). In the review file, `key_points_readable` lists the
+confirmed areas and how many a correct answer must name.
+
 ## Workflow 4: evaluate a live chatbot
 
 The generic adapter sends one sequential HTTP `POST` per question. Defaults:
@@ -860,7 +883,7 @@ Explicit mappings are recommended for stable production jobs.
 | `--answerable-column NAME` | optional/auto | true/false, 1/0, or yes/no; defaults to true. |
 | `--error-column NAME` | optional/auto | Stored error; such rows bypass judging. |
 | `--expected-behavior-column NAME` | optional/auto | Expected `answer`, `clarify`, or `abstain` behavior. |
-| `--question-form-column NAME` | optional/auto | `canonical`, `natural_user`, or `ambiguous`. |
+| `--question-form-column NAME` | optional/auto | `canonical`, `natural_user`, `ambiguous`, or `broad`. |
 | `--parent-question-id-column NAME` | optional/auto | External parent ID; resolved to the imported parent row's Alloy ID. |
 | `--question-type-column NAME` | optional/auto | Silver-question type such as `basic_knowledge` or `document_wide`. |
 | `--difficulty-column NAME` | optional/auto | Difficulty label retained on the imported question. |

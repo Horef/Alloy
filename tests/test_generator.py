@@ -138,6 +138,13 @@ def test_stable_ids_are_deterministic_and_update_variant_parent():
 
     assert [item.id for item in first] == [item.id for item in second]
     assert first[0].id.startswith("Q-")
+
+    same_temp = [
+        SilverQuestion(id="T", topic="t", question="מה מגיע לי?", expected_answer="א"),
+        SilverQuestion(id="T", topic="t", question="מה יש לגבי דיור?", expected_answer="ב"),
+    ]
+    _assign_stable_ids(same_temp)
+    assert len({item.id for item in same_temp}) == 2
     assert first[1].id.startswith("V-")
     assert first[1].parent_question_id == first[0].id
 
@@ -1209,3 +1216,87 @@ def test_standard_mode_never_marks_anchors():
     answerable.anchor = True
     assert mark_anchors([answerable, variant], "standard") == 0 and not answerable.anchor
     assert mark_anchors([answerable, variant], "user_facing") == 1 and answerable.anchor
+
+
+def _broad_corpus():
+    chunks = [
+        Chunk("a.md#chunk-1", "a.md", "d", '---\ntitle: "מענק לחייל בודד"\nsubtitle: "סיוע חודשי"\n---\nחייל בודד מקבל מענק חודשי.'),
+        Chunk("b.md#chunk-1", "b.md", "d", '---\ntitle: "דיור לחיילים בודדים"\n---\nחייל בודד זכאי לבית חייל.'),
+        Chunk("c.md#chunk-1", "c.md", "d", '---\ntitle: "חופשות"\n---\nחייל בודד זכאי לחופשה מיוחדת פעם בשנה.'),
+    ]
+    return chunks, _bundle(chunks, [("סיוע לבודדים", 5, ["a.md#chunk-1", "b.md#chunk-1", "c.md#chunk-1"])])
+
+
+def test_broad_questions_keep_only_document_supported_key_points():
+    from chatbot_eval.models import (
+        BroadKeyPoint, BroadPointVerdict, BroadQuestionBatch, BroadSupportCheck, GeneratedBroadQuestion,
+    )
+
+    chunks, bundle = _broad_corpus()
+    prompts: list[str] = []
+
+    def broad(level, scope, question):
+        return GeneratedBroadQuestion(
+            question=question, level=level, scope=scope, min_key_points=2,
+            key_points=[
+                BroadKeyPoint(point="מענק חודשי", document_ids=["D01"]),
+                BroadKeyPoint(point="בית חייל", document_ids=["D02"]),
+                BroadKeyPoint(point="חופשה מיוחדת", document_ids=["D03"]),
+                BroadKeyPoint(point="הנחה בתחבורה", document_ids=["D09"]),
+            ],
+            expected_answer="מענק, דיור וחופשה.", acceptable_clarification="באיזה תחום?",
+        )
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            if schema is BroadQuestionBatch:
+                if "level=topic" in prompt and "TOPIC:" in prompt:
+                    return BroadQuestionBatch(questions=[broad("topic", "סיוע לבודדים", "מה יש לבודדים?")])
+                return BroadQuestionBatch(questions=[
+                    broad("corpus", "", "מה הזכויות שלי?"),
+                    broad("population", "חיילים בודדים", "אני חייל בודד, מה מגיע לי?"),
+                    broad("topic", "x", "שאלה ברמה הלא נכונה"),
+                ])
+            assert schema is BroadSupportCheck
+            return BroadSupportCheck(verdicts=[
+                BroadPointVerdict(point_id=1, supported=True, source_ids=["a.md#chunk-1"]),
+                BroadPointVerdict(point_id=2, supported=True, source_ids=["b.md#chunk-1"]),
+                BroadPointVerdict(point_id=3, supported=False),
+            ])
+
+    rejected = Counter()
+    questions = SilverSetGenerator(FakeLLM(), "m").generate_broad(
+        chunks, bundle, corpus_questions=1, population_limit=2, min_points=2, rejected=rejected,
+    )
+    assert [q.broad_level for q in questions] == ["corpus", "population", "topic"]
+    first = questions[0]
+    assert first.question_form == QuestionForm.BROAD and first.clarification_acceptable
+    assert first.reference_claims == ["מענק חודשי", "בית חייל"] and first.min_key_points == 2
+    assert {s.source_id for s in first.sources} == {"a.md#chunk-1", "b.md#chunk-1"}
+    assert rejected["broad_point_without_document"] == 3 and rejected["broad_level_over_budget"] == 1
+    assert "[D01] מענק לחייל בודד -- סיוע חודשי" in prompts[0]
+
+
+def test_broad_question_without_enough_supported_points_is_rejected():
+    from chatbot_eval.models import (
+        BroadKeyPoint, BroadPointVerdict, BroadQuestionBatch, BroadSupportCheck, GeneratedBroadQuestion,
+    )
+
+    chunks, bundle = _broad_corpus()
+
+    class FakeLLM:
+        def generate(self, prompt, schema, model):
+            if schema is BroadQuestionBatch:
+                return BroadQuestionBatch(questions=[GeneratedBroadQuestion(
+                    question="מה מגיע לי?", level="topic" if "TOPIC:" in prompt else "corpus", min_key_points=2,
+                    key_points=[BroadKeyPoint(point=p, document_ids=["D01"]) for p in ("א", "ב", "ג")],
+                    expected_answer="x",
+                )])
+            return BroadSupportCheck(verdicts=[BroadPointVerdict(point_id=1, supported=True, source_ids=["a.md#chunk-1"])])
+
+    rejected = Counter()
+    assert SilverSetGenerator(FakeLLM(), "m").generate_broad(
+        chunks, bundle, corpus_questions=1, population_limit=0, min_points=2, rejected=rejected,
+    ) == []
+    assert rejected["broad_too_few_supported_points"] == 2

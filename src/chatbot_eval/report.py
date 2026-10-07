@@ -343,6 +343,15 @@ def build_summary(records: list[EvaluationRecord], canonical_scoring: str = "gap
         "canonical_scoring": canonical_scoring,
         "anchor_records": sum(record.question.anchor for record in all_records),
         "phrasing_gap": _phrasing_gap(all_records),
+        "by_form": {
+            form: {
+                "total": len(form_records),
+                "success": sum(r.outcome in PIPELINE_SUCCESS for r in form_records),
+                "success_rate": _rate(sum(r.outcome in PIPELINE_SUCCESS for r in form_records), len(form_records)),
+            }
+            for form in sorted({r.question.question_form.value for r in evaluable})
+            for form_records in [[r for r in evaluable if r.question.question_form.value == form]]
+        },
     }
 
 

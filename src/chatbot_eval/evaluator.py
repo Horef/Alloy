@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .adapters import ChatbotAdapter
 from .llm import StructuredLLM
-from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
+from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
 from .progress import track
 from .response_errors import placeholder_error
 from .validation import validate_question_set
@@ -105,7 +105,7 @@ Classify incorrect_type as exactly one of:
 
 Explain the most important missing/wrong claim and whether retrieval found the required information
 but generation failed to use it.
-
+{task_note}
 QUESTION:
 {question}
 
@@ -127,6 +127,17 @@ CANDIDATE ANSWER:
 RETRIEVED CONTEXT (may be empty):
 {retrieved}
 """
+
+BROAD_TASK_NOTE = """
+TASK NOTE: this is a BROAD overview question. The reference claims are the main areas a good overview
+names; a good answer names at least {min_key_points} of them and need not name all. Mark each claim
+addressed/correct only if the answer actually names that area correctly. A long, structured overview of
+the relevant areas is appropriate here: do not classify it as too_much, and do not count true areas
+beyond the reference claims as extraneous or unsupported unless the reference contradicts them. A
+focused clarifying question that asks which situation or area the user means is also a valid response
+(response_is_clarification).
+"""
+
 
 def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
     """Classify factual safety first, then the response behavior required by the task.
@@ -170,12 +181,15 @@ def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
     # Genuine misinformation (false claims / judged hallucination) already returned above, so a
     # remaining unsupported claim is a harmless elaboration. It must not downgrade a fully-correct
     # answer; the answer_scope verdict alone decides whether the extra detail made it "too_much".
+    # A broad overview only needs min_key_points of its areas, and length is expected there.
+    broad = question.question_form == QuestionForm.BROAD
+    needed = min(question.min_key_points, scores.required_points_total) if broad and question.min_key_points else scores.required_points_total
     fully_correct = (
         scores.required_points_total > 0
-        and scores.answer_points_correct == scores.required_points_total
+        and scores.answer_points_correct >= needed
         and scores.answer_false_claims == 0
     )
-    if fully_correct and scores.answer_scope != "too_much":
+    if fully_correct and (broad or scores.answer_scope != "too_much"):
         return Outcome.CORRECT_ANSWER
     if scores.answer_points_correct > 0 or fully_correct:
         if scores.answer_scope == "too_much":
@@ -305,6 +319,10 @@ class Evaluator:
                 ensure_ascii=False,
             ),
             evidence=evidence, candidate=candidate, retrieved=retrieved,
+            task_note=(
+                BROAD_TASK_NOTE.format(min_key_points=question.min_key_points or len(question.reference_claims))
+                if question.question_form == QuestionForm.BROAD else ""
+            ),
         )
         try:
             scores = self.judge.generate(prompt, JudgeScores, self.judge_model)

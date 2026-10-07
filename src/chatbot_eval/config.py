@@ -85,6 +85,10 @@ class Settings:
     planning_min_boundary_per_topic: int = 2
     generation_mode: str = "standard"
     canonical_scoring: str = "gap"
+    broad_questions: bool = False
+    broad_corpus_questions: int = 2
+    broad_population_limit: int = 8
+    broad_min_key_points: int = 3
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -100,6 +104,9 @@ class Settings:
             min_boundary_per_topic=self.planning_min_boundary_per_topic,
             questions_per_call=self.questions_per_call,
             mode=self.generation_mode,
+            broad_estimate=(
+                self.broad_corpus_questions + self.broad_population_limit if self.broad_questions else -1
+            ),
         )
 
     def validate(self) -> "Settings":
@@ -118,6 +125,8 @@ class Settings:
             errors.append("generation.mode must be standard or user_facing")
         if self.canonical_scoring not in CANONICAL_SCORING:
             errors.append("evaluation.canonical_scoring must be gap, include, or exclude")
+        if min(self.broad_corpus_questions, self.broad_population_limit) < 0 or not 1 <= self.broad_min_key_points <= 8:
+            errors.append("generation.broad_* counts must be non-negative and broad_min_key_points in [1, 8]")
         if not 1 <= self.questions_per_call <= 20:
             errors.append("generation.questions_per_call must be in [1, 20]")
         if self.context_nodes < 0:
@@ -346,6 +355,10 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         planning_min_boundary_per_topic=int(_get(data, "planning", "min_boundary_per_topic", 2)),
         generation_mode=str(_get(data, "generation", "mode", "standard")).strip().lower(),
         canonical_scoring=str(_get(data, "evaluation", "canonical_scoring", "gap")).strip().lower(),
+        broad_questions=_as_bool(_get(data, "generation", "broad_questions", False), "generation.broad_questions"),
+        broad_corpus_questions=int(_get(data, "generation", "broad_corpus_questions", 2)),
+        broad_population_limit=int(_get(data, "generation", "broad_population_limit", 8)),
+        broad_min_key_points=int(_get(data, "generation", "broad_min_key_points", 3)),
     ).validate()
 
 

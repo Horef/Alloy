@@ -54,6 +54,8 @@ REVIEW_COLUMNS = [
     "parent_question",
     "parent_question_id",
     "boundary_kind",
+    "broad_level",
+    "key_points_readable",
     "acceptable_clarification",
     "closed_book_answerable",
     "sources_readable",
@@ -92,6 +94,8 @@ HEBREW_COLUMN_LABELS = {
     "parent_question": "הניסוח המקורי (לקריאה בלבד)",
     "parent_question_id": "שאלת מקור (לקריאה בלבד)",
     "boundary_kind": "סוג גבול (לקריאה בלבד)",
+    "broad_level": "רמת שאלה כללית (לקריאה בלבד)",
+    "key_points_readable": "תחומים מרכזיים (לקריאה בלבד)",
     "acceptable_clarification": "שאלת הבהרה מקובלת (לקריאה בלבד)",
     "closed_book_answerable": "ניתנת למענה ללא מסמכים (לקריאה בלבד)",
     "sources_readable": "מקורות (לקריאה בלבד)",
@@ -137,6 +141,11 @@ def _review_row(question: SilverQuestion, parent_text: str = "") -> dict:
         "parent_question": parent_text,
         "parent_question_id": question.parent_question_id,
         "boundary_kind": question.boundary_kind,
+        "broad_level": question.broad_level,
+        "key_points_readable": (
+            f"תשובה טובה מזכירה לפחות {question.min_key_points} מתוך {len(question.reference_claims)}:\n"
+            + "\n".join(f"- {claim}" for claim in question.reference_claims)
+        ) if question.question_form == QuestionForm.BROAD else "",
         "acceptable_clarification": question.acceptable_clarification,
         "closed_book_answerable": "true" if question.closed_book_answerable else "false",
         "sources_readable": _flatten_sources(question),
@@ -234,6 +243,12 @@ def _render_markdown(
             lines.append("")
         if question.boundary_kind:
             lines.append(f"**סוג גבול:** {question.boundary_kind}")
+            lines.append("")
+        if question.question_form == QuestionForm.BROAD:
+            lines.append(
+                f"**שאלה כללית ({question.broad_level}):** תשובה טובה מזכירה לפחות {question.min_key_points} "
+                f"מתוך {len(question.reference_claims)} התחומים: " + "; ".join(question.reference_claims)
+            )
             lines.append("")
         if question.acceptable_clarification:
             lines.append(f"**שאלת הבהרה מקובלת:** {question.acceptable_clarification}")
