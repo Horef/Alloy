@@ -487,22 +487,19 @@ def validate_prompt_package(
 ) -> list[str]:
     failures: list[str] = []
     prompt = package.system_prompt_hebrew
-    hebrew_count = sum("\u0590" <= character <= "\u05ff" for character in prompt)
-    if hebrew_count < 80 or hebrew_count / max(1, len(prompt)) < 0.25:
-        failures.append("system prompt must be substantially Hebrew")
-    if assistant_name.strip() and assistant_name.strip() not in prompt:
+    # Grounding, clarification, abstention, privacy, and injection rules live in the code-assembled
+    # response policy, so check that it is intact and judge the model-written domain text on its own.
+    domain = strip_policy(prompt)
+    if not any(
+        prompt == assemble_prompt(domain, profile, policy)
+        for profile in ("guided", "compact") for policy in ("balanced", "conservative")
+    ):
+        failures.append("system prompt must start with exactly one intact Alloy response policy block")
+    hebrew_count = sum("\u0590" <= character <= "\u05ff" for character in domain)
+    if hebrew_count < 80 or hebrew_count / max(1, len(domain)) < 0.25:
+        failures.append("system prompt domain guidance must be substantially Hebrew")
+    if assistant_name.strip() and assistant_name.strip() not in domain:
         failures.append("system prompt must name the configured assistant")
-
-    required_concepts = {
-        "grounding": ("מידע שאוחזר", "מקור", "הקשר"),
-        "clarification": ("הבהר", "הבהרה", "פרט חסר"),
-        "abstention": ("אין מספיק מידע", "לא ניתן לענות", "הימנע"),
-        "privacy": ("פרטיות", "מידע אישי", "מזהים"),
-        "prompt injection": ("הוראות", "עקיפה", "פרומפט", "הנחיות מערכת"),
-    }
-    for concept, terms in required_concepts.items():
-        if not any(term in prompt for term in terms):
-            failures.append(f"system prompt is missing {concept} guidance")
 
     list_fields = {
         "corpus_scope_summary": package.corpus_scope_summary,

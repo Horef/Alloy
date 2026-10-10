@@ -961,9 +961,11 @@ This optional component helps a chatbot manager create a strong starting prompt 
 domain rules by hand. It reuses the document loader and topic discovery, then asks Gemini for a
 structured `PromptPackage`.
 
-The package is checked deterministically for Hebrew content, configured assistant identity,
-grounding, clarification, abstention, privacy, prompt-injection guidance, distinct non-empty lists,
-application guardrails, review checks, and test coverage. One bounded repair call is made when the
+The package is checked deterministically: the code-assembled response policy (grounding,
+clarification, abstention, privacy, and prompt-injection rules) must be present and unmodified, and
+the model-written domain guidance must be substantially Hebrew and name the configured assistant.
+Lists must be distinct and non-empty, with enough application guardrails, review checks, and test
+questions. One bounded repair call is made when the
 first package fails; a still-invalid package is rejected rather than written.
 
 The prompt generator separates:

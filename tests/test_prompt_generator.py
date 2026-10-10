@@ -5,6 +5,7 @@ from chatbot_eval.models import (
     ChatbotResult, EvaluationRecord, ExpectedBehavior, Outcome, PromptPackage,
     PromptRegressionCase, PromptRevision, SilverQuestion, TopicCandidate,
 )
+from chatbot_eval.prompt_policy import assemble_prompt
 from chatbot_eval.prompt_generator import (
     SystemPromptGenerator, _prompt_context, validate_prompt_package, write_prompt_package,
 )
@@ -218,6 +219,7 @@ def test_old_prompt_package_artifact_loads_without_structured_review_fields():
 
 def test_structured_revision_validation_checks_mapping_ids_and_regression_completeness(tmp_path):
     package = FakeLLM().generate("ignored", PromptPackage, "model")
+    package.system_prompt_hebrew = assemble_prompt(package.system_prompt_hebrew, "guided", "balanced")
     package.revision_summary = ["חודד כלל ההבהרה"]
     package.revision_evidence_question_ids = ["Q1"]
     package.revision_mappings = [PromptRevision(
@@ -249,3 +251,16 @@ def test_structured_revision_validation_checks_mapping_ids_and_regression_comple
     )
     assert any("unknown IDs" in failure for failure in failures)
     assert any("every structured regression case" in failure for failure in failures)
+
+
+def test_prompt_validation_judges_model_text_not_the_assembled_policy():
+    package = FakeLLM().generate("ignored", PromptPackage, "model")
+    domain = package.system_prompt_hebrew
+    # The Hebrew policy alone must not make an English domain prompt pass.
+    package.system_prompt_hebrew = assemble_prompt("Tomi answers questions. " * 10, "guided", "balanced")
+    assert any("substantially Hebrew" in failure for failure in validate_prompt_package(package, "Tomi"))
+    # The policy block itself must be present and unmodified.
+    package.system_prompt_hebrew = domain
+    assert any("response policy block" in failure for failure in validate_prompt_package(package, "תומי"))
+    package.system_prompt_hebrew = assemble_prompt(domain, "compact", "conservative")
+    assert validate_prompt_package(package, "תומי") == []
