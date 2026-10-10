@@ -1,9 +1,10 @@
 """Corpus retrieval for question-targeted evidence and duplicate detection.
 
 Lexical retrieval is BM25 over Hebrew-aware tokens: each token is canonicalized like graph entities
-(NFKC, niqqud and gershayim removed) and an attached one-letter prefix variant is indexed alongside
-it, so "לחייל" also matches "חייל". IDF weighting keeps frequent function words ("של", "את") from
-dominating the ranking. When an embedding model is configured, dense cosine ranking is fused with
+(NFKC, niqqud and gershayim removed), and attached one-letter prefixes (ו/ה/ב/ל/כ/מ/ש) are tolerated
+only when the other side contains the bare word, so "לחייל" matches "חייל" while "הורה" and "מורה"
+(which merely share the remainder "ורה") do not. IDF weighting keeps frequent function words ("של",
+"את") from dominating the ranking. When an embedding model is configured, dense cosine ranking is fused with
 BM25 by reciprocal rank fusion; embedding failures degrade to lexical-only retrieval.
 """
 
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from .documents import Chunk
-from .graph import _strip_one_prefix, normalize_entity
+from .graph import _HEBREW_PREFIXES, normalize_entity
 from .llm import EmbeddingCountMismatch
 
 logger = logging.getLogger(__name__)
@@ -29,27 +30,58 @@ logger = logging.getLogger(__name__)
 _HEBREW_START = re.compile(r"[\u05d0-\u05ea]")
 _RRF_K = 60
 _EMBED_MAX_CHARS = 8000
+# Index-term marker for "a document token whose prefix-stripped stem is this word".
+_STEM_MARK = "~"
 
 
-def search_tokens(text: str) -> list[str]:
-    """Tokens for lexical search: canonical tokens plus their prefix-stripped Hebrew variants."""
-    tokens: list[str] = []
+def prefix_stems(token: str) -> list[str]:
+    """``token`` with one, then two, attached Hebrew prefixes removed (longest first); may be empty.
+
+    These are only candidates: a stem is trusted when the other side of a comparison contains it as
+    a word of its own, never because two different words happen to share a remainder.
+    """
+    if not _HEBREW_START.match(token) or len(token) < 4 or token[0] not in _HEBREW_PREFIXES:
+        return []
+    stems = [token[1:]]
+    if len(token) >= 5 and token[1] in _HEBREW_PREFIXES:
+        stems.append(token[2:])
+    return stems
+
+
+def index_terms(text: str) -> list[str]:
+    """BM25 terms for a document: its canonical tokens plus a marked term per candidate stem."""
+    terms: list[str] = []
     for token in normalize_entity(text).split():
-        tokens.append(token)
-        if _HEBREW_START.match(token):
-            stripped = _strip_one_prefix(token)
-            if stripped and stripped != token:
-                tokens.append(stripped)
-    return tokens
+        terms.append(token)
+        terms.extend(_STEM_MARK + stem for stem in prefix_stems(token))
+    return terms
+
+
+def query_terms(text: str) -> list[str]:
+    """BM25 terms for a query, matching a document token when the two are equal or one is the
+    other with prefixes attached ("חייל" ~ "לחייל"), but not when both merely share a stem."""
+    terms: list[str] = []
+    for token in normalize_entity(text).split():
+        terms.extend((token, _STEM_MARK + token, *prefix_stems(token)))
+    return terms
 
 
 def dedup_tokens(text: str) -> set[str]:
-    """One canonical form per token (prefix stripped when safe) for near-duplicate comparison."""
-    result: set[str] = set()
-    for token in normalize_entity(text).split():
-        stripped = _strip_one_prefix(token) if _HEBREW_START.match(token) else None
-        result.add(stripped or token)
-    return result
+    """Canonical tokens of ``text`` for near-duplicate comparison with :func:`token_similarity`."""
+    return set(normalize_entity(text).split())
+
+
+def token_similarity(first: set[str], second: set[str]) -> float:
+    """Jaccard similarity of two token sets, equating a prefixed word with a bare word present in
+    either set (``השכר`` equals ``שכר``) without merging words that only share a stem."""
+    vocabulary = first | second
+
+    def canonical(token: str) -> str:
+        return next((stem for stem in prefix_stems(token) if stem in vocabulary), token)
+
+    a, b = {canonical(token) for token in first}, {canonical(token) for token in second}
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
 
 
 class BM25:
@@ -176,7 +208,7 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
 class ChunkRetriever:
     def __init__(self, chunks: list[Chunk], embedder: Embedder | None = None):
         self.chunks = chunks
-        self._bm25 = BM25([search_tokens(chunk.text) for chunk in chunks])
+        self._bm25 = BM25([index_terms(chunk.text) for chunk in chunks])
         self._embedder = embedder
         self._chunk_vectors: list[list[float]] | None = None
         self._lock = threading.Lock()
@@ -200,7 +232,7 @@ class ChunkRetriever:
         """Top ``limit`` chunks for ``query``; chunks with no lexical or dense signal are omitted."""
         if limit <= 0 or not self.chunks:
             return []
-        scores = self._bm25.scores(search_tokens(query))
+        scores = self._bm25.scores(query_terms(query))
         lexical = [index for index in sorted(range(len(scores)), key=lambda i: -scores[i]) if scores[index] > 0]
         dense = self._dense_order(query)
         if not dense:

@@ -1,6 +1,8 @@
 from chatbot_eval.documents import Chunk
 from chatbot_eval.llm import EmbeddingCountMismatch
-from chatbot_eval.retrieval import BM25, CachedEmbedder, ChunkRetriever, ModelEmbedder, dedup_tokens, search_tokens
+from chatbot_eval.retrieval import (
+    BM25, CachedEmbedder, ChunkRetriever, ModelEmbedder, dedup_tokens, index_terms, query_terms, token_similarity,
+)
 
 
 def test_model_embedder_falls_back_to_single_requests_for_aggregating_models():
@@ -19,11 +21,14 @@ def test_model_embedder_falls_back_to_single_requests_for_aggregating_models():
     assert calls.count(3) == 1 and all(n == 1 for n in calls if n != 3)
 
 
-def test_search_tokens_add_prefix_stripped_hebrew_variants():
-    tokens = search_tokens('מה מגיע לחייל בצה"ל?')
-    assert "לחייל" in tokens and "חייל" in tokens
-    assert "צהל" in tokens
-    assert dedup_tokens("השכר של החייל") == dedup_tokens("שכר של חייל")
+def test_prefixed_and_bare_words_match_but_shared_stems_do_not():
+    assert set(index_terms("לחייל")) & set(query_terms("חייל"))
+    assert set(index_terms("חייל")) & set(query_terms("לחייל"))
+    assert "צהל" in query_terms('בצה"ל')
+    # הורה (parent) and מורה (teacher) share the remainder ורה but neither is the other with a prefix.
+    assert not set(index_terms("מורה")) & set(query_terms("הורה"))
+    assert token_similarity(dedup_tokens("השכר של החייל"), dedup_tokens("שכר של חייל")) == 1.0
+    assert token_similarity(dedup_tokens("הורה"), dedup_tokens("מורה")) == 0.0
 
 
 def test_bm25_downweights_terms_present_in_every_document():
@@ -76,3 +81,11 @@ def test_cached_embedder_persists_vectors_across_instances(tmp_path):
     assert calls == [["א", "בב"]]
     assert first == [[1.0, 1.0], [2.0, 1.0], [1.0, 1.0]]
     assert second == [[2.0, 1.0], [1.0, 1.0]]
+
+
+def test_retriever_does_not_match_words_that_only_share_a_stem():
+    chunks = [
+        Chunk("a#1", "a.md", "d", "זכויות מורה בבית הספר"),
+        Chunk("b#1", "b.md", "d", "זכויות הורה לילד"),
+    ]
+    assert [c.id for c in ChunkRetriever(chunks).rank("מה מגיע להורה?", 5)] == ["b#1"]

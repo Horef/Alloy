@@ -44,7 +44,7 @@ from .models import (
 )
 from .progress import track
 from .planning import information_units
-from .retrieval import ChunkRetriever, Embedder, cosine, dedup_tokens
+from .retrieval import ChunkRetriever, Embedder, cosine, dedup_tokens, token_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -698,14 +698,12 @@ def _is_duplicate(
     excluded_questions: tuple[str, ...] = (),
     threshold: float = 0.78,
 ) -> bool:
-    """Lexical near-duplicate test on prefix-normalized Hebrew tokens (``השכר`` equals ``שכר``)."""
+    """Lexical near-duplicate test on prefix-tolerant Hebrew tokens (``השכר`` equals ``שכר``)."""
     tokens = dedup_tokens(question)
-    for existing in [item.question for item in accepted] + list(excluded_questions):
-        other = dedup_tokens(existing)
-        union = tokens | other
-        if union and len(tokens & other) / len(union) >= threshold:
-            return True
-    return False
+    return any(
+        token_similarity(tokens, dedup_tokens(existing)) >= threshold
+        for existing in [item.question for item in accepted] + list(excluded_questions)
+    )
 
 
 def _normalized(text: str) -> str:

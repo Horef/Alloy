@@ -73,11 +73,11 @@ def normalize_entity(surface: str) -> str:
 def _strip_one_prefix(token: str) -> str | None:
     """Return ``token`` with a single leading Hebrew prefix removed, or None if not safely strippable.
 
-    Only strips when the token starts with a prefix letter, is long enough that a real stem
-    remains, and contains a gershayim-style acronym marker OR the two-letter prefix cluster ``ול``
-    / ``וה`` / ``ומ`` etc. This is intentionally narrow: it targets the frequent "attached
-    conjunction/preposition on a named thing" case (ולצה"ל, ולמעטפת) without touching ordinary
-    base words like שכר or מעטפת whose leading letter is part of the word.
+    Strips one prefix letter from a token of at least four letters, and a second stacked prefix
+    when at least four letters remain after the first (``ולצהל`` -> ``צהל``). The function itself
+    does not check whether the token is a named thing; :func:`entity_match_keys` calls it only for
+    the first token of acronym-like or multi-token entities, so ordinary base words such as שכר or
+    מעטפת, whose leading letter is part of the word, are left untouched.
     """
     if len(token) < 4 or token[0] not in _HEBREW_PREFIXES:
         return None
