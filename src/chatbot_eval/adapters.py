@@ -22,8 +22,10 @@ class ChatbotAdapter(Protocol):
 class HttpChatbotAdapter:
     """Generic JSON HTTP adapter with at most max_retries + 1 attempts.
 
-    Each retry wait is capped. Socket timeouts are not a total operation deadline;
-    a timeout may happen after server acceptance, so retries are at-least-once.
+    Each retry wait is capped. A positive ``retry_deadline_seconds`` stops retrying once a retry
+    would start after that many seconds since the first attempt; a request already sent still runs
+    to its socket timeout. A timeout may happen after server acceptance, so retries are
+    at-least-once.
     """
 
     TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
@@ -43,6 +45,7 @@ class HttpChatbotAdapter:
         max_retry_delay_seconds: float = 60.0,
         max_response_bytes: int = 5_000_000,
         require_json_content_type: bool = True,
+        retry_deadline_seconds: float = 0.0,
     ):
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
@@ -50,12 +53,13 @@ class HttpChatbotAdapter:
         for name, value in (("question_field", question_field), ("answer_field", answer_field), ("context_field", context_field)):
             if not isinstance(value, str) or not value.strip() or any(not part.strip() for part in value.split(".")):
                 raise ValueError(f"{name} must be a nonempty field path")
-        for name, value in (("timeout", timeout), ("retry_base_seconds", retry_base_seconds), ("pacing_seconds", pacing_seconds), ("max_retry_delay_seconds", max_retry_delay_seconds)):
+        for name, value in (("timeout", timeout), ("retry_base_seconds", retry_base_seconds), ("pacing_seconds", pacing_seconds), ("max_retry_delay_seconds", max_retry_delay_seconds), ("retry_deadline_seconds", retry_deadline_seconds)):
             if not math.isfinite(value) or value < 0 or (name == "timeout" and value == 0):
                 raise ValueError(f"{name} must be finite and {'positive' if name == 'timeout' else 'nonnegative'}")
         if not isinstance(max_retries, int) or max_retries < 0 or max_response_bytes <= 0:
             raise ValueError("max_retries must be a nonnegative integer and max_response_bytes positive")
         self.max_retry_delay_seconds = max_retry_delay_seconds
+        self.retry_deadline_seconds = retry_deadline_seconds
         self.url, self.question_field, self.answer_field = url, question_field, answer_field
         self.context_field, self.timeout = context_field, timeout
         self.headers = {"Content-Type": "application/json", **(headers or {})}
@@ -97,6 +101,10 @@ class HttpChatbotAdapter:
             headers.get("Retry-After") if headers else None,
             attempt, self.retry_base_seconds, self.max_retry_delay_seconds,
         )
+
+    def _may_retry(self, attempt: int, started: float, delay: float) -> bool:
+        deadline = getattr(self, "retry_deadline_seconds", 0.0)
+        return attempt < self.max_retries and (not deadline or time.perf_counter() - started + delay <= deadline)
 
     def _pace(self) -> None:
         with self._pacing_lock:
@@ -194,8 +202,9 @@ class HttpChatbotAdapter:
                     )
             except urllib.error.HTTPError as exc:
                 category = self._category(exc.code, exc)
-                if exc.code in self.TRANSIENT_STATUSES and attempt < self.max_retries:
-                    time.sleep(self._retry_delay(attempt, exc.headers))
+                delay = self._retry_delay(attempt, exc.headers)
+                if exc.code in self.TRANSIENT_STATUSES and self._may_retry(attempt, started, delay):
+                    time.sleep(delay)
                     continue
                 return self._error_result(
                     question, started, category=category, message=type(exc).__name__,
@@ -204,8 +213,9 @@ class HttpChatbotAdapter:
             except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, http.client.HTTPException) as exc:
                 reason = getattr(exc, "reason", exc)
                 category = self._category(None, reason if isinstance(reason, Exception) else exc)
-                if attempt < self.max_retries:
-                    time.sleep(self._retry_delay(attempt))
+                delay = self._retry_delay(attempt)
+                if self._may_retry(attempt, started, delay):
+                    time.sleep(delay)
                     continue
                 return self._error_result(
                     question, started, category=category, message=type(exc).__name__, attempts=attempt + 1,

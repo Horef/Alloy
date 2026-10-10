@@ -89,6 +89,7 @@ class Settings:
     broad_corpus_questions: int = 2
     broad_population_limit: int = 8
     broad_min_key_points: int = 3
+    retry_deadline_seconds: float = 0.0
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -225,6 +226,8 @@ class Settings:
             errors.append("evaluation.insights_max_prompt_chars must be at least 1000")
         if self.gemini_request_timeout_seconds <= 0:
             errors.append("evaluation.gemini_request_timeout_seconds must be positive")
+        if not math.isfinite(self.retry_deadline_seconds) or self.retry_deadline_seconds < 0:
+            errors.append("evaluation.retry_deadline_seconds must be non-negative (0 = no deadline)")
         if self.max_concurrency < 1:
             errors.append("evaluation.max_concurrency must be positive")
         if self.log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
@@ -359,6 +362,7 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         broad_corpus_questions=int(_get(data, "generation", "broad_corpus_questions", 2)),
         broad_population_limit=int(_get(data, "generation", "broad_population_limit", 8)),
         broad_min_key_points=int(_get(data, "generation", "broad_min_key_points", 3)),
+        retry_deadline_seconds=float(_get(data, "evaluation", "retry_deadline_seconds", 0.0)),
     ).validate()
 
 

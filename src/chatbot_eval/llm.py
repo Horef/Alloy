@@ -123,10 +123,12 @@ def _augment_required(json_schema: dict, required_fields: dict[str, int] | None)
 
 
 class GeminiStructuredLLM:
-    """Bound application attempts and retry sleeps, not a total wall-clock deadline.
+    """Bound application attempts, retry sleeps, and optionally the time spent retrying.
 
     The SDK enforces its request timeout; an accepted request may be retried after
-    a transport failure. Application attempts are at most max_retries + 1.
+    a transport failure. Application attempts are at most max_retries + 1. With a positive
+    ``retry_deadline_seconds`` no retry starts after that many seconds since the first attempt,
+    so one call takes at most the deadline plus one request timeout.
     """
     def __init__(
         self,
@@ -139,6 +141,7 @@ class GeminiStructuredLLM:
         request_timeout_seconds: int = 120,
         max_retry_delay_seconds: float = 60.0,
         seed: int | None = None,
+        retry_deadline_seconds: float = 0.0,
     ):
         if not isinstance(max_retries, int) or max_retries < 0:
             raise ValueError("max_retries must be a nonnegative integer")
@@ -146,7 +149,10 @@ class GeminiStructuredLLM:
             raise ValueError("request_timeout_seconds must be finite and positive")
         if not math.isfinite(max_retry_delay_seconds) or max_retry_delay_seconds < 0:
             raise ValueError("max_retry_delay_seconds must be finite and nonnegative")
+        if not math.isfinite(retry_deadline_seconds) or retry_deadline_seconds < 0:
+            raise ValueError("retry_deadline_seconds must be finite and nonnegative")
         self._max_retry_delay_seconds = max_retry_delay_seconds
+        self._retry_deadline_seconds = retry_deadline_seconds
         self._seed = seed
         http_options = types.HttpOptions(timeout=request_timeout_seconds * 1000)
         if transport == "direct":
@@ -266,16 +272,21 @@ class GeminiStructuredLLM:
             except Exception as exc:
                 last_error = exc
                 retryable = self._is_retryable(exc)
-                if attempt < self._max_retries and retryable:
+                delay = self._retry_delay(exc, attempt, getattr(self, "_max_retry_delay_seconds", 60.0))
+                deadline = getattr(self, "_retry_deadline_seconds", 0.0)
+                within_deadline = not deadline or time.perf_counter() - started + delay <= deadline
+                if attempt < self._max_retries and retryable and within_deadline:
                     logger.warning(
                         "gemini_call_retry model=%s attempt=%d max_attempts=%d error_type=%s",
                         model, attempt + 1, self._max_retries + 1, type(exc).__name__,
                     )
-                    time.sleep(self._retry_delay(exc, attempt, getattr(self, "_max_retry_delay_seconds", 60.0)))
+                    time.sleep(delay)
                 else:
                     logger.error(
-                        "gemini_call_failed model=%s attempts=%d retryable=%s elapsed_seconds=%.3f error_type=%s",
-                        model, attempt + 1, retryable, time.perf_counter() - started, type(exc).__name__,
+                        "gemini_call_failed model=%s attempts=%d retryable=%s deadline_reached=%s "
+                        "elapsed_seconds=%.3f error_type=%s",
+                        model, attempt + 1, retryable, not within_deadline, time.perf_counter() - started,
+                        type(exc).__name__,
                     )
                     break
         assert last_error is not None

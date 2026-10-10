@@ -199,3 +199,24 @@ def test_llm_retry_delay_is_capped(hint):
 def test_llm_invalid_retry_configuration(kwargs):
     with pytest.raises(ValueError):
         GeminiStructuredLLM('unused', **kwargs)
+
+
+def test_retry_deadline_stops_retries_that_would_start_too_late(monkeypatch):
+    class Response:
+        headers = {"Retry-After": "30"}
+
+    class Models:
+        calls = 0
+
+        def generate_content(self, **kwargs):
+            self.calls += 1
+            raise errors.ServerError(503, {"message": "busy"}, Response())
+
+    llm = object.__new__(GeminiStructuredLLM)
+    llm._client = type("Client", (), {"models": Models()})()
+    llm._max_retries = 3
+    llm._retry_deadline_seconds = 10.0
+    monkeypatch.setattr("chatbot_eval.llm.time.sleep", lambda _: pytest.fail("must not wait past the deadline"))
+    with pytest.raises(errors.ServerError):
+        llm.generate("prompt", JudgeScores, "model")
+    assert llm._client.models.calls == 1

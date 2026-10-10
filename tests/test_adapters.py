@@ -141,3 +141,19 @@ def test_http_retry_delay_is_finite_and_capped(hint):
 def test_http_invalid_configuration_fails_before_request(kwargs):
     with pytest.raises(ValueError):
         HttpChatbotAdapter('https://example.invalid', **kwargs)
+
+
+def test_http_adapter_retry_deadline_stops_late_retries(monkeypatch):
+    attempts = []
+    headers = Message()
+    headers["Retry-After"] = "30"
+
+    def urlopen(request, timeout):
+        attempts.append(request)
+        raise urllib.error.HTTPError(request.full_url, 503, "busy", headers, None)
+
+    monkeypatch.setattr("chatbot_eval.adapters.urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("chatbot_eval.adapters.time.sleep", lambda _: None)
+    adapter = HttpChatbotAdapter("https://example.invalid", max_retries=3, retry_deadline_seconds=10)
+    result = adapter.ask(SilverQuestion(id="Q1", topic="Topic", question="Question", expected_answer="Answer"))
+    assert result.error.startswith("server_error") and len(attempts) == 1

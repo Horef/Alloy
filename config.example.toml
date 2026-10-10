@@ -119,6 +119,9 @@ judge_max_answer_chars = 20000
 judge_max_context_chars = 60000
 insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
+# Optional overall limit, in seconds, on retrying one Gemini or chatbot call: no retry starts later
+# than this after the first attempt (0 = no limit; per-request timeouts still apply).
+retry_deadline_seconds = 0
 # Keep 1 for session-sensitive chatbots. Increase only for stateless endpoints and available quota.
 max_concurrency = 1
 # Optional nonsecret identity for the chatbot deployment is supplied per run with --deployment-id.

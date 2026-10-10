@@ -232,6 +232,7 @@ log_level = "INFO"
 | `evaluation.judge_max_context_chars` | `60000` | Maximum retrieved-context characters placed in one judge prompt, with the same bounded truncation metadata. |
 | `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
 | `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for direct and Apigee Gemini SDK requests. |
+| `evaluation.retry_deadline_seconds` | `0` | Optional limit on retrying one Gemini or chatbot call: no retry starts later than this many seconds after the first attempt, so a call takes at most this plus one request timeout. `0` disables the limit. Part of the live evaluation contract. |
 | `evaluation.max_concurrency` | `1` | Chatbot/judge workers. Keep `1` for session-sensitive endpoints; values above `1` are opt-in. For `generate`, the same value (or `--max-concurrency`) sets graph-extraction workers, concurrent topic workers for question and boundary generation, and embedding requests; `1` keeps generation fully sequential and reproducible. |
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
@@ -1221,7 +1222,8 @@ reasons, and errors. They avoid complete questions/answers, API keys, and authen
 Gemini calls—direct or through Apigee—retry only transient timeouts, connection problems, throttling,
 and selected server errors according to `evaluation.max_retries`, with jittered exponential backoff
 and `Retry-After` support. Authentication, configuration, and schema-validation errors fail
-immediately. Every call uses `evaluation.gemini_request_timeout_seconds`. When Apigee returns unified quota headers, Alloy logs the selected metric, request usage,
+immediately. Every call uses `evaluation.gemini_request_timeout_seconds`, and
+`evaluation.retry_deadline_seconds` optionally bounds the total time spent retrying one call. When Apigee returns unified quota headers, Alloy logs the selected metric, request usage,
 daily limit/usage, and remaining allowance without logging credentials. Live chatbot calls are
 sequential by default (`max_concurrency = 1`) and use the separately configured transient retry and
 pacing policy.

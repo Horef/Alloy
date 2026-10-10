@@ -663,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
         apigee_base_url=settings.apigee_base_url,
         request_timeout_seconds=settings.gemini_request_timeout_seconds,
         seed=settings.seed,
+        retry_deadline_seconds=settings.retry_deadline_seconds,
     )
     call_cache = _call_cache(args, settings, llm)
     if call_cache is not None:
@@ -1254,6 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
         pacing_seconds=settings.chatbot_pacing_seconds,
         max_response_bytes=settings.chatbot_max_response_bytes,
         require_json_content_type=settings.chatbot_require_json_content_type,
+        retry_deadline_seconds=settings.retry_deadline_seconds,
     )
     with RunManifest(
         args.output, command=args.command, settings=settings,
@@ -1284,6 +1286,7 @@ def main(argv: list[str] | None = None) -> int:
             "chatbot_retry_base_seconds": settings.chatbot_retry_base_seconds,
             "chatbot_max_response_bytes": settings.chatbot_max_response_bytes,
             "chatbot_require_json_content_type": settings.chatbot_require_json_content_type,
+            "retry_deadline_seconds": settings.retry_deadline_seconds,
             "max_concurrency": concurrency,
         }
         manifest.data["evaluation_contract"] = contract
