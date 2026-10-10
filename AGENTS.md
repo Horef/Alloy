@@ -11,6 +11,8 @@ changing a component, read its section there.
   `/Users/sergiyhoref/Programming/Army/army/bin/python` (3.13, package installed editable), not the
   base conda interpreter. Elsewhere (cloud sessions, CI): `python -m venv .venv` then
   `.venv/bin/pip install -e '.[dev]'`.
+- PDF conversion uses `pdfplumber` (a core dependency); OCR shells out to the optional `tesseract`
+  binary. Tests need neither LibreOffice, Tesseract, nor Hebrew fonts: they build PDFs at test time.
 - Tests: `$PY -m pytest -q`. All offline (fake LLMs, no network), about two seconds. Run the full
   suite before every commit; CI runs it on 3.11 and 3.13.
 - Layout: `src/chatbot_eval/` (one module per component; the README code map lists them all),
@@ -72,7 +74,8 @@ when forgotten.
 | Add a module | README code map and `docs/architecture.md` (*guarded*) |
 | Change a component's behavior or design | Its section of `docs/architecture.md`; section 19 if a limitation appears or disappears |
 | Change outcomes, judging, or metrics | README "Judging logic" and outputs sections; architecture sections 13 and 14 |
-| Change a prompt, schema, or deterministic stage | The matching cache key or fingerprint (architecture section 9) |
+| Change a prompt, schema, or deterministic stage | The matching cache key or fingerprint (architecture section 9), including every module the stage calls |
+| Change PDF conversion output | Bump `pdf_markdown.CONVERTER_VERSION` (written into converted files) |
 | Add an output file or manifest field | README outputs section for that workflow |
 | Add a relative link in a doc | Make sure it resolves (*guarded*) |
 

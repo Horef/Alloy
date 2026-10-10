@@ -220,3 +220,24 @@ def test_retry_deadline_stops_retries_that_would_start_too_late(monkeypatch):
     with pytest.raises(errors.ServerError):
         llm.generate("prompt", JudgeScores, "model")
     assert llm._client.models.calls == 1
+
+
+def test_media_attachments_are_sent_before_the_prompt():
+    captured = {}
+
+    class Models:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return type("Result", (), {"text": '{"page": 1, "markdown": "x"}'})()
+
+    from chatbot_eval.pdf_markdown import PageMarkdown
+
+    llm = object.__new__(GeminiStructuredLLM)
+    llm._client = type("Client", (), {"models": Models()})()
+    llm._max_retries = 0
+    llm.generate("transcribe", PageMarkdown, "model", media=[("application/pdf", b"%PDF-1.4")])
+    first, prompt = captured["contents"]
+    assert first.inline_data.mime_type == "application/pdf" and first.inline_data.data == b"%PDF-1.4"
+    assert prompt == "transcribe"
+    llm.generate("plain", PageMarkdown, "model")
+    assert captured["contents"] == "plain"

@@ -32,8 +32,10 @@ from .io import read_questions, write_evaluations, write_questions
 from .llm import CachedStructuredLLM, GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
+from .pdf_markdown import convert_path
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
+from .progress import track
 from .prompt_policy import POLICY_VERSION
 from .report import write_report
 from .retrieval import CachedEmbedder, ModelEmbedder
@@ -227,6 +229,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_broad.add_argument("--plan", type=Path, help="generation_plan.json the set was generated with, so the same topics are used")
     add_broad.add_argument("--max-concurrency", type=int, help="Concurrent broad-question calls; default is config value")
     _add_cache_arguments(add_broad)
+
+    convert = commands.add_parser(
+        "convert-pdf", help="Convert PDFs to Markdown for the knowledge base (local and offline, or Gemini-assisted)",
+    )
+    convert.add_argument("--input", type=Path, required=True, help="A PDF file or a folder searched recursively for PDFs")
+    convert.add_argument("--output", type=Path, default=Path("outputs/markdown"), help="Destination folder; the input layout is mirrored as .md files")
+    convert.add_argument("--backend", choices=["local", "gemini"], help="Conversion backend; default is config conversion.backend")
+    convert.add_argument("--pages-per-call", type=int, help="Pages sent per Gemini call; default is config value")
+    convert.add_argument("--ocr", choices=["auto", "off"], help="OCR pages without a usable text layer with Tesseract when installed")
+    convert.add_argument("--max-concurrency", type=int, help="Concurrent Gemini calls per document; default is config value")
+    _add_cache_arguments(convert)
 
     report = commands.add_parser("report", help="Regenerate a report from completed Alloy evaluation JSONL")
     report.add_argument("--results", type=Path, required=True, help="Current output directory or evaluation_details.jsonl")
@@ -562,6 +575,54 @@ def _checkpointed_evaluation(
     return [by_id[question.id] for question, _ in items], len(completed), checkpoint.path
 
 
+def _convert_pdf(args, settings, llm, progress_enabled: bool, call_cache=None) -> int:
+    backend = args.backend or settings.conversion_backend
+    pages_per_call = settings.conversion_pages_per_call if args.pages_per_call is None else args.pages_per_call
+    concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
+    if pages_per_call < 1 or concurrency < 1:
+        raise ValueError("--pages-per-call and --max-concurrency must be positive")
+    if not args.input.exists():
+        raise ValueError(f"Input not found: {args.input}")
+    if args.input.is_dir() and args.output.resolve().is_relative_to(args.input.resolve()):
+        raise ValueError("The output folder must be outside --input, or the PDFs and their Markdown would both be read as corpus")
+    ocr = args.ocr or settings.conversion_ocr
+    # Reports live in a hidden folder so the output can be used directly as --documents.
+    report_dir = args.output / ".alloy"
+    with RunManifest(
+        report_dir, command=args.command, settings=settings, inputs=[args.input],
+        parameters={"backend": backend, "pages_per_call": pages_per_call, "ocr": ocr, "max_concurrency": concurrency},
+    ) as manifest:
+        reports = convert_path(
+            args.input, args.output, backend=backend, llm=llm, model=settings.conversion_model,
+            pages_per_call=pages_per_call, min_recall=settings.conversion_min_recall,
+            min_precision=settings.conversion_min_precision, ocr=ocr,
+            ocr_languages=settings.conversion_ocr_languages, max_concurrency=concurrency,
+            progress=lambda files: track(files, enabled=progress_enabled, description="Converting PDFs", total=len(files)),
+        )
+        report_path = report_dir / "conversion_report.json"
+        atomic_write_text(report_path, json.dumps(reports, ensure_ascii=False, indent=2) + "\n")
+        converted = [report for report in reports if "error" not in report]
+        manifest.complete(
+            converted=len(converted), failed=len(reports) - len(converted),
+            pages_needing_ocr={r["source"]: r["pages_needing_ocr"] for r in converted if r["pages_needing_ocr"]},
+            llm_call_cache=call_cache.summary() if call_cache is not None else {"enabled": False},
+            outputs=input_inventory([path for path in args.output.rglob("*.md") if ".alloy" not in path.parts]),
+        )
+    methods: Counter = Counter()
+    for report in converted:
+        methods.update(report["methods"])
+    print(
+        f"Converted {len(converted)} of {len(reports)} PDFs to Markdown in {args.output} ({backend}); "
+        f"pages by method: {dict(methods)}.\nReport: {report_path}"
+    )
+    needing_ocr = sum(len(report["pages_needing_ocr"]) for report in converted)
+    if needing_ocr:
+        print(f"{needing_ocr} page(s) had no text layer and need OCR (install Tesseract with Hebrew data, or use --backend gemini).")
+    if len(converted) < len(reports):
+        print("Some PDFs failed to convert; see the report.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if getattr(args, "retry_errors", False) and not args.resume:
@@ -570,6 +631,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("generate --resume cannot be combined with --refresh-cache; start a fresh run instead")
     _ensure_config(args.config)
     offline_commands = {"report", "review-export", "review-merge"}
+    if args.command == "convert-pdf":
+        configured = load_settings(args.config, require_api_key=False)
+        if (args.backend or configured.conversion_backend) == "local":
+            offline_commands.add("convert-pdf")
     settings = load_settings(args.config, require_api_key=args.command not in offline_commands)
     log_path = args.log_file or (Path(settings.log_file) if settings.log_file else None)
     configure_logging(log_path, args.log_level or settings.log_level)
@@ -655,6 +720,9 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("command_completed command=review-merge merged=%d output=%s", len(merged), args.output)
         return 0
 
+    if args.command == "convert-pdf" and "convert-pdf" in offline_commands:
+        return _convert_pdf(args, settings, None, progress_enabled)
+
     llm = GeminiStructuredLLM(
         settings.api_key,
         settings.max_retries,
@@ -668,6 +736,9 @@ def main(argv: list[str] | None = None) -> int:
     call_cache = _call_cache(args, settings, llm)
     if call_cache is not None:
         llm = call_cache
+    if args.command == "convert-pdf":
+        return _convert_pdf(args, settings, llm, progress_enabled, call_cache)
+
     if args.command == "generate-prompt":
         profile = args.instruction_profile or settings.prompt_instruction_profile
         answer_policy = args.answer_policy or settings.prompt_answer_policy

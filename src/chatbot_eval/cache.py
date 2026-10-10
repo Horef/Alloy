@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .artifacts import atomic_write_text, file_sha256
 from .contracts import code_fingerprint
-from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
+from .documents import Chunk, corpus_files, load_chunks
 from .graph import GraphBundle, IncompleteExtraction
 from .models import (
     EvaluationInsights,
@@ -36,10 +36,7 @@ def _json_hash(value: Any) -> str:
 
 def _document_inventory(root: Path) -> list[dict[str, str]]:
     resolved = root.resolve()
-    files = [
-        path for path in sorted(resolved.rglob("*"))
-        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
-    ]
+    files = corpus_files(resolved)
     if not files:
         raise ValueError(f"No supported documents found under {root}")
     return [
@@ -135,7 +132,7 @@ class CorpusAnalysisCache:
         inventory = _document_inventory(root)
         key = _json_hash({
             "schema_version": CACHE_SCHEMA_VERSION,
-            "chunker_implementation_sha256": code_fingerprint("documents.py"),
+            "chunker_implementation_sha256": code_fingerprint("documents.py", "pdf_markdown.py"),
             "documents": inventory,
             "chunk_chars": chunk_chars,
             "overlap_chars": overlap_chars,

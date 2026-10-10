@@ -9,12 +9,21 @@ from docx import Document
 from docx.document import Document as DocumentObject
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
-from pypdf import PdfReader
 
 from .progress import track
 
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".rst", ".csv", ".json", ".jsonl", ".pdf", ".docx"}
+
+
+def corpus_files(root: Path) -> list[Path]:
+    """Supported documents under ``root``, skipping hidden files and folders (``.alloy/``, ``.git/``,
+    editor settings), whose JSON or Markdown is tooling, not knowledge."""
+    return [
+        path for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+        and not any(part.startswith(".") for part in path.relative_to(root).parts)
+    ]
 
 
 @dataclass(frozen=True)
@@ -27,7 +36,9 @@ class Chunk:
 
 def _read_sections(path: Path) -> list[tuple[str, str]]:
     suffix = path.suffix.lower()
-    if suffix in {".txt", ".md", ".rst"}:
+    if suffix == ".md":
+        return _markdown_sections(path.read_text(encoding="utf-8", errors="replace"))
+    if suffix in {".txt", ".rst"}:
         return [("document", path.read_text(encoding="utf-8", errors="replace"))]
     if suffix == ".csv":
         with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
@@ -37,16 +48,11 @@ def _read_sections(path: Path) -> list[tuple[str, str]]:
     if suffix == ".jsonl":
         return [("document", path.read_text(encoding="utf-8", errors="replace"))]
     if suffix == ".pdf":
-        sections = []
-        for number, page in enumerate(PdfReader(path).pages, 1):
-            text = page.extract_text() or ""
-            if not text.strip():
-                # An empty extracted page is useful diagnostic information: it
-                # may require OCR, but extraction must never claim that OCR ran.
-                import logging
-                logging.getLogger(__name__).warning("pdf_page_empty file=%s page=%d", path, number)
-            sections.append((f"page {number}", text))
-        return sections
+        # The local PDF-to-Markdown converter restores Hebrew reading order and table cells. OCR is
+        # off so ingestion is deterministic; convert scanned PDFs with `convert-pdf` first.
+        from .pdf_markdown import convert_local
+
+        return [(f"page {page.number}", page.markdown) for page in convert_local(path, ocr="off").pages]
     if suffix == ".docx":
         document = Document(path)
         # document.paragraphs and document.tables are separate collections and
@@ -65,6 +71,19 @@ def _read_sections(path: Path) -> list[tuple[str, str]]:
                     ordered.append(table_text)
         return [("document", "\n\n".join(ordered))]
     raise ValueError(f"Unsupported file type: {path}")
+
+
+def _markdown_sections(text: str) -> list[tuple[str, str]]:
+    """Split Markdown at ``<!-- page: N -->`` markers (written by ``convert-pdf``) into page sections."""
+    from .pdf_markdown import PAGE_MARKER
+
+    parts = PAGE_MARKER.split(text)
+    if len(parts) == 1:
+        return [("document", text)]
+    sections = [(f"page {number}", body) for number, body in zip(parts[1::2], parts[2::2])]
+    if parts[0].strip():  # front matter stays with the first page, where title lookups expect it
+        sections[0] = (sections[0][0], parts[0] + sections[0][1])
+    return sections
 
 
 def _iter_docx_blocks(parent: DocumentObject | _Cell):
@@ -159,7 +178,7 @@ def load_chunks(
         raise ValueError("chunk overlap cannot be negative")
     if overlap_chars >= chunk_chars:
         raise ValueError("chunk overlap must be smaller than chunk size")
-    files = [p for p in sorted(root.rglob("*")) if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES]
+    files = corpus_files(root)
     if not files:
         raise ValueError(f"No supported documents found under {root}")
     chunks: list[Chunk] = []

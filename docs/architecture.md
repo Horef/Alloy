@@ -17,7 +17,7 @@ cited inline as [R1], [R2], and so on.
 3. [Design principles that cut across every component](#3-design-principles-that-cut-across-every-component)
 4. [Configuration and entry points](#4-configuration-and-entry-points)
 5. [The model layer (`llm.py`)](#5-the-model-layer-llmpy)
-6. [Ingestion and chunking (`documents.py`)](#6-ingestion-and-chunking-documentspy)
+6. [Ingestion and chunking (`documents.py`, `pdf_markdown.py`)](#6-ingestion-and-chunking-documentspy)
 7. [The corpus knowledge graph (`graph_build.py`, `graph.py`)](#7-the-corpus-knowledge-graph-graph_buildpy-graphpy)
 8. [Retrieval (`retrieval.py`)](#8-retrieval-retrievalpy)
 9. [Caching, identity, and invalidation (`cache.py`, `contracts.py`)](#9-caching-identity-and-invalidation-cachepy-contractspy)
@@ -213,8 +213,10 @@ issued concurrently.
 ## 6. Ingestion and chunking (`documents.py`)
 
 Supported inputs are `.txt/.md/.rst`, `.csv` (rows become ` | `-joined lines), `.json/.jsonl`,
-`.pdf` (per page, via `pypdf`, no OCR), and `.docx` (paragraphs and tables in their XML order, so a
-table stays next to the text that introduces it).
+`.pdf` (per page, through the local converter of section 6.1, no OCR), and `.docx` (paragraphs and
+tables in their XML order, so a table stays next to the text that introduces it). Markdown with
+`<!-- page: N -->` markers is split into page sections, so converted PDFs keep page locations.
+Hidden files and folders (`.alloy/`, `.git/`, editor settings) are never read as corpus.
 
 Pages or sections that yield no text, and files that yield none at all, are recorded in an
 extraction summary that is stored with the chunk cache, logged as a warning on every run, and listed
@@ -240,6 +242,60 @@ becomes several graph nodes (which `document_wide` questions need) and that a sm
 signals reliably, large enough to keep a typical rule intact. Keeping evidence small and focused also
 avoids the well-documented drop in model accuracy for facts buried in the middle of long contexts
 [R12].
+
+### 6.1 PDF to Markdown (`pdf_markdown.py`)
+
+PDFs are the weakest input format: they store glyphs at positions, not text in reading order.
+Markdown is the target because headings, lists, and tables survive as plain text that models read
+well, chunking can follow that structure, and per-page markers keep provenance. `convert-pdf`
+produces it with two backends that share the output format and the report.
+
+**Local backend.** Built on `pdfplumber` (MIT), which exposes every character with its position,
+size, and font.
+
+- *Lines and bidi.* Characters are grouped into lines, split into segments at wide gaps (columns,
+  form fields), and spaced by gap width. Extractors order characters left to right on the page, so a
+  Hebrew line comes out reversed. Each segment's base direction is decided by whether it has at
+  least as many Hebrew words as Latin words. A right-to-left segment is then reversed, and every
+  embedded left-to-right run (Latin words, numbers, dates, URLs, `5%`) is reversed back. This is the
+  visual-to-logical inverse of the Unicode Bidirectional Algorithm's reordering [R33]. Separate
+  numbers are not joined into one run, because the algorithm lays them out right to left.
+- *Tables.* Ruled tables (`find_tables`) become Markdown tables. Cell text goes through the same line
+  logic, and right-to-left tables are mirrored so their first column comes first. A one-cell frame
+  is a boxed paragraph, not a table.
+- *Structure.* The most common font size is body text. Larger sizes become `#`, `##`, `###` by
+  rank, and short all-bold lines become the next level. Bullet glyphs (including Word's private-use
+  bullet) become list items, and consecutive lines join into paragraphs when they are close and
+  share direction. Lines in the top or bottom 8% of the page that repeat on at least half the pages
+  (digits ignored) are running headers or footers and are dropped, as are page-number lines.
+- *Columns.* Full-width lines split a page into bands. A band whose two halves each hold at least
+  three lines, two of them wide, is read column by column, right column first on right-to-left
+  pages. The width condition keeps label/value forms row by row.
+- *No text layer.* A page with almost no text, or whose text is mostly unmapped glyphs (private-use
+  code points, `(cid:N)`), is rendered at 300 dpi and OCR'd with Tesseract [R34] when it is
+  installed, or reported under `pages_needing_ocr`.
+
+**Gemini backend.** Vision-language models now transcribe complex layouts and scans better than
+rule-based extraction, but they can silently drop a paragraph or "fix" a number. The backend
+therefore treats the model as a proposal, like every other model call in Alloy:
+
+1. Pages go in small batches (`pages_per_call`, default 4) as native PDF parts (each page is about
+   258 tokens), together with the local text layer of the same pages to pin exact spelling.
+2. Each returned page is compared with the text layer by word recall (does it contain what the page
+   says?) and precision (does it say anything the page does not?). A word also matches its reversal,
+   so a reversed text layer does not penalize a correct transcription.
+3. A page below `min_text_recall` or `min_text_precision` is retried alone, since smaller requests
+   omit less, and is otherwise replaced by the local result and flagged `local_fallback`. Pages
+   without a text layer are kept but reported as unverified.
+
+Calls carry the PDF's SHA-256 in the prompt and the attachment's hash in the call-cache key, so
+re-running is free and two documents never share a cached answer.
+
+*Alternatives considered.* Docling [R35] (MIT) is the strongest open-source layout pipeline, but it
+needs PyTorch models and has no right-to-left handling of its own. Marker (GPL-3.0, with
+model-weight license restrictions) and PyMuPDF4LLM (AGPL-3.0) have licenses that are hard to clear
+for internal enterprise use. A rule-based converter that understands Hebrew, combined with a
+verified model pass for hard pages, covers this corpus with a light, permissive dependency set.
 
 ## 7. The corpus knowledge graph (`graph_build.py`, `graph.py`)
 
@@ -392,7 +448,7 @@ question in five wordings over-weights that fact [R17].
 
 | Kind | Granularity | Key includes |
 |---|---|---|
-| `chunks` | corpus | Every supported file's relative path and SHA-256, chunk size and overlap, code fingerprint of `documents.py`, cache schema. |
+| `chunks` | corpus | Every supported file's relative path and SHA-256, chunk size and overlap, code fingerprint of `documents.py` and `pdf_markdown.py` (PDFs are read through the converter), cache schema. |
 | `node_signals` | **per document** | That document's chunk IDs and text, signals fingerprint (prompt + schema + truncation bound), model, model route, batch size, theme signature (tagging pass), hash of the document's base signals (tagging pass). |
 | `theme_vocabulary` | corpus | All chunk IDs and text, vocabulary fingerprint, model, route, ceiling. Empty vocabularies (the failure fallback) are not cached. |
 | `graph` | corpus | Chunks, every chunk's signals, edge and clustering parameters, topic mode, model, route, code fingerprint of `graph.py` + `graph_build.py`. |
@@ -915,7 +971,10 @@ mitigate them.
    before the edit has to be re-made (with `plan --themes-from`).
 5. **Code fingerprints are per Python version.** Caches built under one Python minor version are
    rebuilt once under another.
-6. **No OCR.** Scanned pages are reported (section 6) but must be OCR'd outside Alloy.
+6. **PDF conversion is heuristic.** The local backend recognizes only ruled tables (borderless
+   tables come out as text lines), decides direction per line, and infers headings from font size
+   and weight. OCR needs Tesseract installed. Use the `gemini` backend for complex layouts and scans;
+   its pages are verified against the text layer, but pages without one cannot be verified.
 7. **Generated system prompts are starting points** that a manager must review; they are not a
    security control.
 
@@ -1020,6 +1079,14 @@ Statistics
 
 - [R29] Wilson, 1927. *Probable Inference, the Law of Succession, and Statistical Inference.* JASA 22(158). https://doi.org/10.1080/01621459.1927.10502953
 - [R30] Brown, Cai & DasGupta, 2001. *Interval Estimation for a Binomial Proportion.* Statistical Science 16(2). https://doi.org/10.1214/ss/1009213286
+
+Document conversion
+
+- [R33] Unicode Standard Annex #9, *Unicode Bidirectional Algorithm.* https://www.unicode.org/reports/tr9/
+- [R34] Tesseract OCR engine. https://github.com/tesseract-ocr/tesseract
+- [R35] Docling. https://github.com/docling-project/docling
+- pdfplumber. https://github.com/jsvine/pdfplumber
+- Gemini document understanding: https://ai.google.dev/gemini-api/docs/document-processing
 
 Platform
 

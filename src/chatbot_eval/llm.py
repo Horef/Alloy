@@ -34,6 +34,9 @@ class StructuredLLM(Protocol):
     ) -> T: ...
 
 
+Media = list[tuple[str, bytes]]  # (MIME type, content) attachments sent before the prompt
+
+
 class CachedStructuredLLM:
     """Persistent, content-addressed store of structured responses, shared by all runs and commands.
 
@@ -57,14 +60,19 @@ class CachedStructuredLLM:
                     logger.warning("llm_call_cache_line_invalid path=%s", path)
 
     @staticmethod
-    def _key(prompt: str, schema, model: str, required_fields: dict[str, int] | None) -> str:
+    def _key(prompt: str, schema, model: str, required_fields: dict[str, int] | None, media: Media | None = None) -> str:
         identity = {"model": model, "schema": schema.model_json_schema(), "prompt": prompt,
                     "required_fields": required_fields or {}}
+        if media:  # only attachment calls carry this field, so text-only keys are unchanged
+            identity["media"] = [[mime, hashlib.sha256(data).hexdigest()] for mime, data in media]
         encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def generate(self, prompt: str, schema: type[T], model: str, *, required_fields: dict[str, int] | None = None) -> T:
-        key = self._key(prompt, schema, model, required_fields)
+    def generate(
+        self, prompt: str, schema: type[T], model: str, *, required_fields: dict[str, int] | None = None,
+        media: Media | None = None,
+    ) -> T:
+        key = self._key(prompt, schema, model, required_fields, media)
         if self._read:
             with self._lock:
                 cached = self._entries.get(key)
@@ -76,10 +84,8 @@ class CachedStructuredLLM:
                     return result
                 except ValidationError:
                     logger.warning("llm_call_cache_entry_invalid schema=%s", schema.__name__)
-        if required_fields:
-            result = self._llm.generate(prompt, schema, model, required_fields=required_fields)
-        else:
-            result = self._llm.generate(prompt, schema, model)
+        extra = {key: value for key, value in (("required_fields", required_fields), ("media", media)) if value}
+        result = self._llm.generate(prompt, schema, model, **extra)
         payload = result.model_dump(mode="json")
         with self._lock:
             self.misses += 1
@@ -223,14 +229,15 @@ class GeminiStructuredLLM:
 
     def generate(
         self, prompt: str, schema: type[T], model: str,
-        *, required_fields: dict[str, int] | None = None,
+        *, required_fields: dict[str, int] | None = None, media: Media | None = None,
     ) -> T:
         response_json_schema = _augment_required(schema.model_json_schema(), required_fields)
+        contents = [types.Part.from_bytes(data=data, mime_type=mime) for mime, data in media] + [prompt] if media else prompt
 
         def call() -> T:
             response = self._client.models.generate_content(
                 model=model,
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_json_schema=response_json_schema,

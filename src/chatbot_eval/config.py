@@ -90,6 +90,13 @@ class Settings:
     broad_population_limit: int = 8
     broad_min_key_points: int = 3
     retry_deadline_seconds: float = 0.0
+    conversion_backend: str = "local"
+    conversion_model: str = "gemini-3.1-flash-lite"
+    conversion_pages_per_call: int = 4
+    conversion_min_recall: float = 0.9
+    conversion_min_precision: float = 0.8
+    conversion_ocr: str = "auto"
+    conversion_ocr_languages: str = "heb+eng"
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -228,6 +235,16 @@ class Settings:
             errors.append("evaluation.gemini_request_timeout_seconds must be positive")
         if not math.isfinite(self.retry_deadline_seconds) or self.retry_deadline_seconds < 0:
             errors.append("evaluation.retry_deadline_seconds must be non-negative (0 = no deadline)")
+        if self.conversion_backend not in {"local", "gemini"}:
+            errors.append("conversion.backend must be local or gemini")
+        if not self.conversion_model.strip() or not self.conversion_ocr_languages.strip():
+            errors.append("conversion.model and conversion.ocr_languages must not be empty")
+        if not 1 <= self.conversion_pages_per_call <= 50:
+            errors.append("conversion.pages_per_call must be in [1, 50]")
+        if not 0 < self.conversion_min_recall <= 1 or not 0 < self.conversion_min_precision <= 1:
+            errors.append("conversion.min_text_recall and conversion.min_text_precision must be in (0, 1]")
+        if self.conversion_ocr not in {"auto", "off"}:
+            errors.append("conversion.ocr must be auto or off")
         if self.max_concurrency < 1:
             errors.append("evaluation.max_concurrency must be positive")
         if self.log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
@@ -363,6 +380,13 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         broad_population_limit=int(_get(data, "generation", "broad_population_limit", 8)),
         broad_min_key_points=int(_get(data, "generation", "broad_min_key_points", 3)),
         retry_deadline_seconds=float(_get(data, "evaluation", "retry_deadline_seconds", 0.0)),
+        conversion_backend=str(_get(data, "conversion", "backend", "local")).strip().lower(),
+        conversion_model=str(_get(data, "conversion", "model", "gemini-3.1-flash-lite")).strip(),
+        conversion_pages_per_call=int(_get(data, "conversion", "pages_per_call", 4)),
+        conversion_min_recall=float(_get(data, "conversion", "min_text_recall", 0.9)),
+        conversion_min_precision=float(_get(data, "conversion", "min_text_precision", 0.8)),
+        conversion_ocr=str(_get(data, "conversion", "ocr", "auto")).strip().lower(),
+        conversion_ocr_languages=str(_get(data, "conversion", "ocr_languages", "heb+eng")).strip(),
     ).validate()
 
 

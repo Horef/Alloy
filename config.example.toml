@@ -126,6 +126,18 @@ retry_deadline_seconds = 0
 max_concurrency = 1
 # Optional nonsecret identity for the chatbot deployment is supplied per run with --deployment-id.
 
+[conversion]
+# convert-pdf: "local" is free and offline; "gemini" sends small page batches to a low-cost model and
+# checks every page against the local text layer (failing pages fall back to the local result).
+backend = "local"
+model = "gemini-3.1-flash-lite"
+pages_per_call = 4
+min_text_recall = 0.9
+min_text_precision = 0.8
+# "auto" OCRs pages without a text layer when Tesseract is installed (with Hebrew data); "off" never does.
+ocr = "auto"
+ocr_languages = "heb+eng"
+
 [runtime]
 # Set to false in production/non-interactive jobs.
 progress_enabled = true

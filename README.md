@@ -3,6 +3,7 @@
 This standalone Python module builds and runs evaluation sets for internal knowledge chatbots and
 helps managers bootstrap chatbot instructions. It supports these workflows:
 
+0. `convert-pdf`: turn PDFs into Markdown for the knowledge base, offline or with a low-cost Gemini model.
 1. `generate`: create a representative, evidence-backed silver question set from local documents.
 2. `review-export` / `review-merge`: export a small, human-readable review file and merge the
    reviewer's edits back onto the full technical set without losing provenance.
@@ -235,6 +236,13 @@ log_level = "INFO"
 | `evaluation.retry_deadline_seconds` | `0` | Optional limit on retrying one Gemini or chatbot call: no retry starts later than this many seconds after the first attempt, so a call takes at most this plus one request timeout. `0` disables the limit. Part of the live evaluation contract. |
 | `evaluation.max_concurrency` | `1` | Chatbot/judge workers. Keep `1` for session-sensitive endpoints; values above `1` are opt-in. For `generate`, the same value (or `--max-concurrency`) sets graph-extraction workers, concurrent topic workers for question and boundary generation, and embedding requests; `1` keeps generation fully sequential and reproducible. |
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
+| `conversion.backend` | `local` | `convert-pdf` backend: `local` (free, offline) or `gemini` (model-assisted, verified against the local text layer). |
+| `conversion.model` | `gemini-3.1-flash-lite` | Model for the `gemini` backend. A Flash-Lite tier is enough for transcription; check that your gateway serves it. |
+| `conversion.pages_per_call` | `4` | Pages sent per Gemini call. Smaller batches omit less; larger ones cost slightly less per page. |
+| `conversion.min_text_recall` | `0.9` | Share of the text layer's words a Gemini page must contain to be accepted. |
+| `conversion.min_text_precision` | `0.8` | Share of a Gemini page's words that must appear in the text layer (guards against invented text). |
+| `conversion.ocr` | `auto` | `auto` OCRs pages without a usable text layer with Tesseract when it is installed; `off` never runs OCR. |
+| `conversion.ocr_languages` | `heb+eng` | Tesseract language packs used for OCR. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
 
@@ -276,6 +284,56 @@ transport and need no API key.
 chatbot-eval --config config.toml --no-progress --log-level INFO \
   evaluate-file --results ./results.xlsx
 ```
+
+## Workflow 0: convert PDFs to Markdown
+
+Markdown is the best input for this pipeline: headings, lists, and tables survive as plain text that
+models read well, chunking can follow the structure, and each page keeps a `<!-- page: N -->`
+marker so questions still cite page numbers. Plain PDF text extraction is not good enough for
+Hebrew: extractors return right-to-left lines in visual (reversed) order, and table cells run
+together. `convert-pdf` fixes both.
+
+```bash
+chatbot-eval --config config.toml convert-pdf --input ./pdfs --output ./knowledge_base_md
+chatbot-eval --config config.toml generate --documents ./knowledge_base_md ...
+```
+
+The input folder layout is mirrored as `.md` files with front matter (`id`, `title`, `source`,
+`pages`). The run manifest and `conversion_report.json` (method, verification scores, and warnings
+per page) are written to `<output>/.alloy/`; hidden folders are never read as corpus, so the output
+folder can be passed directly to `--documents`. Keep the PDFs out of that folder.
+
+**`local` backend (default, free, offline).** Rebuilds each line from character positions
+(`pdfplumber`), converts right-to-left lines to logical order while keeping numbers, dates, URLs,
+and English words intact, turns ruled tables into Markdown tables (right-to-left tables keep their
+first column first), detects headings from font size and weight, removes running headers, footers,
+and page numbers, keeps bullet and numbered lists, and reads two-column pages column by column.
+Pages without a usable text layer (scans, unmapped fonts) are OCR'd with
+[Tesseract](https://github.com/tesseract-ocr/tesseract) when it is installed with Hebrew data
+(`apt install tesseract-ocr tesseract-ocr-heb`, or `brew install tesseract tesseract-lang`);
+otherwise they are listed under `pages_needing_ocr`. Corpus PDFs passed to `generate` directly use
+the same converter, without OCR.
+
+**`gemini` backend (low cost, best for complex layouts and scans).** Sends `pages_per_call` pages at a
+time as native PDF to `conversion.model`, together with the local text layer to pin exact spelling
+and numbers. Every returned page is compared with the text layer: it must contain at least
+`min_text_recall` of the text layer's words, and at least `min_text_precision` of its own words must
+appear there. A page that fails is retried alone, then replaced by the local result (`local_fallback`
+in the report), so an omission or invented sentence never passes silently. Pages without a text
+layer cannot be checked and are reported as unverified. A page costs roughly 258 image tokens plus
+the text layer in and about as many tokens out, on the order of a dollar per thousand pages with a
+Flash-Lite model at 2026 prices; calls are seeded and cached like every other call, so re-running
+costs nothing.
+
+| Option | Required/default | Meaning |
+|---|---|---|
+| `--input PATH` | required | A PDF file, or a folder searched recursively for PDFs. |
+| `--output DIR` | `outputs/markdown` | Destination folder for the Markdown (must be outside `--input`). |
+| `--backend NAME` | `conversion.backend` | `local` or `gemini`. The local backend needs no API key. |
+| `--pages-per-call N` | `conversion.pages_per_call` | Pages per Gemini call. |
+| `--ocr MODE` | `conversion.ocr` | `auto` or `off`. |
+| `--max-concurrency N` | config value | Concurrent Gemini calls per document. |
+| `--cache-dir DIR` / `--refresh-cache` / `--no-cache` / `--keep-stale-cache` | config value | Call-cache controls for the `gemini` backend. |
 
 ## Workflow 1: generate a silver question set
 
@@ -437,10 +495,10 @@ schema-incompatible entries are logged and recomputed.
 
 | Format | Behavior |
 |---|---|
-| `.txt`, `.md`, `.rst` | Read as UTF-8 with replacement for malformed characters. |
+| `.txt`, `.md`, `.rst` | Read as UTF-8 with replacement for malformed characters. Markdown with `<!-- page: N -->` markers (from `convert-pdf`) keeps page-level locations. |
 | `.csv` | Rows become pipe-separated blocks so row boundaries survive chunking. |
 | `.json`, `.jsonl` | Read as structured or line-delimited text. |
-| `.pdf` | Text extracted locally with page-aware locations. Scanned pages require OCR first: pages and files that yield no text are logged and listed under `cache.extraction` in the run manifest. |
+| `.pdf` | Converted with the local `convert-pdf` backend (Hebrew reading order, tables, headings) with page-aware locations, without OCR. Scanned pages need `convert-pdf` with OCR or the `gemini` backend first: pages and files that yield no text are logged and listed under `cache.extraction` in the run manifest. |
 | `.docx` | Paragraphs and tables are extracted as distinct structural sections. |
 
 ### Question types
@@ -1266,7 +1324,8 @@ only a hash of the live chatbot URL.
 | `cli.py` | CLI parsing, configuration wiring, workflow orchestration. |
 | `config.py` | TOML and `.env` loading and validation (`Settings`). |
 | `cache.py` | Content-addressed corpus caches (chunks, node signals, themes, graph, topics, insights, prompt packages), invalidation, and pruning. |
-| `documents.py` | File discovery, extraction, chunking, provenance. |
+| `documents.py` | File discovery (hidden files and folders are skipped), extraction, chunking, provenance. |
+| `pdf_markdown.py` | PDF-to-Markdown conversion: local layout reconstruction with Hebrew bidi handling, and the verified Gemini backend. |
 | `graph_build.py` | LLM signal extraction, theme vocabulary and tagging, topic labeling. |
 | `graph.py` | Deterministic edges, entity normalization, topic clustering, evidence walks. |
 | `retrieval.py` | Hebrew-aware BM25, optional embedding fusion, embedding cache. |
