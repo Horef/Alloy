@@ -70,6 +70,9 @@ local documents -> chunks -> knowledge graph topics -> prompt blueprint
 The components are independent: generation needs documents and Gemini but no chatbot; evaluation
 consumes reviewed questions and either a chatbot adapter or a premade results file.
 
+For a component-by-component walkthrough with design rationale and research references, see
+[docs/architecture.md](docs/architecture.md).
+
 ## Installation
 
 Python 3.11 or newer is required. In the development environment used for this repository:
@@ -180,7 +183,7 @@ log_level = "INFO"
 | `generation.keyphrase_overlap_threshold` | `0.3` | Jaccard threshold (in `(0, 1]`) for creating a keyphrase-overlap edge between two nodes. |
 | `generation.max_graph_topics` | `40` | Maximum graph-derived topics. Beyond this, the largest (most prevalent) clusters stay distinct and the remaining small ones are bin-packed into bounded "other" buckets. A higher cap yields finer topics on dense corpora; it does not create a topic the graph structure does not support (a theme spread thinly across documents may still not cohere into its own cluster — use `generate --topic` to force a focused subset). |
 | `generation.min_cluster_nodes` | `1` | Smallest standalone cluster kept before merging into "other". |
-| `generation.max_cluster_nodes` | `12` | Maximum graph nodes assembled as evidence for one topic's question batch. |
+| `generation.max_cluster_nodes` | `12` | Maximum focus chunks in one evidence window. A larger topic is split into several contiguous windows; each call also sees up to `context_nodes` graph neighbors. |
 | `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
 | `generation.max_cluster_size` | `40` | Clusters larger than this are split by weakest-edge removal so no single topic dominates. |
 | `generation.topic_mode` | `theme` | How topics are formed. `theme` (default) tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. `entity` clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin themes. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and one cheap theme-tagging pass over chunk summaries (both cached per document). Returned themes are snapped onto the vocabulary. See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
@@ -193,7 +196,7 @@ log_level = "INFO"
 | `generation.semantic_duplicate_threshold` | `0.92` | Cosine similarity at or above which two questions are duplicates (embedding model only). Variants are compared only with other variants. |
 | `generation.verify_unanswerable` | `false` | Re-check each boundary candidate against evidence retrieved from the whole corpus and reject it when that evidence answers it. One extra call per boundary candidate. |
 | `generation.unanswerable_evidence_limit` | `16` | Chunks retrieved per boundary candidate for that check. |
-| `generation.filter_closed_book_answerable` | `false` | Drop canonical questions whose every reference claim a model states with no evidence (general knowledge, not a test of the knowledge base). Two extra calls per canonical candidate. |
+| `generation.filter_closed_book_answerable` | `false` | Legacy boolean read only when `closed_book_check` is absent: `true` means `closed_book_check = "reject"`. |
 | `generation.continue_on_call_failure` | `false` | Count a failed model call as `llm_call_failed` in the diagnostics and finish the run with a shortfall instead of aborting. The checkpoint does not record failures, so `--resume` retries them. |
 | `generation.variation_batch_size` | `30` | Canonical questions per variation-generation call; the variation budget is spread over batches. |
 | `generation.mode` | `standard` | `standard`: user variants for part of the canonical questions. `user_facing`: every canonical and boundary question gets exactly one `natural_user` phrasing and becomes its **anchor** (`anchor=true`); ambiguous variants are sized as in standard mode. The anchor keeps the grounded intent, the user phrasing is what reviewers see and what is scored. |
@@ -326,10 +329,13 @@ Generation is staged rather than performed with one unconstrained prompt:
 4. **Build the knowledge graph**: deterministic typed edges connect nodes that share entities
    (matched with Hebrew-aware, prefix- and gershayim-tolerant normalization), overlap on keyphrases,
    or are adjacent in the same document.
-5. **Derive prevalence-weighted topic clusters** (roughly 4-12) from strong semantic edges, splitting
-   oversized clusters and merging tiny ones so no single hub entity fuses the whole corpus.
-6. **Allocate quotas** in proportion to cluster size (corpus coverage), within the minimum topic
-   allocation and maximum topic share.
+5. **Derive topics**: in the default `theme` mode, chunks sharing a controlled-vocabulary theme form
+   one topic; in `entity` mode, topics are connected components over strong shared-entity edges. In
+   both modes oversized topics are split by internal cohesion and a long tail of small ones is
+   bin-packed, so no single hub entity fuses the whole corpus.
+6. **Allocate quotas** in proportion to each topic's information units (countable statements in its
+   chunks), within the minimum topic allocation and maximum topic share, or exactly as a
+   `generation_plan.json` specifies.
 7. **Assemble per-question evidence** as a bounded connected cluster of graph nodes (a topic's seed
    nodes plus their strongest neighbors), so related facts across chunks are presented together. A
    topic larger than `max_cluster_nodes` is split into contiguous evidence windows that share its
@@ -566,10 +572,12 @@ without flattening.
 candidate rejection counts, unallocated capacity and its reason, topic quotas, and the source IDs
 actually rendered for each topic. The same object is embedded in `run_manifest.json`, and the
 artifact is listed in the manifest output inventory with its size and SHA-256 hash. A
-`boundary_evidence_scope` value of `selected_excerpts` means boundary candidates were checked against
-the excerpts selected and rendered for their generation calls. It does not claim that every passage
-in the corpus was exhaustively searched for an answer. When no boundary cases were requested, the
-value is `not_requested`.
+`boundary_evidence_scope` value of `cluster_excerpts` means boundary candidates were checked only
+against the excerpts rendered for their generation calls; it does not claim that every passage in
+the corpus was searched for an answer. `cluster_excerpts+corpus_retrieval_check` means
+`verify_unanswerable` additionally re-checked each one against evidence retrieved from the whole
+corpus (still a retrieval sample, not an exhaustive proof). When no boundary cases were requested,
+the value is `not_requested`.
 
 Reviewers should confirm the user need, reference answer, sources, and quotations; edit as needed;
 then set `review_status` to `approved` or `rejected`. Keep rejected/deleted questions in an exclusion
@@ -662,6 +670,11 @@ so a `needs_reground` row is excluded there and included (with its stale groundi
 grounding of flagged questions, use the dedicated `reground` command (Workflow 3 below), which
 regenerates their sources, supporting quotes, and reference claims from the documents and resets them
 to `pending` for a fresh approval.
+- **Rows whose `expected_behavior` was changed** have their hidden task fields aligned with the new
+  task: `answerable` follows the behavior, `question_type` becomes `unanswerable` for an abstention
+  task (and a real type when a boundary question becomes an answer task), and a task that is no
+  longer an answer drops its reference claims and quotes. A row that becomes an answer task has no
+  grounding yet, so it is flagged like a factual edit (`approved` becomes `needs_reground`).
 - **Rows with an `id` not in the canonical set** are rejected, except questions a reviewer added in
   the review app (`Q-manual-...`): they become new `natural_user` (or `canonical`) answer questions
   with `review_status=needs_reground` and no grounding yet, so `reground` grounds them, using their
@@ -1090,8 +1103,9 @@ retrieved context. It returns structured `JudgeScores`; automatic function calli
 
 Every factual-answer question stores stable, independently checkable `reference_claims`. The judge
 reports one assessment per fixed claim ID; application code validates those IDs and derives the
-aggregate counts. Older silver files remain readable by treating their full expected answer as one
-coarse claim until a reviewer decomposes it. Clarification and abstention tasks have no factual
+aggregate counts. Older silver files and premade imports without claims remain readable: their
+expected answer is split deterministically into sentence/line claims (numbers such as `5.5` are not
+split), falling back to the whole answer as one claim. Clarification and abstention tasks have no factual
 claims and are excluded from factual-answer and retrieval denominators.
 
 The judge reports:
@@ -1128,7 +1142,9 @@ The final outcome is deterministic from those scores:
 | `chatbot_error` | Live/imported chatbot failure; excluded from quality scores. |
 | `judge_error` | Gemini judging failure after retries; excluded from quality scores. |
 
-Abstention is detected both by the judge and deterministic English/Hebrew phrase patterns.
+Abstention and clarification are whole-response judgments made by the judge
+(`response_is_abstention`, `response_is_clarification`); there is no phrase-matching override, so a
+substantive answer that mentions a missing detail is not misread as a refusal.
 
 ## Evaluation outputs and report logic
 
@@ -1199,8 +1215,9 @@ Gemini calls—direct or through Apigee—retry only transient timeouts, connect
 and selected server errors according to `evaluation.max_retries`, with jittered exponential backoff
 and `Retry-After` support. Authentication, configuration, and schema-validation errors fail
 immediately. Every call uses `evaluation.gemini_request_timeout_seconds`. When Apigee returns unified quota headers, Alloy logs the selected metric, request usage,
-daily limit/usage, and remaining allowance without logging credentials. Live chatbot calls remain
-sequential and use the separately configured transient retry and pacing policy.
+daily limit/usage, and remaining allowance without logging credentials. Live chatbot calls are
+sequential by default (`max_concurrency = 1`) and use the separately configured transient retry and
+pacing policy.
 Authentication failures and malformed responses fail immediately; rate-limit responses honor
 `Retry-After` when supplied.
 
@@ -1215,21 +1232,31 @@ only a hash of the live chatbot URL.
 | Module | Responsibility |
 |---|---|
 | `cli.py` | CLI parsing, configuration wiring, workflow orchestration. |
-| `config.py` | TOML and `.env` loading. |
-| `cache.py` | Content-addressed chunk/topic caching, invalidation, and atomic replacement. |
+| `config.py` | TOML and `.env` loading and validation (`Settings`). |
+| `cache.py` | Content-addressed corpus caches (chunks, node signals, themes, graph, topics, insights, prompt packages), invalidation, and pruning. |
 | `documents.py` | File discovery, extraction, chunking, provenance. |
-| `generator.py` | Topics, quotas, generation, validation, deduplication. |
+| `graph_build.py` | LLM signal extraction, theme vocabulary and tagging, topic labeling. |
+| `graph.py` | Deterministic edges, entity normalization, topic clustering, evidence walks. |
+| `retrieval.py` | Hebrew-aware BM25, optional embedding fusion, embedding cache. |
+| `planning.py` | Information units and automatic question-set sizing (`generation_plan.json`). |
+| `generator.py` | Quotas, evidence windows, generation, validation, deduplication, variants, broad questions, reground. |
+| `review.py` | Review export and lossless review merge. |
+| `validation.py` | Input-boundary normalization and question-set invariants. |
 | `history.py` | Compatible loading of previous evaluations, insights, and current prompts. |
 | `prompt_generator.py` | Document-grounded system-prompt package generation and export. |
+| `prompt_policy.py` | Versioned, code-assembled Hebrew response policy. |
 | `models.py` | Pydantic contracts. |
 | `io.py` | Silver/evaluation CSV and JSONL serialization. |
 | `results_io.py` | Premade file import, column resolution, stored-error detection. |
 | `adapters.py` | Chatbot protocol and generic HTTP adapter. |
-| `llm.py` | Structured LLM protocol and Gemini implementation. |
+| `llm.py` | Structured LLM protocol, Gemini implementation, persistent call cache. |
 | `evaluator.py` | Claim-level judging and outcome classification. |
 | `topics.py` | Optional Hebrew topic inference. |
 | `insights.py` | Cross-result diagnosis. |
-| `report.py` | Aggregation and Hebrew HTML reporting. |
+| `report.py` | Aggregation, comparison, and Hebrew HTML reporting. |
+| `artifacts.py` | Atomic writes, checkpoints, run manifests. |
+| `contracts.py` | Model-route and record identities used in cache keys and contracts. |
+| `labels.py`, `response_errors.py` | Hebrew labels; placeholder detection and retry delays. |
 | `progress.py` | Disableable progress wrapper. |
 | `logging_utils.py` | Console and optional file logging. |
 
@@ -1281,10 +1308,15 @@ confidence intervals, and reporting options.
 ## Current limitations and next maturation steps
 
 - Silver references still require human review.
-- Topic evidence selection uses mapped sources plus lexical overlap, not embeddings or a graph.
+- Topic evidence comes from knowledge-graph windows; question-targeted retrieval (completeness,
+  boundary, reground checks) is BM25 with optional embedding fusion, so evidence the ranking misses
+  can still leave a reference answer incomplete.
 - User-variation and ambiguity budgets are configurable, but the linguistic quality of each variant
   still requires human review.
-- Corpus analysis is cached as whole content-addressed snapshots; per-file incremental extraction within a changed corpus is not yet implemented.
+- Node signals are cached per document, but the theme vocabulary and the assembled graph are cached
+  per corpus: any document edit rebuilds the vocabulary (one call), re-tags every document if the
+  vocabulary changed, relabels the topics, and can reshape them, which invalidates an existing
+  generation plan.
 - Generation resume replays successful structured responses; it does not attempt to continue from a partially returned model response.
 - Concurrent evaluation is intended only for stateless endpoints and available Gemini/chatbot quota; session-sensitive chatbots should keep the default of one worker.
 - Exclusion is file-based rather than persisted in a review database.
