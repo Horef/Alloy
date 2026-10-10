@@ -247,3 +247,12 @@ def test_limited_gap_language_does_not_override_judge():
     evaluator = Evaluator(object(), Judge(), "judge")
     for answer in ('30 days; attachment not provided', '30 ימים; אין מספיק מידע על הנספח', 'Policy quotes "cannot answer"; 30 days.'):
         assert evaluator.judge_results([(question(), ChatbotResult(question_id="Q1", answer=answer))])[0].outcome == Outcome.CORRECT_ANSWER
+
+
+def test_nonresponsive_answer_is_not_counted_as_misinformation():
+    item = question(True)
+    # Nothing addressed, nothing asserted ("contact your HR office"): nonresponsive, not misleading.
+    assert classify(item, scores(addressed=0, correct=0)) == Outcome.UNRELATED_ANSWER
+    # A required point answered wrongly, or a likely fabricated assertion, still misleads.
+    assert classify(item, scores(addressed=1, correct=0)) == Outcome.MISLEADING_HALLUCINATION
+    assert classify(item, scores(addressed=0, correct=0, unsupported_claims=1)) == Outcome.MISLEADING_HALLUCINATION

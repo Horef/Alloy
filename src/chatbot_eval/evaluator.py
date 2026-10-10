@@ -155,6 +155,9 @@ def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
     not spell out -- is NOT by itself misinformation and must not override an otherwise correct
     answer. Unsupported claims remain visible in ``answer_unsupported_claims`` and in the report's
     factual-risk metrics; they are a softer signal, not a hallucination verdict.
+
+    An answer task with no correct claim is misleading only when it answers a required point wrongly
+    or asserts a likely fabricated fact; a nonresponsive reply is ``UNRELATED_ANSWER``.
     """
     if scores.response_is_abstention and scores.response_is_clarification:
         raise ValueError("Judge flags conflict: whole-response abstention and clarification cannot both be true")
@@ -195,9 +198,12 @@ def classify(question: SilverQuestion, scores: JudgeScores) -> Outcome:
         if scores.answer_scope == "too_much":
             return Outcome.PARTIAL_TOO_MUCH
         return Outcome.PARTIAL_TOO_LITTLE
-    if scores.incorrect_type == "unrelated":
-        return Outcome.UNRELATED_ANSWER
-    return Outcome.MISLEADING_HALLUCINATION
+    # Nothing correct. It misleads only when it answers a required point wrongly or asserts likely
+    # fabricated facts; otherwise ("contact your HR office") it is a nonresponsive answer, which
+    # must not inflate the misinformation rate.
+    if scores.answer_points_addressed > 0 or scores.answer_unsupported_claims > 0:
+        return Outcome.MISLEADING_HALLUCINATION
+    return Outcome.UNRELATED_ANSWER
 
 
 def apply_fixed_claims(question: SilverQuestion, scores: JudgeScores) -> JudgeScores:
