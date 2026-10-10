@@ -296,3 +296,41 @@ def test_review_export_hides_anchors_behind_parent_text_and_merge_keeps_them(tmp
     merged = merge_review_file([anchor, variant, orphan_anchor, orphan_variant], review_csv, diagnostics=diagnostics)
     assert {q.id for q in merged} == {"Q0001", "V0001"}
     assert diagnostics.anchors_kept == 1 and diagnostics.deleted_by_reviewer == 2
+
+
+def test_review_merge_relabels_answer_as_boundary_question(tmp_path):
+    original = _question()
+    review_csv, _ = write_review_file([original], tmp_path)
+
+    def relabel(rows):
+        rows[0]["expected_behavior"] = "abstain"
+        return rows
+
+    _edit_review_csv(review_csv, relabel)
+    diagnostics = MergeDiagnostics()
+    merged = merge_review_file([original], review_csv, diagnostics=diagnostics)[0]
+    # Task-specific fields the reviewer cannot edit follow the new task instead of failing validation.
+    assert merged.expected_behavior == ExpectedBehavior.ABSTAIN and merged.answerable is False
+    assert merged.question_type == QuestionType.UNANSWERABLE
+    assert merged.reference_claims == [] and merged.supporting_quotes == []
+    assert merged.sources == original.sources and merged.review_status == "approved"
+    assert diagnostics.content_edited == 1 and diagnostics.factual_edits_flagged == 0
+
+
+def test_review_merge_flags_new_answer_task_for_reground(tmp_path):
+    boundary = _question(
+        answerable=False, expected_behavior=ExpectedBehavior.ABSTAIN, question_type=QuestionType.UNANSWERABLE,
+        reference_claims=[], supporting_quotes=[], expected_answer="המסמכים אינם מציינים זאת.",
+    )
+    review_csv, _ = write_review_file([boundary], tmp_path)
+
+    def relabel(rows):
+        rows[0]["expected_behavior"] = "answer"
+        rows[0]["expected_answer"] = "התנאים הם א׳ ו-ב׳"
+        return rows
+
+    _edit_review_csv(review_csv, relabel)
+    merged = merge_review_file([boundary], review_csv)[0]
+    assert merged.answerable is True and merged.review_status == "needs_reground"
+    assert merged.question_type == QuestionType.BASIC_KNOWLEDGE
+    assert "expected_behavior" in merged.reviewer_notes

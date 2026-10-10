@@ -21,6 +21,10 @@ Design
   technical fields (so no information is lost) but flag the row so evaluation does not
   silently trust stale grounding: an ``approved`` status is downgraded and a note is
   appended describing what changed.
+* When a reviewer changes ``expected_behavior`` the dependent fields follow the new task:
+  ``answerable`` and an unanswerable ``question_type`` are aligned, and a task that is no longer
+  an answer drops its reference claims and quotes. A task that becomes an answer has no grounding
+  yet, so it is flagged for ``reground`` like a factual edit.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ from typing import Iterable
 
 from .io import _staged_text_file, _safe_csv_value, csv_question_row
 from .labels import EXPECTED_BEHAVIOR_HEBREW, QUESTION_FORM_HEBREW
-from .models import ExpectedBehavior, QuestionForm, SilverQuestion
+from .models import ExpectedBehavior, QuestionForm, QuestionType, SilverQuestion
 from .validation import parse_bool, validate_question_set
 
 logger = logging.getLogger(__name__)
@@ -450,6 +454,23 @@ def _apply_edits(base: SilverQuestion, row: dict, diagnostics: MergeDiagnostics)
         new_behavior = _coerce_behavior(row["expected_behavior"], updated.expected_behavior)
         content_changed |= updated.expected_behavior != new_behavior
         updated.expected_behavior = new_behavior
+
+    if updated.expected_behavior != base.expected_behavior:
+        # A changed task invalidates task-specific fields the reviewer cannot see or edit; without
+        # this, e.g. relabelling an answer as a boundary question fails validation on its claims.
+        updated.answerable = updated.expected_behavior != ExpectedBehavior.ABSTAIN
+        if updated.expected_behavior == ExpectedBehavior.ABSTAIN:
+            updated.question_type = QuestionType.UNANSWERABLE
+        elif updated.question_type == QuestionType.UNANSWERABLE:
+            # reground refuses the unanswerable type, so a former boundary question needs a real one.
+            updated.question_type = QuestionType.BASIC_KNOWLEDGE
+        if updated.expected_behavior != ExpectedBehavior.ANSWER:
+            updated.reference_claims, updated.supporting_quotes = [], []
+            updated.clarification_acceptable, updated.acceptable_clarification = False, ""
+            updated.min_key_points = 0
+        else:
+            # A new answer task has no claims or quotes yet, so it must be re-grounded.
+            factual_changes.append("expected_behavior")
 
     for factual in FACTUAL_FIELDS:
         if factual in row and row[factual].strip() and row[factual].strip() != getattr(updated, factual).strip():
