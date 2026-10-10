@@ -80,6 +80,8 @@ class CorpusAnalysisCache:
         self.refresh = refresh
         self.prune_enabled = prune
         self.events: dict[str, str] = {}
+        # Extraction summary of the corpus this instance chunked (see documents.load_chunks).
+        self.extraction: dict[str, Any] = {}
         # Every cache key this instance looks up, grouped by kind. prune() keeps exactly these and
         # deletes superseded entries. Accumulates across all load_* calls in the instance's lifetime,
         # so kinds looked up more than once per run (e.g. node_signals with and without a theme
@@ -143,11 +145,15 @@ class CorpusAnalysisCache:
         if self.enabled and not self.refresh:
             cached = self._read_chunks(path, key)
             if cached is not None:
+                cached_chunks, extraction = cached
                 self.events["chunks"] = "hit"
                 logger.info("cache_hit kind=chunks key=%s path=%s", key[:12], path)
-                return cached, key
+                self._record_extraction(extraction)
+                return cached_chunks, key
 
-        chunks = load_chunks(root, chunk_chars, overlap_chars, progress_enabled)
+        extraction: dict[str, Any] = {}
+        chunks = load_chunks(root, chunk_chars, overlap_chars, progress_enabled, extraction)
+        self._record_extraction(extraction)
         self.events["chunks"] = "refresh" if self.enabled and self.refresh else "miss"
         if self.enabled:
             payload = {
@@ -155,12 +161,23 @@ class CorpusAnalysisCache:
                 "kind": "chunks",
                 "key": key,
                 "chunks": [chunk.__dict__ for chunk in chunks],
+                "extraction": extraction,
             }
             atomic_write_text(path, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
             logger.info("cache_write kind=chunks key=%s path=%s", key[:12], path)
         else:
             self.events["chunks"] = "disabled"
         return chunks, key
+
+    def _record_extraction(self, extraction: dict[str, Any]) -> None:
+        self.extraction = extraction
+        unreadable = sum(len(sections) for sections in extraction.get("empty_sections", {}).values())
+        if unreadable:
+            logger.warning(
+                "documents_with_unextractable_text files=%d sections=%d files_without_text=%d; "
+                "scanned PDFs need OCR before Alloy can use them (see the manifest's cache.extraction)",
+                len(extraction["empty_sections"]), unreadable, len(extraction.get("files_without_text", [])),
+            )
 
     def load_topics(
         self,
@@ -453,6 +470,7 @@ class CorpusAnalysisCache:
             "pruned": pruned,
             "directory": str(self.directory.resolve()),
             **self.events,
+            **({"extraction": self.extraction} if self.extraction else {}),
         }
 
     def load_question_topics(
@@ -611,7 +629,7 @@ class CorpusAnalysisCache:
         return package
 
     @staticmethod
-    def _read_chunks(path: Path, expected_key: str) -> list[Chunk] | None:
+    def _read_chunks(path: Path, expected_key: str) -> tuple[list[Chunk], dict[str, Any]] | None:
         payload = CorpusAnalysisCache._read_payload(path, "chunks", expected_key)
         if payload is None:
             return None
@@ -626,7 +644,8 @@ class CorpusAnalysisCache:
                 for item in values
             ):
                 raise TypeError("each chunk must contain exactly four string fields")
-            return [Chunk(**item) for item in values]
+            extraction = payload.get("extraction") or {}
+            return [Chunk(**item) for item in values], extraction if isinstance(extraction, dict) else {}
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("cache_invalid kind=chunks path=%s error=%s", path, exc)
             return None

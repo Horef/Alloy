@@ -143,7 +143,16 @@ def _structured_chunks(text: str, chunk_chars: int, overlap_chars: int) -> list[
     return chunks
 
 
-def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabled: bool = False) -> list[Chunk]:
+def load_chunks(
+    root: Path, chunk_chars: int, overlap_chars: int, progress_enabled: bool = False,
+    extraction: dict | None = None,
+) -> list[Chunk]:
+    """Chunk every supported file under ``root``.
+
+    ``extraction``, when supplied, receives an extraction summary: the number of files, the
+    sections (PDF pages) that yielded no text, and the files that yielded none at all. Scanned PDFs
+    show up there; they need OCR before Alloy can use them.
+    """
     if chunk_chars <= 0:
         raise ValueError("chunk size must be positive")
     if overlap_chars < 0:
@@ -154,6 +163,8 @@ def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabl
     if not files:
         raise ValueError(f"No supported documents found under {root}")
     chunks: list[Chunk] = []
+    empty_sections: dict[str, list[str]] = {}
+    files_without_text: list[str] = []
     for path in track(files, enabled=progress_enabled, description="Reading documents", total=len(files)):
         relative = str(path.relative_to(root))
         chunk_number = 0
@@ -161,10 +172,17 @@ def load_chunks(root: Path, chunk_chars: int, overlap_chars: int, progress_enabl
             if not raw_text.strip():
                 import logging
                 logging.getLogger(__name__).warning("document_section_empty file=%s section=%s", relative, section_location)
+                empty_sections.setdefault(relative, []).append(section_location)
             for block_location, part in _structured_chunks(raw_text, chunk_chars, overlap_chars):
                 chunk_number += 1
                 location = f"{section_location}, {block_location}"
                 chunks.append(Chunk(f"{relative}#chunk-{chunk_number}", relative, location, part))
+        if not chunk_number:
+            files_without_text.append(relative)
+    if extraction is not None:
+        extraction.update(
+            files=len(files), files_without_text=files_without_text, empty_sections=empty_sections,
+        )
     if not chunks:
         raise ValueError("Documents contained no extractable text")
     return chunks

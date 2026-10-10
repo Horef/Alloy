@@ -430,7 +430,7 @@ schema-incompatible entries are logged and recomputed.
 | `.txt`, `.md`, `.rst` | Read as UTF-8 with replacement for malformed characters. |
 | `.csv` | Rows become pipe-separated blocks so row boundaries survive chunking. |
 | `.json`, `.jsonl` | Read as structured or line-delimited text. |
-| `.pdf` | Text extracted locally with page-aware locations. Scanned pages require OCR first. |
+| `.pdf` | Text extracted locally with page-aware locations. Scanned pages require OCR first: pages and files that yield no text are logged and listed under `cache.extraction` in the run manifest. |
 | `.docx` | Paragraphs and tables are extracted as distinct structural sections. |
 
 ### Question types

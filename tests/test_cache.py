@@ -593,3 +593,18 @@ def test_empty_theme_vocabulary_is_not_cached(tmp_path):
     CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(chunks, **kwargs)
     CorpusAnalysisCache(tmp_path, enabled=True).load_theme_vocabulary(chunks, **kwargs)
     assert calls["n"] == 2
+
+
+def test_chunk_cache_reports_sections_without_text_on_miss_and_hit(tmp_path):
+    from chatbot_eval.cache import CorpusAnalysisCache
+
+    documents = tmp_path / "docs"
+    documents.mkdir()
+    (documents / "rules.md").write_text("כלל ראשון עם תוכן מספיק.", encoding="utf-8")
+    (documents / "scanned.md").write_text("   \n", encoding="utf-8")
+    expected = {"files": 2, "files_without_text": ["scanned.md"], "empty_sections": {"scanned.md": ["document"]}}
+    for _ in range(2):  # miss, then hit
+        cache = CorpusAnalysisCache(tmp_path / "cache")
+        cache.load_chunks(documents, 200, 20)
+        assert cache.summary()["extraction"] == expected
+    assert cache.events["chunks"] == "hit"
