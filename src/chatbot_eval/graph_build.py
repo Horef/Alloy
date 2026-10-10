@@ -13,8 +13,8 @@ import hashlib
 import json
 import logging
 from collections import Counter, defaultdict
-from pathlib import Path
 
+from .contracts import code_fingerprint
 from .documents import Chunk
 from .graph import (
     GraphNode,
@@ -75,14 +75,11 @@ def theme_tagging_fingerprint() -> str:
 def graph_build_fingerprint() -> str:
     """Identity of the graph assembly + clustering implementation, for graph-cache invalidation.
 
-    Hashes both this module and ``graph.py`` so a change to edge building, entity normalization, or
-    topic clustering invalidates cached graphs. The graph cache is cheap to rebuild from already
+    Fingerprints the code of both this module and ``graph.py`` (comments and docstrings excluded) so a
+    change to edge building, entity normalization, or topic clustering invalidates cached graphs. The graph cache is cheap to rebuild from already
     cached node signals, so being conservative here never serves a stale graph.
     """
-    from . import graph as _graph_module
-
-    combined = Path(__file__).read_bytes() + Path(_graph_module.__file__).read_bytes()
-    return hashlib.sha256(combined).hexdigest()
+    return code_fingerprint("graph_build.py", "graph.py")
 
 
 SIGNALS_PROMPT = """You are indexing an internal knowledge base to build a topic graph. For EACH

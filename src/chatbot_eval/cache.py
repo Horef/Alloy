@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .artifacts import atomic_write_text, file_sha256
+from .contracts import code_fingerprint
 from .documents import SUPPORTED_SUFFIXES, Chunk, load_chunks
 from .graph import GraphBundle, IncompleteExtraction
 from .models import (
@@ -132,7 +133,7 @@ class CorpusAnalysisCache:
         inventory = _document_inventory(root)
         key = _json_hash({
             "schema_version": CACHE_SCHEMA_VERSION,
-            "chunker_implementation_sha256": file_sha256(Path(load_chunks.__code__.co_filename)),
+            "chunker_implementation_sha256": code_fingerprint("documents.py"),
             "documents": inventory,
             "chunk_chars": chunk_chars,
             "overlap_chars": overlap_chars,

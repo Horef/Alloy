@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import hashlib
-from pathlib import Path
 
+from .contracts import code_fingerprint
 from .llm import StructuredLLM
 from .models import ChatbotResult, SilverQuestion, TopicAssignments
 from .progress import track
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def topic_inference_fingerprint() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return code_fingerprint("topics.py")
 
 TOPIC_INFERENCE_PROMPT = """Cluster the following chatbot evaluation questions into broad,
 user-meaningful subjects. Return one assignment for every question_id. Topic names MUST be concise

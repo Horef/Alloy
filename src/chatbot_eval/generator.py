@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote
 
+from .contracts import code_fingerprint
 from .documents import Chunk
 from .graph import (
     GraphBundle,
@@ -54,7 +55,7 @@ _PROMPT_TRUNCATION_MARKER = "[PROMPT_EXCERPT_TRUNCATED]"
 
 def reground_fingerprint() -> str:
     """Nonsecret identity for the regrounding implementation, for manifests."""
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return code_fingerprint("generator.py")
 
 QUESTION_PROMPT = """Create at most {count} diverse evaluation questions about TOPIC.
 Use only the supplied evidence. Questions should resemble real user needs, cover different facts or

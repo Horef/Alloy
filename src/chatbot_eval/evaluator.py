@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
-from pathlib import Path
 
 from .adapters import ChatbotAdapter
+from .contracts import code_fingerprint
 from .llm import StructuredLLM
 from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
 from .progress import track
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def judge_contract_fingerprint() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return code_fingerprint("evaluator.py")
 
 
 def _bounded_text(value: str, maximum: int) -> tuple[str, int]:

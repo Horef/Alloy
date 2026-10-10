@@ -6,6 +6,7 @@ import logging
 from collections import defaultdict, deque
 from pathlib import Path
 
+from .contracts import code_fingerprint
 from .artifacts import atomic_write_text
 from .documents import Chunk
 from .llm import StructuredLLM
@@ -22,9 +23,7 @@ def prompt_generation_fingerprint() -> str:
         PromptPackage.model_json_schema(), sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(
-        Path(__file__).read_bytes()
-        + Path(__file__).with_name("prompt_policy.py").read_bytes()
-        + schema
+        code_fingerprint("prompt_generator.py", "prompt_policy.py").encode("utf-8") + schema
     ).hexdigest()
 
 

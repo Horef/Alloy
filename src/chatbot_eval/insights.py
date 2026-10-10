@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-import hashlib
 from pathlib import Path
 
+from .contracts import code_fingerprint
 from .artifacts import atomic_write_text
 from .llm import StructuredLLM
 from .models import EvaluationInsights, EvaluationRecord, Outcome
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def insights_fingerprint() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return code_fingerprint("insights.py")
 
 INSIGHTS_PROMPT = """Analyze a completed internal chatbot evaluation and produce actionable,
 evidence-based insights in clear Hebrew. Look for recurring patterns that explain failures across
