@@ -288,7 +288,6 @@ def read_premade_results(
             question.parent_question_id = external_ids.get(parent, "")
             if not question.parent_question_id:
                 result.metadata["unresolved_parent_question_id"] = parent
-        result.metadata["import_diagnostics"] = diagnostics.as_dict()
     if strict and skipped:
         preview = "; ".join(skipped[:10])
         raise ValueError(

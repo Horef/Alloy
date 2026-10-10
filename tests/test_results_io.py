@@ -215,3 +215,22 @@ def test_malformed_headers_rejected(tmp_path, text):
     path.write_text(text)
     with pytest.raises(ValueError, match="headers"):
         read_premade_results(path)
+
+
+def test_fixing_one_row_does_not_change_other_rows_resume_fingerprints(tmp_path):
+    from chatbot_eval.artifacts import evaluation_fingerprint
+
+    path = tmp_path / "results.csv"
+
+    def fingerprint_of_first_row(second_question):
+        path.write_text(
+            "question,expected_answer,answer\nכמה ימים?,שלושה ימים,שלושה\n"
+            f"{second_question},תשובה,תשובה\n",
+            encoding="utf-8",
+        )
+        pairs = read_premade_results(path)
+        question, result = pairs[0]
+        return evaluation_fingerprint(question, result)
+
+    # The second row is skipped (no question) and then fixed; the first row's identity is unaffected.
+    assert fingerprint_of_first_row("") == fingerprint_of_first_row("מה הנוהל?")
