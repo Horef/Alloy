@@ -430,6 +430,10 @@ def build_comparison(
     metric_definitions["factual_risk_rate"] = ("טענות שגויות או לא מבוססות", True)
     metric_definitions["behavior_failure_rate"] = ("כשל במדיניות המענה", True)
 
+    def headline_scope(values: list[EvaluationRecord]) -> list[EvaluationRecord]:
+        # Same anchor rule as build_summary, so metric populations match the headline rates.
+        return values if canonical_scoring == "include" else [r for r in values if not r.question.anchor]
+
     matched_id_set = set(matched_ids)
     current_matched = {identifier: current_by_id[identifier] for identifier in matched_id_set}
     previous_matched = {identifier: previous_by_id[identifier] for identifier in matched_id_set}
@@ -444,7 +448,8 @@ def build_comparison(
         excludes questions that errored in only one run, since those cannot contribute a
         like-for-like point.
         """
-        shared = eligible(list(current_matched.values()), key) & eligible(list(previous_matched.values()), key)
+        shared = (eligible(headline_scope(list(current_matched.values())), key)
+                  & eligible(headline_scope(list(previous_matched.values())), key))
         current_hits = sum(_metric_hit(current_matched[identifier], key) for identifier in shared)
         previous_hits = sum(_metric_hit(previous_matched[identifier], key) for identifier in shared)
         current_rate = _rate(current_hits, len(shared))
@@ -468,8 +473,8 @@ def build_comparison(
     for key, (label, lower_is_better) in metric_definitions.items():
         current = current_summary.get(key)
         previous = previous_summary.get(key)
-        current_ids = eligible(current_records, key)
-        previous_ids = eligible(previous_records, key)
+        current_ids = eligible(headline_scope(current_records), key)
+        previous_ids = eligible(headline_scope(previous_records), key)
         metric_comparable = aggregate_comparable and current_ids == previous_ids
         reason = "benchmark_identity_changed" if not aggregate_comparable else (
             "eligible_population_changed" if current_ids != previous_ids else None

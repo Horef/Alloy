@@ -481,3 +481,15 @@ def test_anchors_are_reported_as_phrasing_gap_not_headline_by_default(tmp_path):
     assert included["total"] == 2 and included["correct_answer_count"] == 1
     _, report_path = write_report(records, tmp_path)
     assert "פער הניסוח" in report_path.read_text(encoding="utf-8")
+
+
+def test_comparison_metric_populations_follow_anchor_scoring():
+    current = _anchor_pair(Outcome.CORRECT_ANSWER, Outcome.CORRECT_ANSWER)
+    previous = _anchor_pair(Outcome.CORRECT_ANSWER, Outcome.INCORRECT_ABSTENTION)
+    metric = build_comparison(current, previous, soft_compare=True)["metrics"]["factual_answer_success_rate"]
+    # Anchors are outside the headline rate by default, so counts must describe the same population.
+    assert (metric["current"], metric["current_numerator"], metric["current_denominator"]) == (1.0, 1, 1)
+    assert (metric["previous"], metric["previous_numerator"], metric["previous_denominator"]) == (0.0, 0, 1)
+    assert (metric["delta"], metric["soft_denominator"], metric["soft_delta"]) == (1.0, 1, 1.0)
+    included = build_comparison(current, previous, canonical_scoring="include")["metrics"]["factual_answer_success_rate"]
+    assert (included["current_numerator"], included["current_denominator"]) == (2, 2)
