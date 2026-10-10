@@ -204,6 +204,9 @@ class GraphBundle:
 
     graph: KnowledgeGraph
     topics: list[GraphTopic]
+    # Theme mode: the controlled vocabulary ({"name", "description"} items) the topics were built
+    # with, so a plan can pin it. Not part of the cached graph; the builder sets it on every load.
+    theme_vocabulary: list[dict] = field(default_factory=list)
 
 
 def build_edges(

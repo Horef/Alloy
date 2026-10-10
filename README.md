@@ -310,6 +310,11 @@ numbers exactly and recomputes the totals from them. If documents or graph setti
 planning, the topics no longer match and `generate` asks you to re-plan. `generate --auto-plan`
 plans and generates in one step and saves the plan in the output directory.
 
+In theme mode the plan also stores the theme vocabulary its topics were built with, and
+`generate --plan` and `add-broad --plan` reuse it instead of deriving a new one. After editing
+documents, re-plan with `plan --themes-from <old generation_plan.json>` to keep the same themes: only
+the edited documents are re-extracted and re-tagged, and unchanged themes keep their topics.
+
 ### Reproducibility
 
 Given the same documents, settings, and seed, a run reproduces the same questions: model calls are
@@ -1315,10 +1320,9 @@ confidence intervals, and reporting options.
   can still leave a reference answer incomplete.
 - User-variation and ambiguity budgets are configurable, but the linguistic quality of each variant
   still requires human review.
-- Node signals are cached per document, but the theme vocabulary and the assembled graph are cached
-  per corpus: any document edit rebuilds the vocabulary (one call), re-tags every document if the
-  vocabulary changed, relabels the topics, and can reshape them, which invalidates an existing
-  generation plan.
+- Without `plan --themes-from`, any document edit rebuilds the theme vocabulary (one call), and if it
+  changes every document is re-tagged. Even with a pinned vocabulary, an edit relabels topics and can
+  move chunks between them, so a plan made before the edit must be re-made.
 - Generation resume replays successful structured responses; it does not attempt to continue from a partially returned model response.
 - Concurrent evaluation is intended only for stateless endpoints and available Gemini/chatbot quota; session-sensitive chatbots should keep the default of one worker.
 - Exclusion is file-based rather than persisted in a review database.

@@ -48,6 +48,19 @@ def test_theme_graph_build_tags_themes_without_reextracting_and_reuses_cache(tmp
     calls.clear()
     cli._build_graph_bundle(chunks, CorpusAnalysisCache(tmp_path / "cache"), settings, FakeLLM(), False)
     assert calls == []
+    assert bundle.theme_vocabulary == [{"name": "שכר", "description": "d"}]
+
+    # With the vocabulary pinned (as a plan does), editing one document re-extracts and re-tags only
+    # that document, and no new vocabulary is derived.
+    calls.clear()
+    edited = [chunks[0], Chunk("b#1", "b.md", "d", "beta, edited")]
+    pinned = ThemeVocabulary.model_validate({"themes": bundle.theme_vocabulary})
+    rebuilt = cli._build_graph_bundle(
+        edited, CorpusAnalysisCache(tmp_path / "cache"), settings, FakeLLM(), False, theme_vocabulary=pinned,
+    )
+    assert "ThemeVocabulary" not in calls
+    assert calls.count("NodeSignalsBatch") == 1 and calls.count("ThemeAssignmentBatch") == 1
+    assert rebuilt.theme_vocabulary == bundle.theme_vocabulary
 
 
 def test_optional_insights_returns_written_artifact(tmp_path, monkeypatch):
@@ -412,3 +425,53 @@ def test_generate_rejects_plan_with_topic_before_building_the_graph(tmp_path, mo
             "--config", str(config), "generate", "--documents", str(documents),
             "--output", str(tmp_path / "out"), "--auto-plan", "--topic", "שכר",
         ])
+
+
+def test_generate_with_plan_reuses_the_plans_theme_vocabulary(tmp_path, monkeypatch):
+    from chatbot_eval.graph import GraphBundle, KnowledgeGraph
+    from chatbot_eval.planning import PlanningParameters, build_plan
+
+    config = tmp_path / "config.toml"
+    config.write_text("[gemini]\n", encoding="utf-8")
+    documents = tmp_path / "docs"
+    documents.mkdir()
+    vocabulary = [{"name": "שכר", "description": "תשלומים"}]
+    plan = build_plan(
+        [], [], PlanningParameters(),
+        graph={"used": {"max_cluster_size": 40, "max_graph_topics": 40, "max_cluster_nodes": 12}},
+        theme_vocabulary=vocabulary,
+    )
+    plan_path = tmp_path / "generation_plan.json"
+    plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
+    received = {}
+
+    class Cache:
+        enabled, refresh = True, False
+
+        def load_chunks(self, *args, **kwargs):
+            return [], "chunk-key"
+
+        def summary(self):
+            return {}
+
+    class Generator:
+        def __init__(self, *args, **kwargs):
+            self.last_generation_diagnostics = {}
+
+        def generate(self, chunks, options, *, bundle):
+            return [], bundle.topics
+
+    def build(*args, theme_vocabulary=None, **kwargs):
+        received["themes"] = theme_vocabulary
+        return GraphBundle(KnowledgeGraph([], []), [])
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_analysis_cache", lambda *args, **kwargs: Cache())
+    monkeypatch.setattr(cli, "_build_graph_bundle", build)
+    monkeypatch.setattr(cli, "SilverSetGenerator", Generator)
+    assert cli.main([
+        "--config", str(config), "generate", "--documents", str(documents),
+        "--output", str(tmp_path / "out"), "--plan", str(plan_path),
+    ]) == 0
+    assert [theme.model_dump() for theme in received["themes"].themes] == vocabulary

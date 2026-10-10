@@ -90,6 +90,10 @@ class GenerationPlan(BaseModel):
     topics: list[TopicPlan]
     topics_fingerprint: str
     rationale: list[str]
+    # Theme vocabulary the topics were built with ({"name", "description"} items). `generate --plan`
+    # reuses it instead of deriving a new one, and `plan --themes-from` carries it to a new plan, so
+    # document edits re-tag only the documents that changed. Empty in entity mode.
+    theme_vocabulary: list[dict] = Field(default_factory=list)
 
 
 def suggest_graph_parameters(chunk_count: int, questions_per_chunk: float = 2.0, questions_per_call: int = 8) -> dict:
@@ -136,7 +140,9 @@ def _largest_remainder(weights: dict[str, float], total: int, minimum: int) -> d
     return base
 
 
-def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -> GenerationPlan:
+def build_plan(
+    chunks, topics, parameters: PlanningParameters, *, graph: dict, theme_vocabulary: list[dict] | None = None,
+) -> GenerationPlan:
     """Size a question set for this corpus and topic partition."""
     units = {chunk.id: information_units(chunk.text) for chunk in chunks}
     files = {chunk.file for chunk in chunks}
@@ -189,6 +195,7 @@ def build_plan(chunks, topics, parameters: PlanningParameters, *, graph: dict) -
         },
         topics=topic_plans,
         topics_fingerprint=topics_fingerprint(topics),
+        theme_vocabulary=list(theme_vocabulary or []),
         rationale=[
             f"Every chunk gets at least one canonical question; a chunk with u statements gets "
             f"round(u x {parameters.coverage_target} / {parameters.claims_per_question}).",

@@ -31,7 +31,7 @@ from .insights import generate_insights, insights_fingerprint, write_insights
 from .io import read_questions, write_evaluations, write_questions
 from .llm import CachedStructuredLLM, GeminiStructuredLLM
 from .logging_utils import configure_logging
-from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion
+from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .prompt_policy import POLICY_VERSION
@@ -105,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--output", type=Path, default=Path("outputs/plan"))
     plan.add_argument("--auto-graph", action="store_true", help="Apply the suggested topic granularity and window size instead of the configured ones")
     plan.add_argument("--max-concurrency", type=int, help="Concurrent workers for knowledge-graph extraction")
+    plan.add_argument(
+        "--themes-from", type=Path,
+        help="Earlier generation_plan.json whose theme vocabulary to keep, so after document edits only the changed documents are re-tagged and unchanged themes keep their names",
+    )
     _add_cache_arguments(plan)
 
     generate_prompt = commands.add_parser("generate-prompt", help="Generate a reviewable Hebrew system prompt from a document base")
@@ -257,7 +261,17 @@ def _make_plan(chunks, bundle: GraphBundle, settings) -> GenerationPlan:
     graph = {"used": _graph_settings(settings), "suggested": suggest_graph_parameters(
         len(chunks), questions_per_call=settings.questions_per_call,
     )}
-    return build_plan(chunks, bundle.topics, settings.planning_parameters(), graph=graph)
+    return build_plan(
+        chunks, bundle.topics, settings.planning_parameters(), graph=graph,
+        theme_vocabulary=bundle.theme_vocabulary,
+    )
+
+
+def _plan_vocabulary(plan: GenerationPlan | None) -> ThemeVocabulary | None:
+    """The theme vocabulary a plan pins, or None to derive one."""
+    if plan is None or not plan.theme_vocabulary:
+        return None
+    return ThemeVocabulary.model_validate({"themes": plan.theme_vocabulary})
 
 
 def _write_plan(plan: GenerationPlan, output_dir: Path) -> Path:
@@ -334,14 +348,18 @@ def _analysis_cache(args, settings) -> CorpusAnalysisCache:
     return _workflow_cache(args, settings, args.documents)
 
 
-def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_concurrency: int = 1) -> GraphBundle:
+def _build_graph_bundle(
+    chunks, cache, settings, llm, progress_enabled, *, max_concurrency: int = 1,
+    theme_vocabulary: ThemeVocabulary | None = None,
+) -> GraphBundle:
     """Build (or reuse) the corpus knowledge graph and its labeled topics.
 
     Node signals are extracted incrementally per document (unchanged documents reuse cached
     signals); the assembled graph and its topic labels are then cached as a unit. This is the
     single entry point both ``generate`` and ``generate-prompt`` use so they share one graph.
     Per-document signal extraction is the parallelizable step: with ``max_concurrency > 1`` the
-    cache extracts cache-missed documents in a thread pool.
+    cache extracts cache-missed documents in a thread pool. A supplied ``theme_vocabulary`` (pinned
+    by a plan) is used instead of deriving one from the current corpus.
     """
     builder = GraphBuilder(llm, settings.generation_model, progress_enabled)
     chunks_by_document = group_chunks_by_document(chunks)
@@ -363,11 +381,14 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
     signals = base_signals
     if want_themes:
         summaries = [base_signals[c.id].summary for c in chunks if c.id in base_signals]
-        theme_vocabulary = cache.load_theme_vocabulary(
-            chunks, model=settings.generation_model, transport=settings.gemini_transport,
-            max_themes=settings.max_theme_vocabulary, implementation_sha256=theme_vocabulary_fingerprint(),
-            build=lambda: builder.build_theme_vocabulary(chunks, summaries, settings.max_theme_vocabulary),
-        )
+        if theme_vocabulary is None or not theme_vocabulary.themes:
+            theme_vocabulary = cache.load_theme_vocabulary(
+                chunks, model=settings.generation_model, transport=settings.gemini_transport,
+                max_themes=settings.max_theme_vocabulary, implementation_sha256=theme_vocabulary_fingerprint(),
+                build=lambda: builder.build_theme_vocabulary(chunks, summaries, settings.max_theme_vocabulary),
+            )
+        else:
+            logger.info("theme_vocabulary_pinned themes=%d", len(theme_vocabulary.themes))
         if not theme_vocabulary.themes:
             logger.warning("theme_vocabulary_empty; topics fall back to entity clustering")
         else:
@@ -412,7 +433,7 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
         topics = builder.label_topics(graph, clusters)
         return GraphBundle(graph, topics)
 
-    return cache.load_graph(
+    bundle = cache.load_graph(
         chunks, signals,
         model=settings.generation_model, transport=settings.gemini_transport,
         keyphrase_overlap_threshold=settings.keyphrase_overlap_threshold,
@@ -425,6 +446,9 @@ def _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, *, max_c
         implementation_sha256=graph_build_fingerprint(),
         build=build,
     )
+    if want_themes and theme_vocabulary is not None:
+        bundle.theme_vocabulary = [theme.model_dump(mode="json") for theme in theme_vocabulary.themes]
+    return bundle
 
 
 def _graph_topics_as_candidates(bundle: GraphBundle):
@@ -850,8 +874,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "add-broad":
         questions = read_questions(args.questions)
-        if args.plan:
-            settings = replace(settings, **GenerationPlan.model_validate_json(args.plan.read_text(encoding="utf-8")).graph["used"])
+        broad_plan = GenerationPlan.model_validate_json(args.plan.read_text(encoding="utf-8")) if args.plan else None
+        if broad_plan is not None:
+            settings = replace(settings, **broad_plan.graph["used"])
         concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
         if concurrency < 1:
             raise ValueError("--max-concurrency must be positive")
@@ -868,7 +893,10 @@ def main(argv: list[str] | None = None) -> int:
             },
         ) as manifest:
             chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
-            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, max_concurrency=concurrency)
+            bundle = _build_graph_bundle(
+                chunks, cache, settings, llm, progress_enabled, max_concurrency=concurrency,
+                theme_vocabulary=_plan_vocabulary(broad_plan),
+            )
             generator = SilverSetGenerator(llm, settings.generation_model, progress_enabled, embedder=_embedder(settings, llm, cache))
             rejected: Counter = Counter()
             broad = generator.generate_broad(
@@ -906,13 +934,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             suggested = suggest_graph_parameters(len(chunks_for_size), questions_per_call=settings.questions_per_call)
             settings = replace(settings, **{key: suggested[key] for key in _graph_settings(settings)})
+        pinned_themes = _plan_vocabulary(
+            GenerationPlan.model_validate_json(args.themes_from.read_text(encoding="utf-8")) if args.themes_from else None,
+        )
+        if args.themes_from and pinned_themes is None:
+            raise ValueError(f"{args.themes_from} has no theme vocabulary to reuse")
         cache = _analysis_cache(args, settings)
         with RunManifest(
-            args.output, command=args.command, settings=settings, inputs=[args.documents],
-            parameters={"auto_graph": args.auto_graph, "planning": settings.planning_parameters().__dict__},
+            args.output, command=args.command, settings=settings,
+            inputs=[args.documents] + ([args.themes_from] if args.themes_from else []),
+            parameters={
+                "auto_graph": args.auto_graph, "planning": settings.planning_parameters().__dict__,
+                "themes_from": bool(args.themes_from),
+            },
         ) as manifest:
             chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
-            bundle = _build_graph_bundle(chunks, cache, settings, llm, progress_enabled, max_concurrency=concurrency)
+            bundle = _build_graph_bundle(
+                chunks, cache, settings, llm, progress_enabled, max_concurrency=concurrency, theme_vocabulary=pinned_themes,
+            )
             generation_plan = _make_plan(chunks, bundle, settings)
             plan_path = _write_plan(generation_plan, args.output)
             manifest.complete(totals=generation_plan.totals, cache=cache.summary(), outputs=input_inventory([plan_path]))
@@ -1020,6 +1059,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--max-concurrency must be positive")
             bundle = _build_graph_bundle(
                 chunks, cache, settings, llm, progress_enabled, max_concurrency=graph_concurrency,
+                theme_vocabulary=_plan_vocabulary(generation_plan),
             )
             plan_path = None
             if args.auto_plan:
@@ -1056,6 +1096,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             questions, topics = generator.generate(chunks, options, bundle=bundle)
             generation_diagnostics = dict(generator.last_generation_diagnostics)
+            if bundle.theme_vocabulary:
+                generation_diagnostics["theme_vocabulary"] = [theme["name"] for theme in bundle.theme_vocabulary]
             merge_diagnostics = None
             if merge_into_questions:
                 questions, merge_diagnostics = merge_question_sets(
