@@ -23,7 +23,7 @@ cited inline as [R1], [R2], and so on.
 9. [Caching, identity, and invalidation (`cache.py`, `contracts.py`)](#9-caching-identity-and-invalidation-cachepy-contractspy)
 10. [Automatic sizing (`planning.py`)](#10-automatic-sizing-planningpy)
 11. [Question generation (`generator.py`)](#11-question-generation-generatorpy)
-12. [Human review and set maintenance](#12-human-review-and-set-maintenance)
+12. [Human review and set maintenance (`review.py`)](#12-human-review-and-set-maintenance-reviewpy)
 13. [Evaluation (`adapters.py`, `results_io.py`, `evaluator.py`)](#13-evaluation-adapterspy-results_iopy-evaluatorpy)
 14. [Metrics and reporting (`report.py`)](#14-metrics-and-reporting-reportpy)
 15. [Insights and topic inference (`insights.py`, `topics.py`)](#15-insights-and-topic-inference-insightspy-topicspy)
@@ -146,7 +146,7 @@ outage must never look like a worse chatbot.
 
 ## 4. Configuration and entry points
 
-`config.Settings` is a frozen dataclass loaded from TOML with every value validated up front
+`config.Settings` (`config.py`) is a frozen dataclass loaded from TOML with every value validated up front
 (`Settings.validate`), so a bad setting fails before any paid call. Secrets come only from
 environment variables (loaded from a `.env` next to the config file) and are stripped from every
 manifest. CLI flags override TOML for the current run.
@@ -623,7 +623,7 @@ not penalized.
   statistics, and outcomes of every optional check. A shortfall is expected behavior when evidence
   cannot support the request, and the diagnostics say which topics fell short and why.
 
-## 12. Human review and set maintenance
+## 12. Human review and set maintenance (`review.py`)
 
 Generated questions are silver until reviewed. The review workflow is designed so a reviewer can work
 in a spreadsheet without ever touching provenance JSON.
@@ -877,6 +877,13 @@ Key design decisions:
   must agree with it.
 - **Logs** record counts, IDs, models, outcomes, latencies, retries, and rejection reasons, never full
   questions, answers, keys, or header values. Apigee quota headers are logged at `INFO`.
+  `logging_utils.py` configures console and file logging and quiets SDK transport chatter;
+  `progress.py` wraps progress bars so production runs can disable them.
+- **Supporting modules.** `history.py` loads earlier runs (evaluation records, insights only when
+  their status file matches the records, and current prompts) for comparison and prompt revision.
+  `response_errors.py` recognizes the known "no summary" placeholder answer and computes bounded
+  retry delays shared by the Gemini client and the chatbot adapter. `labels.py` holds the Hebrew
+  labels and colors used in CSV and HTML outputs.
 
 ## 18. Security and data handling
 

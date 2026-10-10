@@ -316,6 +316,15 @@ In theme mode the plan also stores the theme vocabulary its topics were built wi
 documents, re-plan with `plan --themes-from <old generation_plan.json>` to keep the same themes: only
 the edited documents are re-extracted and re-tagged, and unchanged themes keep their topics.
 
+| `plan` option | Required/default | Meaning |
+|---|---|---|
+| `--documents DIR` | required | Document root to measure. |
+| `--output DIR` | `outputs/plan` | Destination for `generation_plan.json`. |
+| `--auto-graph` | off | Apply the suggested topic granularity and window size instead of the configured ones. |
+| `--themes-from PATH` | unset | Earlier `generation_plan.json` whose theme vocabulary to keep. |
+| `--max-concurrency N` | config value | Concurrent knowledge-graph extraction workers. |
+| `--cache-dir DIR` / `--refresh-cache` / `--no-cache` / `--keep-stale-cache` | config value | Cache controls, as for `generate`. |
+
 ### Reproducibility
 
 Given the same documents, settings, and seed, a run reproduces the same questions: model calls are
@@ -503,9 +512,13 @@ Rejection counts are written to operational logs at `INFO` level and to the revi
 | `--exclude-questions PATH` | unset | Existing silver CSV/JSONL whose questions participate in deduplication. |
 | `--resume` | off | Replay successful structured calls from a compatible generation checkpoint, then continue after the interrupted call. |
 | `--checkpoint PATH` | `<output>/generation_checkpoint.jsonl` | Durable structured-call journal used by generation resume. |
+| `--plan PATH` | unset | `generation_plan.json` from `plan` (possibly hand-edited): exact budgets, per-topic quotas, graph settings, and theme vocabulary, overriding `--max-questions` and the ratios. Cannot be combined with `--topic`. |
+| `--auto-plan` | off | Plan and generate in one step; the plan is saved in the output directory. |
+| `--max-concurrency N` | config value | Workers for graph extraction, per-topic generation, and embeddings; does not change the output. |
 | `--cache-dir DIR` | config value | Override the shared local corpus-analysis cache directory. |
 | `--refresh-cache` | off | Recompute and atomically replace matching chunk/topic entries. |
 | `--no-cache` | off | Disable cache reads and writes for this run. |
+| `--keep-stale-cache` | off | Keep superseded cache entries instead of sweeping them after the run. |
 
 Representative run:
 
@@ -783,6 +796,14 @@ chatbot-eval --config config.toml add-broad \
   --output ./outputs/questions-broad
 ```
 
+| `add-broad` option | Required/default | Meaning |
+|---|---|---|
+| `--questions PATH` | required | Silver CSV/JSONL to extend; its existing broad questions are replaced. |
+| `--documents DIR` | required | Document root the set was generated from. |
+| `--output DIR` | `outputs/questions-broad` | Destination for the extended set. |
+| `--plan PATH` | unset | The plan the set was generated with, so the same graph settings, themes, and topics are used. |
+| `--max-concurrency N` | config value | Concurrent broad-question calls. |
+
 The manifest's `broad_diagnostics` lists questions added per level and rejections
 (`broad_point_without_document`, `broad_point_unsupported`, `broad_too_few_supported_points`,
 `broad_level_over_budget`, `broad_duplicate`). In the review file, `key_points_readable` lists the
@@ -999,6 +1020,8 @@ facts that the corpus does not support.
 | `--previous-run PATH` | unset | Previous Alloy output directory or evaluation JSONL. Standard results and insights are auto-discovered in a directory. |
 | `--insights PATH` | unset | Explicit `evaluation_insights.json`; overrides insights discovered through `--previous-run`. |
 | `--current-prompt PATH` | unset | Current Markdown/text prompt, `prompt_package.json`, or prompt output directory to revise conservatively. |
+| `--instruction-profile NAME` | `generation.prompt_instruction_profile` | `guided` or `compact` response-policy profile for this run. |
+| `--answer-policy NAME` | `generation.prompt_answer_policy` | `balanced` or `conservative` partial-answer policy for this run. |
 | `--cache-dir DIR` | config value | Override the shared local corpus-analysis cache directory. |
 | `--refresh-cache` | off | Recompute and atomically replace matching chunk, topic, and final prompt-package entries. |
 | `--no-cache` | off | Disable cache reads and writes for this run. |
