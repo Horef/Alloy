@@ -30,7 +30,7 @@ cited inline as [R1], [R2], and so on.
 16. [System-prompt generation (`prompt_generator.py`, `prompt_policy.py`)](#16-system-prompt-generation-prompt_generatorpy-prompt_policypy)
 17. [Artifacts, reliability, and observability (`artifacts.py`, `io.py`)](#17-artifacts-reliability-and-observability-artifactspy-iopy)
 18. [Security and data handling](#18-security-and-data-handling)
-19. [Known limitations and open questions](#19-known-limitations-and-open-questions)
+19. [Known limitations](#19-known-limitations)
 20. [Changes made during this review](#20-changes-made-during-this-review)
 21. [References](#21-references)
 
@@ -187,8 +187,11 @@ the schema's JSON Schema, then parses the response with `schema.model_validate_j
 exist: `direct` (Gemini API key) and `apigee` (the internal AI Gateway; the SDK runs in
 Vertex-compatible mode with a placeholder key and the real credential only in the `x-apikey`
 header). Retries cover timeouts, connection errors, and HTTP 408/409/429/500/502/503/504, with jittered
-exponential backoff that honors `Retry-After` and is capped per wait. Validation errors are never
-retried: a malformed response is a deterministic property of the prompt, not a transient fault.
+exponential backoff that honors `Retry-After` and is capped per wait. An optional
+`evaluation.retry_deadline_seconds` stops retrying once a retry would start after that deadline, so
+one call takes at most the deadline plus one request timeout (the chatbot adapter applies the same
+rule). Validation errors are never retried: a malformed response is a deterministic property of the
+prompt, not a transient fault.
 
 `required_fields` exists because Pydantic omits fields with defaults from the JSON Schema
 `required` list, and structured-output models then feel free to drop them. Callers that need a field
@@ -210,8 +213,13 @@ issued concurrently.
 ## 6. Ingestion and chunking (`documents.py`)
 
 Supported inputs are `.txt/.md/.rst`, `.csv` (rows become ` | `-joined lines), `.json/.jsonl`,
-`.pdf` (per page, via `pypdf`, no OCR; empty pages are logged), and `.docx` (paragraphs and tables
-in their XML order, so a table stays next to the text that introduces it).
+`.pdf` (per page, via `pypdf`, no OCR), and `.docx` (paragraphs and tables in their XML order, so a
+table stays next to the text that introduces it).
+
+Pages or sections that yield no text, and files that yield none at all, are recorded in an
+extraction summary that is stored with the chunk cache, logged as a warning on every run, and listed
+under `cache.extraction` in the run manifest. A scanned PDF therefore never disappears from the
+corpus silently; it shows up as an OCR candidate.
 
 Chunking is **structure-aware, then size-bounded**:
 
@@ -325,6 +333,12 @@ cannot reintroduce the hairball.
 In both modes, if there are more clusters than `max_graph_topics`, the largest stay distinct and the
 small tail is bin-packed into bounded "other" buckets.
 
+The vocabulary is derived from the whole corpus, so without care any document edit would produce a
+new vocabulary and re-tag every document. A generation plan therefore stores the vocabulary its
+topics were built with: `generate --plan` and `add-broad --plan` reuse it, and
+`plan --themes-from <old plan>` carries it into a new plan after documents change, so only edited
+documents are re-extracted and re-tagged.
+
 ### 7.6 Labels and importance
 
 One call names all clusters from their most frequent entities and keyphrases (and dominant theme),
@@ -347,8 +361,11 @@ the completeness check, corpus-wide boundary checks, reground, broad-question su
 reviewer source hints.
 
 - **Lexical:** Okapi BM25 [R9] (k1 = 1.5, b = 0.75) over tokens produced by the same Hebrew
-  normalization as the graph, with each Hebrew token also indexed in prefix-stripped form, so
-  `לחייל` matches `חייל`. IDF keeps frequent function words from dominating.
+  normalization as the graph. Attached prefixes are tolerated only against an attested bare word: a
+  document indexes each prefixed token's candidate stems as marked terms, and a query adds its own
+  stems plus a marked copy of each token. So `לחייל` matches `חייל` in either direction, while `הורה`
+  and `מורה`, which only share the remainder `ורה`, do not match. IDF keeps frequent function words
+  from dominating.
 - **Dense (optional):** when `embedding_model` is set, chunks and queries are embedded and ranked by
   cosine similarity [R26]. Vectors default to 768 dimensions; Gemini embedding models are trained so
   truncated vectors keep most of their quality (Matryoshka representations [R11]), which keeps the
@@ -362,8 +379,9 @@ reviewer source hints.
 Embeddings are cached in `<cache>/embeddings/<identity>.jsonl`, keyed by the SHA-256 of the text, in
 a file whose name encodes model, dimensions, transport, and endpoint.
 
-The same normalization powers near-duplicate detection: `dedup_tokens` maps each token to one
-canonical form, and two questions are duplicates when token Jaccard ≥ 0.78 (lexical) or, with
+The same normalization powers near-duplicate detection: `token_similarity` equates a prefixed token
+with a bare token present in either question (`השכר` with `שכר`), and two questions are duplicates
+when that token Jaccard is ≥ 0.78 (lexical) or, with
 embeddings, cosine ≥ `semantic_duplicate_threshold` (0.92). Jaccard over token sets is the classic
 resemblance measure [R27]; removing near-duplicates matters because a benchmark that repeats one
 question in five wordings over-weights that fact [R17].
@@ -374,11 +392,11 @@ question in five wordings over-weights that fact [R17].
 
 | Kind | Granularity | Key includes |
 |---|---|---|
-| `chunks` | corpus | Every supported file's relative path and SHA-256, chunk size and overlap, hash of `documents.py`, cache schema. |
+| `chunks` | corpus | Every supported file's relative path and SHA-256, chunk size and overlap, code fingerprint of `documents.py`, cache schema. |
 | `node_signals` | **per document** | That document's chunk IDs and text, signals fingerprint (prompt + schema + truncation bound), model, model route, batch size, theme signature (tagging pass), hash of the document's base signals (tagging pass). |
 | `theme_vocabulary` | corpus | All chunk IDs and text, vocabulary fingerprint, model, route, ceiling. Empty vocabularies (the failure fallback) are not cached. |
-| `graph` | corpus | Chunks, every chunk's signals, edge and clustering parameters, topic mode, model, route, hash of `graph.py` + `graph_build.py`. |
-| `question_topics`, `insights`, `prompt_package` | per workflow | Their inputs, model, route, and the implementing module's hash. |
+| `graph` | corpus | Chunks, every chunk's signals, edge and clustering parameters, topic mode, model, route, code fingerprint of `graph.py` + `graph_build.py`. |
+| `question_topics`, `insights`, `prompt_package` | per workflow | Their inputs, model, route, and the implementing module's code fingerprint. |
 | `llm_calls` | per call | Model, schema, prompt, required fields; file name carries route, seed, call contract. |
 | `embeddings` | per text | Text hash; file name carries model, dimensions, route. |
 
@@ -392,10 +410,15 @@ version, and seed.
 - **Fingerprint prompts and schemas, not whole modules,** for the expensive stage (signal extraction).
   Editing a log line in `llm.py` must not force re-extracting every document. An earlier version
   hashed whole modules and did exactly that; commit `0c23fd0` narrowed it.
+- **Code fingerprints ignore comments and docstrings.** Where deterministic code shapes the output
+  (chunking, graph building, judging, insights, prompt packages), keys use
+  `contracts.code_fingerprint`: a hash of each module's syntax tree without docstrings or positions.
+  Behavior and prompt text change the key; comments, docstrings, and formatting do not. The syntax
+  tree format belongs to the Python minor version, so these entries are not shared across Python
+  versions.
 - **Per-document signals make rebuilds incremental.** Adding or editing one document re-extracts
   only that document. The graph itself is cheap to rebuild from cached signals (deterministic edges
-  plus one labeling call), so it is keyed conservatively, including the full source of the graph
-  modules.
+  plus one labeling call).
 - **Theme tagging is keyed on the base signals,** so a re-extracted document is re-tagged.
 
 ### 9.3 Pruning
@@ -442,7 +465,8 @@ gets one natural phrasing.
 **Binding.** The plan stores a fingerprint of the topic partition (names plus node IDs) and the graph
 settings that produced it. `generate --plan` re-applies those settings, rebuilds the graph, and
 refuses the plan if the topics no longer match, so a plan can never silently apply quotas to
-different topics. The per-topic numbers are meant to be edited by hand; totals are recomputed.
+different topics. In theme mode the plan also pins the theme vocabulary (section 7.5). The
+per-topic numbers are meant to be edited by hand; totals are recomputed.
 
 ## 11. Question generation (`generator.py`)
 
@@ -710,7 +734,10 @@ order:
 9. All required claims correct (for broad questions, `min_key_points`) and not too long (broad
    overviews are exempt): `correct_answer`.
 10. Some claims correct: `partial_too_much` if the scope is too long, else `partial_too_little`.
-11. Nothing correct: `unrelated_answer` if the judge said so, else `misleading_hallucination`.
+11. Nothing correct: `misleading_hallucination` if a required point was answered wrongly
+    (addressed but not correct) or a likely fabricated claim was asserted; otherwise the reply is
+    nonresponsive ("contact your HR office") and is `unrelated_answer`, so it does not inflate the
+    misinformation rate.
 
 Unsupported claims alone never override an otherwise correct answer; they stay visible in the
 `factual_risk` metric. An earlier version also forced "abstention" whenever the answer contained a
@@ -721,8 +748,9 @@ one missing attachment into failures (finding E1 in [library-review.md](library-
 
 Each judged record is appended to `evaluation_checkpoint.jsonl` with a per-question input fingerprint
 and a run signature over the **evaluation contract**: judge model, judge implementation hash, model
-route, input limits, and for live runs the endpoint hash, field mapping, header *names*, retry and
-pacing settings, deployment ID, and concurrency. `--resume` rejects a checkpoint from a different
+route, input limits, and for live runs the endpoint hash, field mapping, header *names*, retry,
+deadline, and pacing settings, deployment ID, and concurrency. Each premade row's fingerprint covers
+only that row, so fixing one bad row in the source file does not invalidate the others. `--resume` rejects a checkpoint from a different
 contract instead of mixing results; `--retry-errors` re-runs only infrastructure and judge errors
 (judge-only retries reuse the saved chatbot answer).
 
@@ -825,9 +853,11 @@ Key design decisions:
   expected behavior → non-prompt limitation, plus `regression_cases`. Retrieval gaps, missing
   documents, and infrastructure problems are routed to guardrails rather than papered over with
   wording.
-- **Deterministic validation with one repair.** The package is checked for Hebrew content, the
-  assistant's name, required behavioral concepts, distinct non-empty lists, minimum counts, and
-  evidence IDs that exist. One repair call is made; a package that still fails is rejected.
+- **Deterministic validation with one repair.** The code-assembled policy block must be present and
+  unmodified, and the model-written domain guidance is checked on its own (not together with the
+  Hebrew policy) for Hebrew content and the assistant's name. Lists must be distinct and non-empty
+  with minimum counts, and evidence IDs must exist. One repair call is made; a package that still
+  fails is rejected.
 
 ## 17. Artifacts, reliability, and observability (`artifacts.py`, `io.py`)
 
@@ -857,57 +887,37 @@ Key design decisions:
 - Personal-data question types exist in the schema but are rejected by generation until a controlled,
   masked, auditable personal-data adapter exists. The generator does not fabricate personal data.
 
-## 19. Known limitations and open questions
+## 19. Known limitations
 
-These are behaviors worth knowing when interpreting results. Items marked **open question** are
-design choices the team may want to revisit; they were left unchanged because changing them alters
-scoring semantics or invalidates caches and checkpoints.
+These are inherent tradeoffs worth knowing when interpreting results, with the settings that
+mitigate them.
 
-1. **The judge is not calibrated.** LLM judges have length, style, and model-family biases [R28], and
-   even strong judges diverge from humans [R31]. Before using a metric as a release gate, double-review
-   a sample by hand and measure agreement (Cohen's kappa rather than percent agreement, as [R31]
-   recommends).
-2. **Open question: "nothing correct" defaults to hallucination.** In `classify` (step 11), an answer
-   task with zero correct claims, no false claims, and a judge `incorrect_type` other than `unrelated`
-   is classified `misleading_hallucination`. A vague but harmless reply ("contact your HR office")
-   can therefore count toward the main safety metric. This is conservative by design, but it can
-   inflate `misinformation_rate`. A softer alternative would map this case to `partial_too_little` or
-   `unrelated_answer`; that changes the judge contract, so past runs would no longer be comparable.
-3. **Boundary questions are only as unanswerable as the evidence checked.** Without
+1. **The judge is not calibrated yet.** LLM judges have length, style, and model-family biases
+   [R28], and even strong judges diverge from humans [R31]. Before using a metric as a release gate,
+   double-review a sample by hand and measure agreement (Cohen's kappa rather than percent agreement,
+   as [R31] recommends).
+2. **Boundary questions are only as unanswerable as the evidence checked.** Without
    `verify_unanswerable`, absence is established against one window; with it, against a retrieval
-   sample. Neither is exhaustive.
-4. **Retrieval can miss.** Completeness verification and reground depend on BM25 (plus optional
-   embeddings) surfacing the right chunk. Enabling `embedding_model` helps paraphrased evidence.
-5. **Light stemming has false merges.** Prefix stripping in search and dedup tokens is applied to any
-   Hebrew token of four or more letters that starts with a prefix letter, so a few unrelated words
-   collapse to the same stem (for example `הורה` and `מורה` both reduce to `ורה`). The effect on BM25 is
-   small, because the original token is also indexed; the effect on lexical dedup is a slightly higher
-   chance of a false duplicate. The docstring of `graph._strip_one_prefix` describes a narrower gate
-   than the function applies (the narrow gate lives in its caller, `entity_match_keys`); it was not
-   edited because `graph.py` is part of the graph cache key and the generation resume signature.
-6. **Corpus-level caches are coarse.** Signals are per document, but any document edit rebuilds the
-   theme vocabulary; if it changes, every document is re-tagged and topics can be reshaped, which
-   invalidates an existing plan.
-7. **Graph and generation fingerprints hash whole modules.** `graph_build_fingerprint` and the
-   generation signature include the full source of `graph.py`, `graph_build.py`, and (via
-   `model_identity`) `models.py`, `validation.py`, `llm.py`, `response_errors.py`. A comment edit there
-   forces a graph relabel (one call) and makes in-flight generation and evaluation checkpoints
-   non-resumable. This is deliberately conservative but differs from the "fingerprint prompts, not
-   modules" rule applied to signal extraction.
-8. **Premade-import diagnostics are part of each row's fingerprint.** `evaluate-file` attaches the
-   whole import summary (including the list of skipped rows) to every result's metadata, and the
-   checkpoint fingerprint covers that metadata. Fixing one bad row in the source file therefore
-   invalidates `--resume` for every row.
-9. **The prompt-package concept check is satisfied by the assembled policy.** The required-concept
-   keywords are checked after the code-assembled policy is prepended, and the policy already contains
-   them, so this check verifies the policy rather than the model's domain text.
-10. **No OCR**, no single total wall-clock deadline across retries, and generated system prompts are
-    starting points that a manager must review.
+   sample from the whole corpus. Neither is exhaustive, which is one more reason boundary questions
+   are reviewed by a person.
+3. **Retrieval can miss.** Completeness verification and reground depend on BM25 (plus optional
+   embeddings) surfacing the right chunk. Enabling `embedding_model` helps with paraphrased
+   evidence; a reviewer's `source_hint` helps reground directly.
+4. **Topics follow the corpus.** A pinned theme vocabulary (section 7.5) keeps theme names stable, but
+   editing a document still relabels topics and can move its chunks to another theme, so a plan made
+   before the edit has to be re-made (with `plan --themes-from`).
+5. **Code fingerprints are per Python version.** Caches built under one Python minor version are
+   rebuilt once under another.
+6. **No OCR.** Scanned pages are reported (section 6) but must be OCR'd outside Alloy.
+7. **Generated system prompts are starting points** that a manager must review; they are not a
+   security control.
 
 ## 20. Changes made during this review
 
 Writing this document involved reading every module against the README and tests. The following
-inconsistencies and bugs were found and fixed, each with a regression test:
+bugs and inconsistencies were found and fixed, each with a regression test where it is behavior.
+
+First round:
 
 1. **Comparison populations ignored anchor scoring** (`report.build_comparison`). Headline rates
    exclude anchors by default, but comparison denominators, numerators, and soft deltas counted them.
@@ -920,21 +930,32 @@ inconsistencies and bugs were found and fixed, each with a regression test:
    task for `reground` (with a question type `reground` accepts).
 3. **`generate --plan/--auto-plan --topic` was rejected only after the graph was built.** It is now
    rejected before any model call.
-4. **The `generate` manifest omitted `--merge-into` and `--plan`** from its input inventory. They are
-   now hashed like other inputs.
+4. **The `generate` manifest omitted `--merge-into` and `--plan`** from its input inventory.
 5. **Cache events** for the graph and theme vocabulary now read `disabled` when caching is off.
-6. **README corrections:** removed the claim that abstention is detected by phrase patterns (that
-   override was deliberately removed), corrected the legacy-claims fallback (sentence-level, not one
-   coarse claim), corrected the `boundary_evidence_scope` values, the topic derivation and quota
-   description, and the description of `max_cluster_nodes`; replaced two stale limitations
-   (lexical-only evidence selection, no per-document caching); noted that live calls are sequential
-   only by default; completed the code map; documented the new review-merge rule.
-7. **`config.example.toml`** now includes `gemini.seed`, `closed_book_check` (replacing the legacy
-   `filter_closed_book_answerable`), `questions_per_call`, `context_nodes`, and the `[planning]`
-   section, as AGENTS.md requires for every setting.
+6. **README and `config.example.toml` corrections:** removed the claim that abstention is detected by
+   phrase patterns, corrected the legacy-claims fallback, the `boundary_evidence_scope` values, the
+   topic and quota descriptions, and `max_cluster_nodes`; replaced stale limitations; completed the
+   code map; added the missing settings (`gemini.seed`, `closed_book_check`, `questions_per_call`,
+   `context_nodes`, `[planning]`).
 
-None of these changes touch a file that is part of a cache key or a checkpoint signature, so existing
-caches and resumable runs remain valid.
+Second round (the open questions from the first round):
+
+7. **A nonresponsive answer is no longer a hallucination** (`evaluator.classify`, step 11 in
+   section 13.4).
+8. **Premade resume is per row** (`results_io`): import diagnostics live in the manifest only.
+9. **Prefix tolerance needs an attested bare word** (`retrieval`, section 8), removing false matches
+   such as `הורה`/`מורה` in search and dedup; the `_strip_one_prefix` docstring now matches the code.
+10. **Theme vocabularies are pinned in plans** (`plan --themes-from`, section 7.5).
+11. **Code fingerprints ignore comments and docstrings** (`contracts.code_fingerprint`, section
+    9.2), and evaluation and generation contracts no longer hash `llm.py`, whose call mechanics are
+    versioned by `STRUCTURED_CALL_CONTRACT`.
+12. **System-prompt validation judges the model's text,** not the code-assembled policy (section 16).
+13. **Extraction diagnostics** list pages and files without text (section 6).
+14. **Optional retry deadline** `evaluation.retry_deadline_seconds` (section 5).
+
+The second round changes scoring semantics and the evaluation contract, so runs judged before it are
+reported as contract-incompatible in comparisons. It does not change question IDs or the silver-set
+and review file formats.
 
 ## 21. References
 
