@@ -249,6 +249,8 @@ class CorpusAnalysisCache:
                 "schema_version": CACHE_SCHEMA_VERSION, "kind": "theme_vocabulary", "key": key,
                 "theme_vocabulary": vocabulary.model_dump(mode="json"),
             }, ensure_ascii=False, separators=(",", ":")))
+        if not self.enabled:
+            self.events["theme_vocabulary"] = "disabled"
         return vocabulary
 
     def load_node_signals(
@@ -417,6 +419,8 @@ class CorpusAnalysisCache:
                 },
             }, ensure_ascii=False, separators=(",", ":")))
             logger.info("cache_write kind=graph key=%s path=%s", key[:12], path)
+        else:
+            self.events["graph"] = "disabled"
         return bundle
 
     @staticmethod

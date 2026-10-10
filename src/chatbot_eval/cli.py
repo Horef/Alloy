@@ -921,6 +921,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "generate":
+        if args.topic and (args.plan or args.auto_plan):
+            raise ValueError("--plan/--auto-plan size the whole corpus; do not combine them with --topic")
         generation_plan = GenerationPlan.model_validate_json(args.plan.read_text(encoding="utf-8")) if args.plan else None
         if generation_plan is not None:
             # The plan's quotas only fit the topics its graph settings produce.
@@ -941,7 +943,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("unanswerable_ratio + user_variation_ratio must be below 1")
         if args.topic_count is not None and args.topic_count < 1:
             raise ValueError("--topic-count must be positive")
-        manifest_inputs = [args.documents] + ([args.exclude_questions] if args.exclude_questions else [])
+        manifest_inputs = [args.documents] + [
+            path for path in (args.exclude_questions, args.merge_into, args.plan) if path
+        ]
         cache = _analysis_cache(args, settings)
         with RunManifest(
             args.output, command=args.command, settings=settings, inputs=manifest_inputs,
@@ -1023,8 +1027,6 @@ def main(argv: list[str] | None = None) -> int:
                 plan_path = _write_plan(generation_plan, args.output)
                 _print_plan(generation_plan)
             if generation_plan is not None:
-                if args.topic:
-                    raise ValueError("--plan/--auto-plan size the whole corpus; do not combine them with --topic")
                 budgets, topic_quotas, boundary_quotas = plan_quotas(generation_plan, bundle.topics)
                 options = replace(
                     options, planned_budgets=budgets, topic_quotas=topic_quotas, boundary_quotas=boundary_quotas,

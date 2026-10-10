@@ -391,3 +391,24 @@ def test_generate_merge_into_appends_to_existing_set(tmp_path, monkeypatch):
     assert len(merged) == 3
     diag = json.loads((output / "generation_diagnostics.json").read_text(encoding="utf-8"))
     assert diag["merge"]["new_added"] == 1 and diag["merge"]["existing_kept"] == 2
+
+
+def test_generate_rejects_plan_with_topic_before_building_the_graph(tmp_path, monkeypatch):
+    import pytest
+
+    config = tmp_path / "config.toml"
+    config.write_text("[gemini]\n", encoding="utf-8")
+    documents = tmp_path / "docs"
+    documents.mkdir()
+
+    def must_not_build(*args, **kwargs):
+        raise AssertionError("the graph must not be built for an invalid argument combination")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_build_graph_bundle", must_not_build)
+    with pytest.raises(ValueError, match="do not combine them with --topic"):
+        cli.main([
+            "--config", str(config), "generate", "--documents", str(documents),
+            "--output", str(tmp_path / "out"), "--auto-plan", "--topic", "שכר",
+        ])
