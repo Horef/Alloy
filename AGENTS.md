@@ -3,7 +3,15 @@
 Alloy (`chatbot_eval`) generates evidence-grounded Hebrew evaluation sets from a document corpus
 and judges internal chatbots against them. [README.md](README.md) is the user manual (workflows,
 settings, outputs); [docs/architecture.md](docs/architecture.md) is the design reference. Before
-changing a component, read its section there.
+changing a component, read its section there. Goal, non-goals and open questions: `docs/BRIEF.md`.
+It is **not** a source of ground truth: silver questions need domain review.
+
+## Start of every session
+
+1. `git status`; do not discard or overwrite changes you did not make.
+2. Read `docs/STATUS.md` and skim the latest entry in `docs/WORKLOG.md`.
+3. Before changing a default or design choice, check `docs/DECISIONS.md` (D1-D10 cover graph
+   generation, chunking, topic mode, caching, retrieval, planning and user-facing mode).
 
 ## Environment
 
@@ -16,7 +24,8 @@ changing a component, read its section there.
 - Tests: `$PY -m pytest -q`. All offline (fake LLMs, no network), about two seconds. Run the full
   suite before every commit; CI runs it on 3.11 and 3.13.
 - Layout: `src/chatbot_eval/` (one module per component; the README code map lists them all),
-  `tests/` (one `test_<module>.py` per module, plus `test_docs_consistency.py`), `docs/`.
+  `tests/` (one `test_<module>.py` per module, plus `test_docs_consistency.py`), `docs/` (current
+  docs; finished reviews and plans in `docs/archive/`).
 
 ## Git workflow (mandatory in every session)
 
@@ -79,9 +88,8 @@ when forgotten.
 | Add an output file or manifest field | README outputs section for that workflow |
 | Add a relative link in a doc | Make sure it resolves (*guarded*) |
 
-`docs/library-review.md`, `docs/implementation-progress.md`, `docs/plans/`, and
-`docs/theme-layer-ab-results.md` are dated records. Do not rewrite them; record the current state in
-`docs/architecture.md`.
+`docs/archive/` and `docs/theme-layer-ab-results.md` are dated records. Do not rewrite them; record
+the current state in `docs/architecture.md`.
 
 ## Keeping these instructions accurate
 
@@ -95,3 +103,18 @@ These instructions load into every session, so a wrong or missing line costs eve
 - Keep entries short, specific, and checkable: a command, a path, or a rule. Delete entries that no
   longer change behavior. Do not add one-off incidents, generic advice, or facts the code already
   makes obvious.
+
+## Keeping the project maintained
+
+Update docs in the same commit as the change that requires them:
+
+| When you... | Update |
+|---|---|
+| finish a unit of work | `docs/STATUS.md` (overwrite the snapshot) and a new entry at the top of `docs/WORKLOG.md` with the commands you ran and their results |
+| change a default or choose between alternatives | the next-numbered D entry in `docs/DECISIONS.md`; to reverse one, add an entry that supersedes it |
+| add a setting, CLI option or workflow | `config.example.toml` and the README (see Code conventions) |
+| start multi-session work | a plan in `docs/plans/` whose first line is `Status: ...`; move it to `docs/archive/` when done |
+
+- Never describe planned or partial work as done; say how it was verified (offline tests use fake
+  LLMs and do not prove live Gemini behavior).
+- Keep this file short; project knowledge belongs in `docs/`.
