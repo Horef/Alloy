@@ -1,0 +1,64 @@
+# Decision log
+Every choice between alternatives, and every gap the code or sources leave that we filled ourselves. IDs are permanent. To change a decision, add a new entry and set the old one's status to "superseded by D-number of the new entry"; do not rewrite it.
+
+D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each entry. Where a commit did not record the alternatives, the entry says so.
+
+## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
+- **Context:** Evidence was chosen by lexical overlap between a topic label and chunks (top-k); facts spread across chunks were ranked out, so reference answers were sometimes incomplete or wrong.
+- **Decision:** Build a corpus knowledge graph (RAGAS/LightRAG approach): chunks are nodes with extracted signals, typed deterministic edges, prevalence-weighted topic clusters; a question's evidence is a connected cluster. Topic prevalence still drives quotas. Released as v1.0.0.
+- **Alternatives:** the previous lexical top-k selection - the failure above.
+- **Consequences:** Needs hairball control (edge-weight thresholds, weakest-edge splitting); node signals cached per document by content hash.
+- **Evidence / source:** commit 1b1d6dc.
+
+## D2. Default chunk size 2000 characters with 200 overlap (2026-09-20; status: accepted)
+- **Context:** With `chunk_chars=12000` each small document became one graph node, preventing document-wide questions and producing coarse edges.
+- **Decision:** `chunk_chars=2000`, `chunk_overlap_chars=200` (about 500 tokens) in `config.toml` and `config.example.toml`.
+- **Alternatives:** 12000 - above. Others not recorded.
+- **Consequences:** Most documents get several nodes while a typical rule or procedure stays within one chunk; easier for smaller models during signal extraction.
+- **Evidence / source:** commit 6a23034 ("verified on the real corpora").
+
+## D3. `max_graph_topics` default raised from 12 to 40 (2026-09-23; status: accepted)
+- **Context:** Dense corpora merged distinct subjects into coarse topics.
+- **Decision:** Default 40, keeping more prevalent clusters distinct before bin-packing the tail.
+- **Alternatives:** 12 (previous). A theme spread thinly across documents could still fail to cohere; addressed by D4.
+- **Evidence / source:** commit 4c4f0fc.
+
+## D4. Theme mode is the default topic mode (2026-09-23; status: accepted)
+- **Context:** Entity clustering fragments sparse corpora and buries thin themes (the motivating case was pay, שכר).
+- **Decision:** `generation.topic_mode = "theme"`: a small controlled theme vocabulary per corpus, one theme per chunk, topics grouped by theme. Themes never create graph edges. `entity` remains as an explicit opt-out.
+- **Alternatives:** entity mode (the earlier default; theme mode was first opt-in pending a live A/B).
+- **Consequences:** One corpus-level vocabulary call plus a cheap tagging pass, both cached per document.
+- **Evidence / source:** commits e87ef07, 90cab46; live A/B on hova and keva in `docs/theme-layer-ab-results.md`.
+
+## D5. Prune superseded cache entries by default (2026-09-23; status: accepted)
+- **Context:** Content-addressed entries were never removed; changed keying inputs left orphans (hova: 34 documents → 136 node-signal entries).
+- **Decision:** Each run tracks the keys it looked up and sweeps only the cache kinds it touched. Opt out with `--keep-stale-cache`; removal counts go to the run manifest.
+- **Alternatives:** keep everything (unbounded growth). Others not recorded.
+- **Evidence / source:** commit 90cab46.
+
+## D6. Hebrew-aware BM25 retrieval with optional embedding fusion (2026-09-27; status: accepted)
+- **Decision:** BM25 over canonical tokens plus prefix-stripped Hebrew variants; optional dense ranking fused by reciprocal rank fusion; embedding failures fall back to lexical.
+- **Alternatives:** plain lexical matching (keva recall@1 0.76 vs 0.87 with the Hebrew-aware variant).
+- **Evidence / source:** commit d1c026b.
+
+## D7. Corpus caches keyed on the model route, not whole-module hashes (2026-09-27; status: accepted)
+- **Context:** `model_identity` hashed `models.py`, `llm.py` and `validation.py`, so a logging edit forced re-extracting every document.
+- **Decision:** Corpus caches use `cache_identity` (transport, endpoint, explicit structured-call contract version); stage keys fingerprint prompts and schemas. Evaluation contracts keep the stricter `model_identity`.
+- **Consequences:** Cache keys must still change whenever outputs would change (AGENTS.md convention); bump the contract version when a schema or call contract changes.
+- **Evidence / source:** commit 0c23fd0.
+
+## D8. Persistent cache for seeded structured calls only (2026-10-01; status: accepted)
+- **Decision:** Seeded identical calls are stored by model, schema and prompt (file per transport/endpoint/seed/contract). Disabled for unseeded runs; `--refresh-cache` and `--no-cache` respected; hits and misses reported in the generate manifest.
+- **Alternatives:** caching unseeded calls - rejected because only seeded calls are reproducible.
+- **Evidence / source:** commit 64bceb7.
+
+## D9. Question-set plan from information units (2026-10-01; status: accepted)
+- **Decision:** `plan` counts distinct factual statements per chunk; per-topic canonical quota = max(every chunk represented with denser chunks deeper, a precision floor for a per-topic accuracy estimate), capped by what the content supports. `generate --plan` uses those quotas exactly. Concurrency is not part of the resume signature (output does not depend on it).
+- **Alternatives:** not recorded.
+- **Evidence / source:** commit cbfa78a.
+
+## D10. User-facing generation mode with grounded anchors (2026-10-07; status: accepted)
+- **Context:** Reviewers found canonical questions unrealistic.
+- **Decision:** In `generation.mode=user_facing` every canonical and boundary question gets one natural phrasing; the canonical form stays as the grounded anchor (`anchor=true`). Natural variants are graded only on the claims they still ask for. `evaluation.canonical_scoring` defaults to `gap`: anchors stay out of headline metrics and the phrasing gap is reported. `revary` keeps the previous ambiguous count by default in this mode.
+- **Alternatives:** canonical-only sets (the earlier behaviour).
+- **Evidence / source:** commits 6b0c6c7, 11d901c.

@@ -1,0 +1,14 @@
+# Work log
+Newest first. Each entry: what changed, how it was verified, what's next. Never edit or delete past entries.
+Earlier history: `git log` (commit bodies explain each change) and `docs/archive/implementation-progress.md` (the 2026-09-07 implementation).
+
+## 2026-10-13 - Project-foundations audit
+Changed: `.gitignore` covers `.env.*`, keys and personal agent files; finished reviews, plans and probes moved to `docs/archive/`; two stale README limitations removed; added `docs/BRIEF.md`, `docs/STATUS.md`, this log and `docs/DECISIONS.md` (D1-D10 reconstructed from commit messages); AGENTS.md gained session-start and doc-maintenance rules. Decisions: D1-D10 (reconstructed).
+
+| Verification command | Result |
+|---|---|
+| `python -m pytest -q` (Python 3.12 scratch env, Linux) | 304 passed in 2.23 s |
+| `git check-ignore` on `.env.local`, `CLAUDE.local.md`, `.claude/settings.local.json`, `x.pem` | all ignored; `.env.example` still tracked |
+| `git ls-files` scan for secrets, PDF/XLSX/DOCX | none tracked |
+
+Next: owner reviews BRIEF open questions; push the commits (`git push origin main`).
