@@ -17,3 +17,12 @@ knowledge_base/
 *.xlsx
 *.pdf
 *.docx
+
+# Secrets and personal agent files (never commit)
+.env.*
+!.env.example
+*.pem
+*.key
+CLAUDE.local.md
+.claude/settings.local.json
+*.egg-info/
