@@ -798,7 +798,7 @@ order:
 Unsupported claims alone never override an otherwise correct answer; they stay visible in the
 `factual_risk` metric. An earlier version also forced "abstention" whenever the answer contained a
 phrase like "not provided"; that override was removed because it turned correct answers that mention
-one missing attachment into failures (finding E1 in [library-review.md](library-review.md)).
+one missing attachment into failures (finding E1 in [library-review.md](archive/library-review.md)).
 
 ### 13.5 Checkpoints and contracts
 
@@ -868,7 +868,7 @@ never values).
 models get upgraded. Without these rules a composition change, or a question that errored in one run
 only, appears as chatbot improvement. The earlier review reproduced exactly that: a single failed
 answer turning into a judge error produced a favorable 50-point delta with zero real improvements
-(finding E3 in [library-review.md](library-review.md)).
+(finding E3 in [library-review.md](archive/library-review.md)).
 
 `--soft-compare` relaxes this for directional reads: it computes an approximate delta over questions
 that are matched *and* eligible in both runs, marked `≈` with its sample size.
