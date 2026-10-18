@@ -153,15 +153,15 @@ manifest. CLI flags override TOML for the current run.
 
 `cli.py` exposes these commands:
 
-| Command | Calls a model? | Purpose |
-|---|---|---|
-| `plan` | yes (graph only) | Measure the corpus and write an editable `generation_plan.json`. |
-| `generate` | yes | Build the silver set. |
-| `review-export`, `review-merge` | no | Human review round trip. |
-| `reground`, `revary`, `add-broad` | yes | Repair or extend a reviewed set without regenerating it. |
-| `evaluate`, `evaluate-file` | yes (judge) | Score a live chatbot or saved answers. |
-| `report` | no | Rebuild a report, optionally comparing two runs. |
-| `generate-prompt` | yes | Draft a system prompt package. |
+| Command                           | Calls a model?   | Purpose                                                          |
+| --------------------------------- | ---------------- | ---------------------------------------------------------------- |
+| `plan`                            | yes (graph only) | Measure the corpus and write an editable `generation_plan.json`. |
+| `generate`                        | yes              | Build the silver set.                                            |
+| `review-export`, `review-merge`   | no               | Human review round trip.                                         |
+| `reground`, `revary`, `add-broad` | yes              | Repair or extend a reviewed set without regenerating it.         |
+| `evaluate`, `evaluate-file`       | yes (judge)      | Score a live chatbot or saved answers.                           |
+| `report`                          | no               | Rebuild a report, optionally comparing two runs.                 |
+| `generate-prompt`                 | yes              | Draft a system prompt package.                                   |
 
 Offline commands do not even construct a model client, so they need no API key.
 
@@ -343,11 +343,11 @@ approach that works well for IR in Semitic languages without a full analyzer [R2
 
 `build_edges` creates three edge types, all deterministic:
 
-| Type | Rule | Weight |
-|---|---|---|
-| `shared_entity` | The two chunks share at least one entity match key. | Number of shared keys. |
-| `keyphrase_overlap` | Jaccard similarity of canonical keyphrase sets is at least `keyphrase_overlap_threshold` (0.3). | The Jaccard value. |
-| `same_document` | Consecutive chunks of the same file. | 1.0 |
+| Type                | Rule                                                                                            | Weight                 |
+| ------------------- | ----------------------------------------------------------------------------------------------- | ---------------------- |
+| `shared_entity`     | The two chunks share at least one entity match key.                                             | Number of shared keys. |
+| `keyphrase_overlap` | Jaccard similarity of canonical keyphrase sets is at least `keyphrase_overlap_threshold` (0.3). | The Jaccard value.     |
+| `same_document`     | Consecutive chunks of the same file.                                                            | 1.0                    |
 
 Candidate pairs come from inverted indexes (entity → chunks, keyphrase → chunks), so cost grows with
 co-occurrences rather than with all N² pairs. The `same_document` spine guarantees that no chunk is
@@ -446,15 +446,15 @@ question in five wordings over-weights that fact [R17].
 
 ### 9.1 What is cached, and by what key
 
-| Kind | Granularity | Key includes |
-|---|---|---|
-| `chunks` | corpus | Every supported file's relative path and SHA-256, chunk size and overlap, code fingerprint of `documents.py` and `pdf_markdown.py` (PDFs are read through the converter), cache schema. |
-| `node_signals` | **per document** | That document's chunk IDs and text, signals fingerprint (prompt + schema + truncation bound), model, model route, batch size, theme signature (tagging pass), hash of the document's base signals (tagging pass). |
-| `theme_vocabulary` | corpus | All chunk IDs and text, vocabulary fingerprint, model, route, ceiling. Empty vocabularies (the failure fallback) are not cached. |
-| `graph` | corpus | Chunks, every chunk's signals, edge and clustering parameters, topic mode, model, route, code fingerprint of `graph.py` + `graph_build.py`. |
-| `question_topics`, `insights`, `prompt_package` | per workflow | Their inputs, model, route, and the implementing module's code fingerprint. |
-| `llm_calls` | per call | Model, schema, prompt, required fields; file name carries route, seed, call contract. |
-| `embeddings` | per text | Text hash; file name carries model, dimensions, route. |
+| Kind                                            | Granularity      | Key includes                                                                                                                                                                                                      |
+| ----------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chunks`                                        | corpus           | Every supported file's relative path and SHA-256, chunk size and overlap, code fingerprint of `documents.py` and `pdf_markdown.py` (PDFs are read through the converter), cache schema.                           |
+| `node_signals`                                  | **per document** | That document's chunk IDs and text, signals fingerprint (prompt + schema + truncation bound), model, model route, batch size, theme signature (tagging pass), hash of the document's base signals (tagging pass). |
+| `theme_vocabulary`                              | corpus           | All chunk IDs and text, vocabulary fingerprint, model, route, ceiling. Empty vocabularies (the failure fallback) are not cached.                                                                                  |
+| `graph`                                         | corpus           | Chunks, every chunk's signals, edge and clustering parameters, topic mode, model, route, code fingerprint of `graph.py` + `graph_build.py`.                                                                       |
+| `question_topics`, `insights`, `prompt_package` | per workflow     | Their inputs, model, route, and the implementing module's code fingerprint.                                                                                                                                       |
+| `llm_calls`                                     | per call         | Model, schema, prompt, required fields; file name carries route, seed, call contract.                                                                                                                             |
+| `embeddings`                                    | per text         | Text hash; file name carries model, dimensions, route.                                                                                                                                                            |
 
 The model route (`contracts.cache_identity`) is transport, endpoint hash, structured-call contract
 version, and seed.
@@ -534,12 +534,49 @@ children of canonical questions and never replace their provenance.
 
 ### 11.2 Topic quotas
 
-Without a plan, `allocate_graph_quotas` gives each topic a weight equal to its total information
-units, first gives every topic `min_topic_questions` (never above the share cap), then hands out the
-rest one question at a time to the topic with the highest `weight / (quota + 1)`, never exceeding
-`max_topic_share` of the total. This is a highest-averages apportionment (D'Hondt-like), which tracks
-proportionality while guaranteeing coverage and a diversity cap. *Why information units and not the
-1-5 importance bucket:* the coarse bucket oversampled small topics (the code comment says so).
+Without a plan, `allocate_graph_quotas` splits the canonical (answerable) budget over topics in
+proportion to how much each topic says.
+
+**A topic's total information units** is the sum of `information_units(chunk.text)` over the chunks
+in the topic (section 10). For one chunk, that is the number of distinct statements it makes. The
+text is split at sentence ends, line breaks, list bullets, numbered items, and table-cell
+separators. A piece counts if it has at least four words, and repeated pieces count once. Any
+non-empty chunk counts as at least 1, and so does any topic. For example, this chunk has 3 units:
+
+```
+## חופשה
+- חייל זכאי לחופשה שנתית של 18 ימים.        <- 1
+- את הבקשה מגישים למפקד הישיר.              <- 2
+| סוג | ימים |                              <- cells under four words: 0
+| חופשה מיוחדת לחייל בודד | 30 |            <- 3 (the "30" cell does not count)
+חייל זכאי לחופשה שנתית של 18 ימים.          <- repeat of 1: 0
+```
+
+The count needs no model call and gives the same result on every run. It measures how many facts a
+topic can support questions about, unlike its chunk count: a short chunk and a dense table of rules
+each count as one chunk. Topics do not share chunks (each chunk has one theme or one entity
+component), so topic weights add up to the corpus total.
+
+**Allocation.** With these weights:
+
+1. Every topic gets `min_topic_questions`, in descending weight order, but never more than the share
+   cap `⌈total × max_topic_share⌉`. If the budget runs out first, the lightest topics get nothing,
+   and the diagnostics show their zero quota.
+2. The rest is handed out one question at a time. Each goes to the topic with the highest
+   `weight / (quota + 1)` that is still under the cap.
+
+This is a highest-averages (D'Hondt-like) apportionment. It tracks proportionality while
+guaranteeing coverage and a diversity cap. For example, three topics with 120, 60, and 20 units,
+20 questions, a minimum of 2, and a share cap of 0.4 (8 questions) get 8, 8, and 4. A purely
+proportional split would give 12, 6, and 2, but the cap stops the largest topic at 8, and its
+surplus goes to the others.
+
+*Why information units and not the 1-5 importance bucket:* the coarse bucket oversampled small
+topics (the code comment says so).
+
+Boundary quotas (section 11.7) use the same weights, with a minimum of one per topic when the
+boundary budget allows it, and no share cap. With `generate --plan`, the plan's per-topic numbers
+(section 10, also derived from information units) replace this allocation.
 
 `--topic` gives a single topic the whole quota; if the name is not a discovered topic, its evidence is
 seeded from the chunks whose signals and text best match the requested term.
@@ -606,11 +643,11 @@ showed to be more reliable than holistic grades for long answers [R3, R16].
 
 ### 11.6 Optional checks
 
-| Check | What it catches | Cost |
-|---|---|---|
-| `verify_answer_completeness` | A reference answer that is incomplete or contradicted once evidence is re-retrieved *for this question* (not for the topic). The model may return a corrected answer, which must pass `validate_candidate` again; otherwise the candidate is dropped. A separate verification pass, as in Chain-of-Verification [R20]. | 1 call per canonical candidate |
-| `closed_book_check` | Questions a model answers fully with no documents. These test general knowledge, not the knowledge base [R18]. `tag` keeps and marks them (`closed_book_answerable`); `reject` drops them. Tagging is recommended because a legitimate rule can also be public. | 2 calls per canonical candidate |
-| `verify_unanswerable` | Boundary questions that the corpus actually answers somewhere outside the window that produced them. Re-checks each one against evidence retrieved from the whole corpus. | 1 call per boundary candidate |
+| Check                        | What it catches                                                                                                                                                                                                                                                                                                        | Cost                            |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `verify_answer_completeness` | A reference answer that is incomplete or contradicted once evidence is re-retrieved *for this question* (not for the topic). The model may return a corrected answer, which must pass `validate_candidate` again; otherwise the candidate is dropped. A separate verification pass, as in Chain-of-Verification [R20]. | 1 call per canonical candidate  |
+| `closed_book_check`          | Questions a model answers fully with no documents. These test general knowledge, not the knowledge base [R18]. `tag` keeps and marks them (`closed_book_answerable`); `reject` drops them. Tagging is recommended because a legitimate rule can also be public.                                                        | 2 calls per canonical candidate |
+| `verify_unanswerable`        | Boundary questions that the corpus actually answers somewhere outside the window that produced them. Re-checks each one against evidence retrieved from the whole corpus.                                                                                                                                              | 1 call per boundary candidate   |
 
 ### 11.7 Boundary (unanswerable) questions
 
@@ -654,13 +691,78 @@ the same pairs), which isolates how much the chatbot loses to realistic wording.
 
 ### 11.9 Broad questions
 
-"What are my rights?" questions are answered by an overview, not a fact. Alloy builds a document map
-(front-matter title, subtitle, and category, plus topics and, per topic, chunk summaries), asks for
-corpus-level, population-level, and per-topic broad questions with key points that each cite map
-documents, then checks every key point against the cited documents' most related chunks with one
-call. Unsupported points are dropped; a question needs `broad_min_key_points` supported points. A
-correct answer must name `min_key_points` of them (about half, at least two), and a long overview is
-not penalized.
+Real users often open with a vague question: "מה הזכויות שלי?" or "אני חייל בודד, מה מגיע לי?". The
+right answer is an overview of the relevant areas (or a clarifying question), not a single fact.
+Canonical questions cannot test this: each one targets specific claims in a few chunks. Broad
+questions test whether the chatbot can map the knowledge base for the user, instead of answering one
+detail, refusing, or inventing benefits. They are off by default (`generation.broad_questions`). They
+are produced by `generate` (skipped with `--topic`) or added to an existing set with `add-broad`. That
+command replaces the set's existing broad questions and keeps all others. Pass `--plan` so the topics
+match the ones the set was generated with.
+
+**Three levels** (`broad_level`):
+
+| Level        | Count                                                                                | Asked by                                                      | Map shown to the model                                   |
+| ------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------------- |
+| `corpus`     | `broad_corpus_questions` (default 2)                                                 | any user of the knowledge base                                | every document                                           |
+| `population` | one per population the documents address, up to `broad_population_limit` (default 8) | a member of that population, such as lone or married soldiers | every document                                           |
+| `topic`      | one per topic                                                                        | anyone asking about the whole area                            | the topic's documents, with up to 6 chunk summaries each |
+
+Corpus and population questions come from one call, and each topic adds one call. A population
+qualifies only if the documents describe at least `broad_min_key_points` distinct things for it, so
+the population count is an upper bound. The plan reports broad questions as `broad_max` for this
+reason.
+
+**Step 1: generate from a document map.** A whole corpus does not fit in one prompt, and chunk-level
+evidence would push the model toward detail questions. Instead, `_document_map` renders each
+document as one line: `D01`, `D02`, and so on, with its front-matter title, subtitle, category, and
+topics. The model writes short, casual first-person questions, the way a soldier types into a chat
+box. For each question it returns:
+
+- 3 to 8 `key_points`: the main areas a good overview names, such as a right, benefit, procedure, or
+  service. Each point lists the map documents that cover it.
+- a suggested `min_key_points`;
+- an `expected_answer` overview;
+- an `acceptable_clarification`, a follow-up question that narrows the request.
+
+**Step 2: ground every key point.** The map shows only titles, so the model could name an area the
+documents do not support. `_ground_broad` drops points that cite no valid map document. For each
+remaining point, it ranks the corpus by the point's text with BM25 (section 8) and keeps the two
+best chunks from the cited documents. If none rank, it falls back to the document's first chunk. One
+check call (`BROAD_CHECK_PROMPT`) then reads those chunks and decides, point by point, whether the
+evidence states the point. A point is kept only if it is marked supported and cites a chunk that was
+actually shown. A question with fewer than `broad_min_key_points` supported points is rejected.
+
+The supported points become the question's `reference_claims`, and their chunks become its
+`sources`. The question type is `cross_document` when those chunks span several files and
+`document_wide` otherwise. Unlike canonical questions, broad questions carry no verbatim quotes. A
+key point names an area, such as "החזרי נסיעה", that is rarely one sentence of text. The model check
+is therefore the grounding guarantee: deterministic validation still applies, but quote provenance
+does not. This makes broad questions weaker silver than canonical ones, and they need review *(the
+reasoning is inferred from the design)*.
+
+**Step 3: decide how many points an answer must name.** `min_key_points` is the model's suggestion,
+capped at half of the supported points (rounded up) and raised to at least 2. With six supported
+points, a suggestion of 4 becomes 3, and a suggestion of 1 becomes 2. An overview that names every
+area is not required. A good answer names enough of them to orient the user.
+
+**Filtering and IDs.** Each call may return only its own levels, up to their counts. Extra questions
+are rejected as `broad_level_over_budget`. Questions that duplicate each other, the set, or the
+exclusion list are dropped as `broad_duplicate`. Broad questions get `B` IDs (section 11.10) and the
+topic "שאלות כלליות", except topic-level ones, which keep their topic. They are generated after
+variants, so they never get variants of their own. They are already in user phrasing, and
+`user_facing` totals count them as such.
+
+The remaining rejection reasons are `broad_point_without_document`, `broad_too_few_points`,
+`broad_point_unsupported`, and `broad_too_few_supported_points`. They appear in the generation
+diagnostics, or in `broad_diagnostics` in the `add-broad` run manifest, together with counts per
+level.
+
+**Judging** (section 13.3). The judge prompt gets a broad-question task note. The reference claims
+are areas, and naming `min_key_points` of them correctly is enough. Extra true areas are not
+counted as unsupported, and a long, structured overview is not marked `too_much`. Since
+`clarification_acceptable` is set, a clarifying question that narrows the request is a
+`correct_clarification`. False claims still fail the answer, as they do for any question.
 
 ### 11.10 IDs, merging, concurrency, and diagnostics
 
@@ -817,17 +919,17 @@ contract instead of mixing results; `--retry-errors` re-runs only infrastructure
 Every metric states its denominator, because mixing task types is the most common way chatbot
 metrics mislead:
 
-| Metric | Numerator | Denominator |
-|---|---|---|
-| `factual_answer_success_rate` | `correct_answer` | answer tasks |
-| `useful_answer_rate_on_answerable` | correct, partial, or appropriate clarification | answerable questions |
-| `clarification_success_rate` | `correct_clarification` | clarify tasks |
-| `abstention_success_rate` | `correct_abstention` | abstain tasks |
-| `misinformation_rate` | `misleading_hallucination` | evaluable records |
-| `factual_risk_rate` | at least one false or unsupported claim | scored records, all task types |
-| `behavior_failure_rate` | missing clarification, incorrect abstention, should have abstained | evaluable records |
-| `good_retrieval_rate` | all required points retrieved, no contradictory chunk | answer tasks with retrieval context |
-| `infrastructure_error_rate` | chatbot or judge errors | all records |
+| Metric                             | Numerator                                                          | Denominator                         |
+| ---------------------------------- | ------------------------------------------------------------------ | ----------------------------------- |
+| `factual_answer_success_rate`      | `correct_answer`                                                   | answer tasks                        |
+| `useful_answer_rate_on_answerable` | correct, partial, or appropriate clarification                     | answerable questions                |
+| `clarification_success_rate`       | `correct_clarification`                                            | clarify tasks                       |
+| `abstention_success_rate`          | `correct_abstention`                                               | abstain tasks                       |
+| `misinformation_rate`              | `misleading_hallucination`                                         | evaluable records                   |
+| `factual_risk_rate`                | at least one false or unsupported claim                            | scored records, all task types      |
+| `behavior_failure_rate`            | missing clarification, incorrect abstention, should have abstained | evaluable records                   |
+| `good_retrieval_rate`              | all required points retrieved, no contradictory chunk              | answer tasks with retrieval context |
+| `infrastructure_error_rate`        | chatbot or judge errors                                            | all records                         |
 
 Infrastructure errors are excluded from every quality denominator. **Missing retrieval context is
 missing telemetry, not bad retrieval**: records without context (including `"[]"`, `"{}"`, `null`)
