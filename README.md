@@ -72,7 +72,8 @@ The components are independent: generation needs documents and Gemini but no cha
 consumes reviewed questions and either a chatbot adapter or a premade results file.
 
 For a component-by-component walkthrough with design rationale and research references, see
-[docs/architecture.md](docs/architecture.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (invariants and index) and the per-component files in
+[docs/design/](docs/design/overview.md).
 
 ## Installation
 

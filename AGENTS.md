@@ -2,8 +2,8 @@
 
 Alloy (`chatbot_eval`) generates evidence-grounded Hebrew evaluation sets from a document corpus
 and judges internal chatbots against them. [README.md](README.md) is the user manual (workflows,
-settings, outputs); [docs/architecture.md](docs/architecture.md) is the design reference. Before
-changing a component, read its section there. Goal, non-goals and open questions: `docs/BRIEF.md`.
+settings, outputs); [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) holds the invariants and indexes
+the design reference in `docs/design/`. Before changing a component, read its file there. Goal, non-goals and open questions: `docs/BRIEF.md`.
 It is **not** a source of ground truth: silver questions need domain review.
 
 ## Start of every session
@@ -65,7 +65,7 @@ short synthetic Hebrew fixtures instead. Tests that need a PDF build one at test
 - Heavy or optional dependencies are extras in `pyproject.toml`, imported
   inside the function that needs them, with an error that names the extra to install.
 - Changing outcome classification, judge inputs, or metric definitions changes what past runs mean.
-  Say so in the commit body, and update the README and `docs/architecture.md` sections that define them.
+  Say so in the commit body, and update the README and `docs/design/` sections that define them.
 - Validate behavior changes offline against real artifacts when useful (cached graphs in
   `{hova,keva}/.chatbot_eval_cache/graph/`, checkpoints in `*/outputs/*/generation_checkpoint.jsonl`),
   using throwaway scripts outside the repo.
@@ -80,16 +80,16 @@ when forgotten.
 |---|---|
 | Add or rename a setting | `Settings` and `validate`, `config.example.toml`, README parameter table (*guarded*) |
 | Add a CLI command or option | README table for that command (*guarded*) |
-| Add a module | README code map and `docs/architecture.md` (*guarded*) |
-| Change a component's behavior or design | Its section of `docs/architecture.md`; section 19 if a limitation appears or disappears |
-| Change outcomes, judging, or metrics | README "Judging logic" and outputs sections; architecture sections 13 and 14 |
-| Change a prompt, schema, or deterministic stage | The matching cache key or fingerprint (architecture section 9), including every module the stage calls |
+| Add a module | README code map and a `docs/design/` file (*guarded*) |
+| Change a component's behavior or design | Its file in `docs/design/`; `limitations.md` (section 19) if a limitation appears or disappears; `docs/ARCHITECTURE.md` if an invariant changes |
+| Change outcomes, judging, or metrics | README "Judging logic" and outputs sections; `docs/design/evaluation.md` and `reporting.md` (sections 13 and 14) |
+| Change a prompt, schema, or deterministic stage | The matching cache key or fingerprint (`docs/design/caching.md`, section 9), including every module the stage calls |
 | Change PDF conversion output | Bump `pdf_markdown.CONVERTER_VERSION` (written into converted files) |
 | Add an output file or manifest field | README outputs section for that workflow |
 | Add a relative link in a doc | Make sure it resolves (*guarded*) |
 
 `docs/archive/` and `docs/theme-layer-ab-results.md` are dated records. Do not rewrite them; record
-the current state in `docs/architecture.md`.
+the current state in `docs/design/`.
 
 ## Keeping these instructions accurate
 

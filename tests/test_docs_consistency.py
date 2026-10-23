@@ -1,7 +1,7 @@
 """Guards that keep the documentation in step with the code.
 
 Each test names the file to update when it fails. They exist because settings, modules, and CLI
-options were repeatedly added without updating the README, the example config, or the design doc.
+options were repeatedly added without updating the README, the example config, or the design docs.
 """
 import re
 import tomllib
@@ -11,7 +11,8 @@ from chatbot_eval.cli import build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-ARCHITECTURE = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+DESIGN_DOCS = ["docs/ARCHITECTURE.md", *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "docs" / "design").glob("*.md"))]
+ARCHITECTURE = "\n".join((ROOT / name).read_text(encoding="utf-8") for name in DESIGN_DOCS)
 # Read for backward compatibility only; documented as legacy in the README, absent from the example.
 LEGACY_SETTINGS = {"generation.filter_closed_book_answerable"}
 
@@ -38,7 +39,7 @@ def test_every_module_is_in_the_readme_code_map_and_the_architecture_doc():
     missing_readme = [name for name in modules if f"`{name}`" not in README]
     missing_architecture = [name for name in modules if f"`{name}`" not in ARCHITECTURE]
     assert not missing_readme, f"add these modules to the README code map: {missing_readme}"
-    assert not missing_architecture, f"describe these modules in docs/architecture.md: {missing_architecture}"
+    assert not missing_architecture, f"describe these modules in docs/design/: {missing_architecture}"
 
 
 def test_every_cli_command_and_option_is_documented_in_the_readme():
@@ -61,7 +62,7 @@ def test_every_cli_command_and_option_is_documented_in_the_readme():
 
 def test_relative_links_in_agent_and_design_docs_resolve():
     broken = []
-    for document in ("README.md", "AGENTS.md", "docs/architecture.md"):
+    for document in ("README.md", "AGENTS.md", *DESIGN_DOCS):
         path = ROOT / document
         for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", path.read_text(encoding="utf-8")):
             if not re.match(r"[a-z]+://", target) and not (path.parent / target).exists():
