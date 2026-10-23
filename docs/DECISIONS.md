@@ -16,6 +16,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D8 | Persistent cache for seeded structured calls only (2026-10-01; status: accepted) |
 | D9 | Question-set plan from information units (2026-10-01; status: accepted) |
 | D10 | User-facing generation mode with grounded anchors (2026-10-07; status: accepted) |
+| D11 | Generated project map and a design reference split per component (2026-10-23; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -77,3 +78,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Decision:** In `generation.mode=user_facing` every canonical and boundary question gets one natural phrasing; the canonical form stays as the grounded anchor (`anchor=true`). Natural variants are graded only on the claims they still ask for. `evaluation.canonical_scoring` defaults to `gap`: anchors stay out of headline metrics and the phrasing gap is reported. `revary` keeps the previous ambiguous count by default in this mode.
 - **Alternatives:** canonical-only sets (the earlier behaviour).
 - **Evidence / source:** commits 6b0c6c7, 11d901c.
+
+## D11. Generated project map and a design reference split per component (2026-10-23; status: accepted)
+- **Context:** Agents read the 1,196-line `docs/architecture.md` whole to change one component, and file lists or "used by" notes written by hand went stale.
+- **Decision:** `tools/docmap.py` (project-foundations skill) generates `docs/MAP.md`, the folder README tables and the decision index, and `check` runs in CI. The design reference is one file per component in `docs/design/`, keeping the original section numbers; `docs/ARCHITECTURE.md` keeps only the invariants, each with the rule or test that enforces it. Import boundaries already stated in the design (only `llm.py` imports the Gemini SDK; nothing imports `cli.py`) are `[[tool.docmap.forbid]]` rules.
+- **Alternatives:** keep one design file with a table of contents - every change still loads all of it; renumber sections per file - breaks every "section N" reference in code reviews, commits and the README.
+- **Consequences:** Adding a module or code folder fails CI until it has a docstring or README description. The decision-ID check ignores code spans and URLs (local docmap fix).
+- **Evidence / source:** commits e8b3b02 to 389aa40; WORKLOG 2026-10-23.
