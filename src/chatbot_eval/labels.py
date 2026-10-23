@@ -1,3 +1,4 @@
+"""Hebrew display labels and report colors for question forms, expected behaviors and outcomes."""
 from __future__ import annotations
 
 from .models import ExpectedBehavior, Outcome, QuestionForm

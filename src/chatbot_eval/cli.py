@@ -1,3 +1,12 @@
+"""Command-line entry point (`chatbot-eval`): parses arguments and wires the components together.
+
+`build_parser()` defines the commands (`generate`, `plan`, `generate-prompt`, `evaluate`,
+`evaluate-file`, `review-export`, `review-merge`, `revary`, `reground`, `add-broad`,
+`convert-pdf`, `report`) and their options. `main(argv)` loads settings, builds the model stack
+(`GeminiStructuredLLM`, the seeded call cache, and the generation journal), the corpus cache and the
+chatbot adapter, runs the command, and records it in a run manifest. Commands that need no model do
+not construct a client. Every command and option must appear in the README (a test checks).
+"""
 from __future__ import annotations
 
 import argparse

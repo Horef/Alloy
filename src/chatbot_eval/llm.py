@@ -1,3 +1,13 @@
+"""The model layer: structured Gemini calls, the seeded call cache, and embeddings.
+
+The rest of the package depends only on the `StructuredLLM` protocol
+(`generate(prompt, schema, model, *, required_fields=None)` returning a validated Pydantic object),
+so tests use fakes. `GeminiStructuredLLM` implements it over the Google GenAI SDK, directly or
+through the Apigee gateway, with JSON-schema output, retries with capped backoff for transient
+errors, and quota logging; validation errors are not retried. `CachedStructuredLLM` serves repeated
+seeded calls from an append-only JSONL store. Bump `STRUCTURED_CALL_CONTRACT` when request
+configuration or response parsing changes what a call returns.
+"""
 from __future__ import annotations
 
 import copy

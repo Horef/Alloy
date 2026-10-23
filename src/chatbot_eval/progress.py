@@ -1,3 +1,4 @@
+"""Progress bars (`track`) that show elapsed time and can be switched off with `--no-progress`."""
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator

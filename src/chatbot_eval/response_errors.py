@@ -1,3 +1,4 @@
+"""Shared helpers for answer errors: the known placeholder answer and bounded retry delays."""
 from __future__ import annotations
 
 

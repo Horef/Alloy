@@ -1,3 +1,8 @@
+"""Topic inference for saved questions without topics (`evaluate-file --infer-topics`).
+
+`infer_topics` labels questions in batches with concise Hebrew topics, then makes one harmonization
+call that merges synonymous labels across batches into one taxonomy.
+"""
 from __future__ import annotations
 
 import logging

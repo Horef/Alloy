@@ -1,3 +1,12 @@
+"""Reading and writing question sets and evaluation records as paired CSV and JSONL files.
+
+`write_questions` / `read_questions` handle `silver_questions.csv` and `.jsonl`; `write_evaluations`
+writes `evaluation_details.csv` and `.jsonl`. Both files of a pair are staged, fsynced and then
+published, and a failed serialization keeps the previous pair. CSV values that start with `=`, `+`,
+`-` or `@` get an apostrophe against formula injection, versioned by `csv_escape_version` so the
+round trip is lossless. Provenance is stored once in `sources_json`; readable source columns must
+agree with it. Input is normalized and validated by `validation`.
+"""
 from __future__ import annotations
 
 import csv

@@ -1,3 +1,11 @@
+"""Optional LLM analysis of failure patterns across an evaluation's results.
+
+`generate_insights(records, llm, model)` sends the aggregate summary and compact per-question records
+(risky and failed outcomes first, within a character budget) in one call. Code then drops example IDs
+that were not in the prompt, recomputes evidence counts and affected topics, discards issues without
+evidence, and downgrades a high-priority issue backed by one example. `write_insights` saves
+`evaluation_insights.json`.
+"""
 from __future__ import annotations
 
 import json

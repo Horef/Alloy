@@ -1,3 +1,12 @@
+"""Content-addressed local cache for corpus analysis and other expensive stage outputs.
+
+`CorpusAnalysisCache` stores JSON entries under `<cache>/<kind>/`: chunks, topic maps, the theme
+vocabulary, per-document node signals, the knowledge graph, inferred question topics, evaluation
+insights, and prompt packages. Each key hashes every input that can change the output (document
+content hashes, settings, model, model route, prompt/schema or code fingerprints). Corrupt or
+mismatched entries are recomputed. `prune` deletes entries of the kinds a command used whose keys it
+did not look up. The cache holds extracted document text, so protect it like the corpus.
+"""
 from __future__ import annotations
 
 import hashlib

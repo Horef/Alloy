@@ -1,3 +1,4 @@
+"""Logging setup: console plus optional file handler, with SDK transport chatter quieted."""
 from __future__ import annotations
 
 import logging

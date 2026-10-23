@@ -1,3 +1,10 @@
+"""Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment.
+
+`load_settings(config_path, require_api_key=True)` reads the TOML file, loads a `.env` from the
+config file's folder, takes the Gemini or Apigee key from the environment variable the config names,
+and returns `Settings.validate()`d settings, so a bad value fails before any paid call. Every TOML
+key read here must also be in `config.example.toml` and the README parameter table (a test checks).
+"""
 from __future__ import annotations
 
 import os

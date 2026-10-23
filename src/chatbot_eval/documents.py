@@ -1,3 +1,12 @@
+"""Corpus ingestion: reads supported documents and splits them into structure-aware chunks.
+
+`corpus_files(root)` lists `.txt/.md/.rst/.csv/.json/.jsonl/.pdf/.docx` files, skipping hidden files
+and folders. `load_chunks(root, chunk_chars, overlap_chars)` splits text into blocks at blank lines
+and headings, cuts oversized blocks into overlapping windows, and packs blocks into `Chunk`s
+(`id` is `relative/path#chunk-N`, `location` names the page or section and blocks). Markdown
+`<!-- page: N -->` markers become page sections; PDFs are read through `pdf_markdown`. Sections
+and files that yield no text are reported in the optional `extraction` summary.
+"""
 from __future__ import annotations
 
 import csv

@@ -1,3 +1,11 @@
+"""Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`.
+
+`read_premade_results(path, columns=..., strict=...)` finds columns by English or Hebrew alias
+(`ALIASES`) or by explicit `ResultColumns`; two columns matching one field is an error. Stored
+errors, empty answers, gateway faults and the placeholder answer become chatbot errors, and the
+retrieved-context column stays separate from gold evidence. Invalid rows are skipped or, with
+`strict`, rejected; `ImportDiagnostics` counts them. Each row's resume fingerprint covers only that row.
+"""
 from __future__ import annotations
 
 import csv

@@ -1,3 +1,11 @@
+"""Drafts a reviewable Hebrew chatbot system prompt package from the corpus and prior results.
+
+`SystemPromptGenerator.generate` sends the topic map and bounded document excerpts (and, when
+revising, bounded evidence from a previous run and the current prompt) and gets a `PromptPackage`.
+The model writes the domain guidance; the versioned behavioral policy from `prompt_policy` is
+assembled around it by code. `validate_prompt_package` checks the package deterministically, and
+one repair call is allowed before the package is rejected. `write_prompt_package` saves it.
+"""
 from __future__ import annotations
 
 import hashlib

@@ -1,3 +1,12 @@
+"""Claim-level LLM judging of chatbot answers and the deterministic outcome classification.
+
+`Evaluator.evaluate` asks each question through a `ChatbotAdapter` and judges the answer;
+`Evaluator.judge_results` judges saved answers. The judge (`JUDGE_PROMPT`) returns per-claim
+assessments and counts, not a grade. `apply_fixed_claims` checks there is exactly one assessment per
+reference claim and recomputes the totals from them; `classify` turns scores and the question's task
+into one `Outcome`. Chatbot and judge failures become `chatbot_error` / `judge_error` records.
+Changing `classify` or the judge inputs changes what past runs mean.
+"""
 from __future__ import annotations
 
 import json

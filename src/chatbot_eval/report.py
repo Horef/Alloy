@@ -1,3 +1,12 @@
+"""Evaluation metrics, run comparison, and the Hebrew HTML report.
+
+`build_summary(records)` computes the metrics, each over its own stated population, with
+infrastructure errors excluded from quality denominators, Wilson intervals per topic, paired variant
+robustness and the anchor phrasing gap. `build_comparison` compares two runs strictly (identical
+questions and eligible populations) unless soft comparison is requested;
+`compare_evaluation_contracts` reports changed contract field names only. `write_report` writes
+`evaluation_summary.json` and `evaluation_report.html`. Changing a metric changes what past runs mean.
+"""
 from __future__ import annotations
 
 import html

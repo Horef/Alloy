@@ -1,3 +1,12 @@
+"""Pydantic data contracts shared by every component.
+
+Schemas the model must return (`NodeSignalsBatch`, `QuestionBatch`, `VariationBatch`,
+`BroadQuestionBatch`, `JudgeScores`, `PromptPackage`, ...), the stored question and result records
+(`SilverQuestion`, `ChatbotResult`, `EvaluationRecord`), and the enums that define them
+(`QuestionType`, `QuestionForm`, `ExpectedBehavior`, `Outcome`). Validators enforce count
+invariants such as correct <= addressed <= required. Changing a schema changes cache keys and
+the evaluation contract.
+"""
 from __future__ import annotations
 
 from enum import Enum

@@ -1,3 +1,11 @@
+"""Loaders for earlier run outputs, used for run comparison and prompt revision.
+
+Each loader accepts an output directory or the artifact file itself: `read_evaluation_records`
+(`evaluation_details.jsonl`, rejecting duplicate IDs), `read_evaluation_insights`,
+`read_evaluation_contract` (from the evaluation's own `run_manifest.json`), `read_current_prompt`
+(a prompt package or Markdown prompt, size-limited) and `discover_previous_run`, which loads insights
+only when their status file matches the records.
+"""
 from __future__ import annotations
 
 import json

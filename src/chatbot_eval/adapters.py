@@ -1,3 +1,12 @@
+"""Chatbot adapters: the only way evaluation reaches a live chatbot.
+
+`ChatbotAdapter` is the protocol (`ask(question) -> ChatbotResult`). `HttpChatbotAdapter` POSTs
+`{question_field: question}` as JSON and reads the answer and retrieved context from dotted response
+paths. Transient failures (408, 429, 5xx, timeouts, connection errors) are retried with capped
+backoff that honors `Retry-After` and an optional overall deadline; authentication errors and
+malformed, non-JSON or oversized responses are not. Failures and the known placeholder answer are
+returned as a `ChatbotResult` with `error` set and an `error_category`, never raised.
+"""
 from __future__ import annotations
 
 import json

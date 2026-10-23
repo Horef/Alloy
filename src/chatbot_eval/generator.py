@@ -1,3 +1,14 @@
+"""Silver question generation from the corpus graph: quotas, evidence windows, validation, variants.
+
+`SilverSetGenerator.generate` splits the budget over topics (`allocate_graph_quotas`, or a plan's
+quotas), asks the model for candidates per evidence window, and accepts only candidates that pass
+`validate_candidate` (verbatim quotes in cited chunks, complete provenance, type rules) and the
+duplicate checks; optional checks (completeness, closed-book, corpus-wide boundary) run per
+candidate. `generate` also produces boundary questions, variants and (optionally) broad questions;
+`regenerate_variations`, `generate_broad` and `reground_one` extend or repair a reviewed set.
+`merge_question_sets` appends to an existing set; `GenerationOptions` carries the run settings.
+Every rejection is counted by reason in the diagnostics.
+"""
 from __future__ import annotations
 
 import json

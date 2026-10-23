@@ -1,3 +1,16 @@
+"""Run artifacts: atomic writes, resumable JSONL journals, and run manifests.
+
+- `atomic_write_text` writes a same-directory temporary file, fsyncs it and renames it into place.
+- `EvaluationCheckpoint` journals judged records with a per-question input fingerprint and a run
+  signature; loading refuses entries from other inputs or another evaluation contract.
+- `StructuredCallCheckpoint` journals structured model calls and replays them in order, so
+  `generate --resume` continues where an interrupted run stopped.
+- `RunManifest` (a context manager) writes `run_manifest.json` (`report_manifest.json` for
+  `report`): settings without API keys, parameters, input hashes, git commit and dirty flag,
+  versions, timing and status.
+
+A torn final journal line is repaired; any other invalid line is an error.
+"""
 from __future__ import annotations
 
 import hashlib

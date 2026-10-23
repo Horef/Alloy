@@ -1,3 +1,11 @@
+"""Validation of question sets where they enter the system (CSV, JSONL, saved-answer import).
+
+`normalize_question_payload` applies legacy defaults explicitly, `parse_bool` parses booleans
+strictly, and `validate_question_set` enforces unique IDs and the task invariants (an answer task
+is answerable, a clarify or abstain task has no claims, anchors are canonical, broad questions are
+answer tasks). `derive_reference_claims` splits a reference answer into claims, one per sentence
+or line, without splitting inside numbers.
+"""
 from __future__ import annotations
 
 from collections import Counter
