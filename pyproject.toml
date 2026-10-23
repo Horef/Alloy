@@ -30,3 +30,19 @@ packages = ["src/chatbot_eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# tools/docmap.py: project map, code lookups and doc-health checks (see tools/README.md).
+[tool.docmap]
+link_exempt = ["docs/archive/*"]   # dated records; their relative links are historical
+agents_max_lines = 100
+
+[[tool.docmap.forbid]]
+source = "chatbot_eval"
+except = ["chatbot_eval.llm"]
+imports = ["google"]
+reason = "only llm.py talks to the Gemini SDK; other modules depend on the StructuredLLM protocol, so they run with fakes"
+
+[[tool.docmap.forbid]]
+source = "chatbot_eval"
+imports = ["chatbot_eval.cli"]
+reason = "cli.py is the only module that wires components together"
