@@ -4,6 +4,16 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-10-23 - Owner answers on the run index and `Claude outputs/`
+Changed: owner confirmed the CI run for `f7faf4c` (tests and `docmap.py check`) is green; `docs/RUNS.md` paths are acceptable; `Claude outputs/` is now ignored by the maintainer's global git ignore file `~/.config/git/ignore` (newly created; `core.excludesFile` is unset, so git reads this default path), which `docmap.py` honors through `--exclude-standard`. BRIEF questions closed. Decisions: none.
+
+| Verification command | Result |
+|---|---|
+| `git check-ignore -v "Claude outputs/project-foundations-SKILL.md"` | matched by `~/.config/git/ignore:2` |
+| `$PY tools/docmap.py check` | 0 errors, 0 warnings |
+
+Next: owner answers the remaining BRIEF questions.
+
 ## 2026-10-23 - Upgrade project foundations: generated map, design split, CI doc check
 Changed: installed `tools/docmap.py` from the project-foundations skill and configured it in `pyproject.toml` (two `forbid` import rules, AGENTS.md cap of 100 lines, run index); added module docstrings to 22 source and 24 test modules and purpose paragraphs to `src/`, `src/chatbot_eval/`, `tests/`, `docs/` and `tools/`; split `docs/architecture.md` into `docs/design/` (19 files, sections verbatim and with their numbers) plus a short `docs/ARCHITECTURE.md` (invariants and index), with section 20 moved to `docs/archive/architecture-review-fixes.md`; cut AGENTS.md from 120 to 96 lines (component rules moved to the "Rules here" sections of the src and tests READMEs); CI runs `docmap.py check`; `docs/RUNS.md` indexes the 16 local run manifests; `rotate` moved nothing (all entries are from October). Decisions: D11.
 
