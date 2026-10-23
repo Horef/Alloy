@@ -75,6 +75,7 @@ against this table before committing, and update docs in the same commit as the 
 | Add or change an import boundary | `docs/ARCHITECTURE.md` and `[[tool.docmap.forbid]]` in `pyproject.toml` |
 | Add a relative link in a doc | Make sure it resolves, with exact case: macOS ignores case, CI does not (*guarded*) |
 | Finish a unit of work | `docs/STATUS.md` (overwrite) and a new entry at the top of `docs/WORKLOG.md` with commands and results |
+| Run a command whose results you report | `$PY tools/docmap.py runs` and commit `docs/RUNS.md`; cite the run id in `docs/WORKLOG.md` |
 | Change a default or choose between alternatives | The next D entry in `docs/DECISIONS.md`; to reverse one, add an entry that supersedes it |
 | Start multi-session work | A plan in `docs/plans/` whose first line is `Status: ...`; move it to `docs/archive/` when done |
 

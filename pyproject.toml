@@ -46,3 +46,9 @@ reason = "only llm.py talks to the Gemini SDK; other modules depend on the Struc
 source = "chatbot_eval"
 imports = ["chatbot_eval.cli"]
 reason = "cli.py is the only module that wires components together"
+
+# Every command writes run_manifest.json (report_manifest.json for `report`) into its output folder.
+[tool.docmap.runs]
+manifests = "**/outputs/**/*_manifest.json"
+out = "docs/RUNS.md"
+columns = { run = "run_id", started = "started_at", command = "command", status = "status", commit = "git_commit", dirty = "git_worktree_dirty", code = "implementation_sha256" }
