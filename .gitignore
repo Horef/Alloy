@@ -25,4 +25,5 @@ knowledge_base/
 *.key
 CLAUDE.local.md
 .claude/settings.local.json
+Claude outputs/
 *.egg-info/

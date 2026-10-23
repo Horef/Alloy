@@ -4,6 +4,16 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-10-23 - Update tools/docmap.py from the skill
+Changed: replaced `tools/docmap.py` verbatim with the owner's updated copy, which includes this session's two fixes plus a letter-case-exact link check (`exists_exact`, so macOS now catches links that only Linux CI used to), link rewriting when `rotate` moves entries, a decision-ID pattern without leading zeros, and a RESULTS pattern that skips subsections. No workarounds to remove: the repo has no ruff configuration, RESULTS index pattern or citation-check override. Added `Claude outputs/` to the repository `.gitignore` as well. Decisions: none.
+
+| Verification command | Result |
+|---|---|
+| `cmp tools/docmap.py ~/Downloads/docmap.py` | identical |
+| `$PY tools/docmap.py update` | 0 files updated |
+| `$PY tools/docmap.py check` | 0 errors, 0 warnings |
+| `$PY -m pytest -q` (`army` env, macOS) | 340 passed |
+
 ## 2026-10-23 - Owner answers on the run index and `Claude outputs/`
 Changed: owner confirmed the CI run for `f7faf4c` (tests and `docmap.py check`) is green; `docs/RUNS.md` paths are acceptable; `Claude outputs/` is now ignored by the maintainer's global git ignore file `~/.config/git/ignore` (newly created; `core.excludesFile` is unset, so git reads this default path), which `docmap.py` honors through `--exclude-standard`. BRIEF questions closed. Decisions: none.
 

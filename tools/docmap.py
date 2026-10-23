@@ -30,8 +30,8 @@ DEFAULTS = {
     "agents_max_lines": 150,
     "status": "docs/STATUS.md", "worklog": "docs/WORKLOG.md", "worklog_dir": "docs/worklog",
     "status_max_commits": 8,            # warn if STATUS is older than this many commits
-    "indexes": [{"file": "docs/DECISIONS.md", "pattern": r"^## (D\d+)\.\s*(.+)$", "ids": r"\bD\d+\b"},
-                {"file": "docs/RESULTS.md", "pattern": r"^#{2,3} (\d+[a-z]?)\.\s*(.+)$"}],
+    "indexes": [{"file": "docs/DECISIONS.md", "pattern": r"^## (D\d+)\.\s*(.+)$", "ids": r"\bD[1-9]\d*\b"},
+                {"file": "docs/RESULTS.md", "pattern": r"^#{2,3} (\d+[a-z]?)\.(?!\d)\s*(.+)$"}],  # "5.1" is a subsection, not an entry
     "forbid": [],                       # [{source="pkg", except=["pkg.adapters"], imports=["torch"], reason="..."}]
 }
 MONTHS = {m: i for i, m in enumerate("january february march april may june july august september october november december".split(), 1)}
@@ -353,8 +353,8 @@ def cmd_check(_args):
             if re.match(r"^[a-z]+:|^#|^<", target):
                 continue
             t = target.split("#")[0]
-            if t and not (ROOT / Path(f).parent / t).exists():
-                errors.append(f"{f}: broken link -> {target}")
+            if t and not exists_exact(ROOT / Path(f).parent / t):
+                errors.append(f"{f}: broken link -> {target}" + (" (letter case differs)" if (ROOT / Path(f).parent / t).exists() else ""))
     for ix in CFG["indexes"]:  # cited ids exist
         if "ids" not in ix or not (ROOT / ix["file"]).exists():
             continue
@@ -397,6 +397,34 @@ def cmd_check(_args):
         print(f"error: {e}")
     print(f"docmap check: {len(errors)} error(s), {len(warnings)} warning(s)")
     sys.exit(1 if errors else 0)
+
+
+def exists_exact(p: Path) -> bool:
+    """Path exists with exactly this letter case (macOS and Windows file systems ignore case; Linux CI does not)."""
+    p = Path(os.path.normpath(p))
+    if not p.exists():
+        return False
+    cur = Path(p.anchor)
+    for part in p.parts[1:]:
+        try:
+            if part not in os.listdir(cur):
+                return False
+        except OSError:
+            return True
+        cur = cur / part
+    return True
+
+
+def relink(text: str, src_dir: Path, dst_dir: Path) -> str:
+    """Rewrite relative Markdown links in text moved from src_dir to dst_dir (both relative to the repo root)."""
+    def fix(m):
+        target = m.group(2)
+        if re.match(r"^[a-z]+:|^#|^<|^/", target):
+            return m.group(0)
+        path, _, frag = target.partition("#")
+        new = os.path.relpath(os.path.normpath(src_dir / path), dst_dir).replace(os.sep, "/")
+        return f"{m.group(1)}({new}{'#' + frag if frag else ''})"
+    return re.sub(r"(\])\(([^)\s]+)\)", fix, text)
 
 
 def find_module(arg: str, mods) -> Module | None:
@@ -489,13 +517,14 @@ def cmd_rotate(_args):
     for (y, mth), es in sorted(old.items()):
         f = ROOT / CFG["worklog_dir"] / f"{y}-{mth:02d}.md"
         f.parent.mkdir(parents=True, exist_ok=True)
-        prev = f.read_text(encoding="utf-8").split("\n", 2)[2] if f.exists() else ""
-        f.write_text(f"# Work log, {y}-{mth:02d}\n\n" + "".join(es).rstrip() + "\n\n" + prev, encoding="utf-8")
+        prev = f.read_text(encoding="utf-8").split("\n", 2)[2].strip() if f.exists() else ""
+        moved = relink("".join(es), Path(CFG["worklog"]).parent, Path(CFG["worklog_dir"])).rstrip()
+        f.write_text(f"# Work log, {y}-{mth:02d}\n\n" + moved + ("\n\n" + prev if prev else "") + "\n", encoding="utf-8")
         print(f"moved {len(es)} entr{'y' if len(es) == 1 else 'ies'} to {f.relative_to(ROOT)}")
     pointer = f"Earlier months: `{CFG['worklog_dir']}/YYYY-MM.md`."
     if pointer not in head:
         head = head.rstrip() + f"\n\n{pointer}\n\n"
-    p.write_text(head + "".join(keep), encoding="utf-8")
+    p.write_text((head + "".join(keep)).rstrip() + "\n", encoding="utf-8")
 
 
 def dig(d, dotted: str):
