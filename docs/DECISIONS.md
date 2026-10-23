@@ -17,6 +17,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D9 | Question-set plan from information units (2026-10-01; status: accepted) |
 | D10 | User-facing generation mode with grounded anchors (2026-10-07; status: accepted) |
 | D11 | Generated project map and a design reference split per component (2026-10-23; status: accepted) |
+| D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -85,3 +86,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** keep one design file with a table of contents - every change still loads all of it; renumber sections per file - breaks every "section N" reference in code reviews, commits and the README.
 - **Consequences:** Adding a module or code folder fails CI until it has a docstring or README description. The decision-ID check ignores code spans and URLs (local docmap fix).
 - **Evidence / source:** commits e8b3b02 to 389aa40; WORKLOG 2026-10-23.
+
+## D12. Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted)
+- **Context:** AGENTS.md, the Copilot shim and the README named the maintainer's interpreter by absolute path (two different ones, one no longer existing), so the repository could not be shared without misleading a colleague's agents.
+- **Decision:** Following project-foundations v4, each checkout has a git-ignored `AGENTS.local.md` (`- key: value` lines: machine, python, memory_budget, compute, notes) created from the tracked `AGENTS.local.example.md`; tracked files name the key ("the `python` interpreter in AGENTS.local.md"), never its value. `docmap.py check` fails on home-directory paths and on paths from the local file in AGENTS.md, shims, READMEs and code headers.
+- **Alternatives:** keep the maintainer's paths in AGENTS.md - wrong on every other machine and the reason the two-interpreter question arose; environment variables only - agents cannot discover them without reading a file anyway.
+- **Consequences:** A new machine needs `python tools/docmap.py local` plus a few answers; `check` warns locally (not in CI) when the local file lacks a key from the example. History (WORKLOG, archive) keeps its original wording.
+- **Evidence / source:** owner's project-foundations skill v4; WORKLOG 2026-10-23.

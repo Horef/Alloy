@@ -23,7 +23,7 @@ knowledge_base/
 !.env.example
 *.pem
 *.key
-CLAUDE.local.md
+*.local.md
 .claude/settings.local.json
 Claude outputs/
 *.egg-info/

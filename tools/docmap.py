@@ -10,6 +10,7 @@ Installed by the project-foundations skill. Commands (run from the repository ro
   python tools/docmap.py uses PATH     what a module imports from the repo and what imports it
   python tools/docmap.py rotate        move WORKLOG entries from earlier months to docs/worklog/YYYY-MM.md
   python tools/docmap.py runs          add local run manifests to the run index (docs/RUNS.md; needs [tool.docmap.runs])
+  python tools/docmap.py local         print what can be detected about this machine, for AGENTS.local.md
 Configuration: optional [tool.docmap] table in pyproject.toml, or docmap.toml (same keys, top level).
 """
 from __future__ import annotations
@@ -33,7 +34,13 @@ DEFAULTS = {
     "indexes": [{"file": "docs/DECISIONS.md", "pattern": r"^## (D\d+)\.\s*(.+)$", "ids": r"\bD[1-9]\d*\b"},
                 {"file": "docs/RESULTS.md", "pattern": r"^#{2,3} (\d+[a-z]?)\.(?!\d)\s*(.+)$"}],  # "5.1" is a subsection, not an entry
     "forbid": [],                       # [{source="pkg", except=["pkg.adapters"], imports=["torch"], reason="..."}]
+    "local": "AGENTS.local.md", "local_example": "AGENTS.local.example.md",  # machine facts (git-ignored) and their template
+    "portable": ["AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md", ".github/instructions/*", ".kiro/steering/*",
+                 "*README.md"],          # scanned for machine-specific paths, as is every code file's header
+    "portable_exempt": [],              # globs skipped by that scan
+    "portable_allow": [],               # paths that are facts about other code, e.g. an upstream hard-coded "/home/someone"
 }
+HOME_PATH = re.compile(r"(?:/Users/|/home/)[\w.-]+|[A-Za-z]:\\Users\\[\w.-]+")
 MONTHS = {m: i for i, m in enumerate("january february march april may june july august september october november december".split(), 1)}
 
 
@@ -377,6 +384,28 @@ def cmd_check(_args):
             for target, _name, line, top in m.imports:
                 if top and any(target == b or target.startswith(b + ".") for b in rule["imports"]):
                     errors.append(f"{m.path}:{line}: imports {target} ({rule.get('reason', 'forbidden by [tool.docmap].forbid')})")
+    local, example = ROOT / CFG["local"], ROOT / CFG["local_example"]
+    if local.exists() and subprocess.run(["git", "check-ignore", "-q", CFG["local"]]).returncode == 1:
+        errors.append(f"{CFG['local']}: holds machine facts but is not git-ignored (add `*.local.md` to .gitignore)")
+    if example.exists() and not os.environ.get("CI"):
+        if not local.exists():
+            warnings.append(f"{CFG['local']} is missing; create it from {CFG['local_example']} (`python tools/docmap.py local`)")
+        elif missing := local_keys(example) - local_keys(local):
+            warnings.append(f"{CFG['local']} lacks {', '.join(sorted(missing))} (see {CFG['local_example']})")
+    by_path, leaks = {m.path: m for m in mods.values()}, local_paths()
+    for f in files:  # tracked files name AGENTS.local.md keys, never this machine's paths
+        if matches(f, CFG["portable_exempt"]):
+            continue
+        if matches(f, CFG["portable"]):
+            text = (ROOT / f).read_text(encoding="utf-8", errors="replace")
+        elif Path(f).suffix in CODE_EXT:
+            text = by_path[f].doc if f in by_path else file_summary(f, {})
+        else:
+            continue
+        text = re.sub(r"https?://\S+", "", text)
+        for hit in sorted(set(HOME_PATH.findall(text)) | {p for p in leaks if p in text}):
+            if hit not in CFG["portable_allow"]:
+                errors.append(f"{f}: machine-specific path {hit}; refer to the {CFG['local']} key instead")
     agents = ROOT / "AGENTS.md"
     if agents.exists() and len(agents.read_text(encoding="utf-8").splitlines()) > CFG["agents_max_lines"]:
         warnings.append(f"AGENTS.md is over {CFG['agents_max_lines']} lines; move detail into folder READMEs or docs/")
@@ -397,6 +426,17 @@ def cmd_check(_args):
         print(f"error: {e}")
     print(f"docmap check: {len(errors)} error(s), {len(warnings)} warning(s)")
     sys.exit(1 if errors else 0)
+
+
+def local_keys(p: Path) -> set[str]:
+    return {m.group(1) for ln in p.read_text(encoding="utf-8").splitlines() if (m := re.match(r"^\s*[-*]\s*([A-Za-z][\w-]*)\s*:", ln))}
+
+
+def local_paths() -> set[str]:
+    """Absolute paths named in AGENTS.local.md (they must not appear in tracked files)."""
+    p = ROOT / CFG["local"]
+    text = p.read_text(encoding="utf-8") if p.exists() else ""
+    return set(re.findall(r"(?<![\w~.:/])(/[^\s`'\",;)]{6,}|[A-Za-z]:\\[^\s`'\",;)]{4,})", text))
 
 
 def exists_exact(p: Path) -> bool:
@@ -571,7 +611,26 @@ def cmd_runs(_args):
     print(f"{out.relative_to(ROOT)}: {len(order)} run(s)")
 
 
-COMMANDS = {"update": cmd_update, "check": cmd_check, "where": cmd_where, "show": cmd_show, "uses": cmd_uses, "rotate": cmd_rotate, "runs": cmd_runs}
+def cmd_local(_args):
+    """Print the machine facts that can be detected, as `- key: value` lines for AGENTS.local.md."""
+    import datetime, getpass, platform, shutil
+    ram = ""
+    try:
+        ram = f", {os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 2**30:.0f} GB RAM"
+    except (AttributeError, ValueError, OSError):  # Windows: no sysconf
+        pass
+    git_user = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True).stdout.strip()
+    print(f"# Detected {datetime.date.today()} by `python tools/docmap.py local`; `python` is the interpreter that ran it.")
+    print(f"# Check each value, ask the user for the keys in {CFG['local_example']} that are not here.")
+    print(f"- machine: {platform.node()} ({platform.system()} {platform.release()}, {platform.machine()}, {os.cpu_count()} CPUs{ram})")
+    print(f"- user: {getpass.getuser()}" + (f" (git: {git_user})" if git_user else ""))
+    print(f"- python: {sys.executable} (Python {platform.python_version()})")
+    print(f"- repo: {ROOT}")
+    print(f"- nvidia_gpu: {'yes (nvidia-smi found)' if shutil.which('nvidia-smi') else 'no'}")
+
+
+COMMANDS = {"update": cmd_update, "check": cmd_check, "where": cmd_where, "show": cmd_show, "uses": cmd_uses, "rotate": cmd_rotate, "runs": cmd_runs,
+            "local": cmd_local}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS or (sys.argv[1] in {"where", "show", "uses"} and len(sys.argv) < 3):

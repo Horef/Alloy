@@ -4,6 +4,19 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-10-23 - Shareable checkout: AGENTS.local.md and project-foundations v4
+Changed: wrote `tools/docmap.py` verbatim from the v4 skill appendix (extracted by script; adds the `local` command, the machine-path scan and local-file key checks). Created the tracked `AGENTS.local.example.md` and this machine's git-ignored `AGENTS.local.md` (from `docmap.py local` and the owner's defaults file); `.gitignore` now ignores `*.local.md`. Removed the interpreter paths from AGENTS.md, the Copilot shim and the README (the README's Homebrew-miniforge path no longer exists); AGENTS.md says `python` and points at the local file, reads it at session start, and gains a row for machine facts (98 lines). Closed the BRIEF two-interpreter question on that evidence. Decisions: D12.
+
+| Verification command | Result |
+|---|---|
+| `python tools/docmap.py check` with the new script, before the fixes | 2 errors: machine-specific path in AGENTS.md and `.github/copilot-instructions.md` |
+| `git grep` for other machine facts (`/opt/`, miniforge, maintainer's machine) | README install, CLI and test commands; fixed |
+| `python tools/docmap.py check` after (locally and with `CI=1`) | 0 errors, 0 warnings |
+| `git check-ignore -v AGENTS.local.md CLAUDE.local.md` | both ignored by `*.local.md`; `AGENTS.local.example.md` is not |
+| `python -m pytest -q` | 340 passed |
+
+Next: check the CI run for this push.
+
 ## 2026-10-23 - Update tools/docmap.py from the skill
 Changed: replaced `tools/docmap.py` verbatim with the owner's updated copy, which includes this session's two fixes plus a letter-case-exact link check (`exists_exact`, so macOS now catches links that only Linux CI used to), link rewriting when `rotate` moves entries, a decision-ID pattern without leading zeros, and a RESULTS pattern that skips subsections. No workarounds to remove: the repo has no ruff configuration, RESULTS index pattern or citation-check override. Added `Claude outputs/` to the repository `.gitignore` as well. Decisions: none.
 

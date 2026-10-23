@@ -31,7 +31,7 @@ bootstrap a chatbot's Hebrew system prompt from the same documents.
 
 ## Open questions (for the owner)
 - [ ] `docs/theme-layer-ab-results.md` quotes Hebrew topic titles derived from the hova/keva corpora. Acceptable in the GitHub repo, or redact?
-- [ ] Two interpreters were documented for the `army` env (`/Users/sergiyhoref/Programming/Army/army/bin/python` in AGENTS.md, `/opt/homebrew/Caskroom/miniforge/base/envs/army/bin/python` formerly in README). AGENTS.md keeps the first; confirm.
+- [x] Two interpreters were documented for the `army` env (one in AGENTS.md, a Homebrew-miniforge one in README). Which is right? - resolved 2026-10-23 from evidence: the README one no longer exists on the maintainer's machine; tracked files now name neither, and the interpreter is the `python` key in the git-ignored `AGENTS.local.md`.
 - [ ] Next priorities after user-facing mode (README lists incremental regeneration, a second-pass quality grader, judge calibration, persistent review workflows).
 - [x] `docs/RUNS.md` (committed) lists local run folders by path, e.g. `hova/outputs/oren-prompt`, whose name may be a person's first name. Acceptable, or should such folders be renamed or the path column dropped? - owner, 2026-10-23: acceptable as is.
 - [x] The untracked local folder `Claude outputs/` (agent prompts and the project-foundations skill) is read by `docmap.py`, which lists untracked files, and adds 4 local-only decision-ID warnings to `check`. Track it elsewhere, add it to `.gitignore`, or leave it? - owner, 2026-10-23: ignored in the maintainer's global git ignore file (`~/.config/git/ignore`), not in the repository.

@@ -8,13 +8,15 @@ documentation map current and checks doc health. Run it from the repository root
 - `python tools/docmap.py update` regenerates `docs/MAP.md`, the generated table in every folder
   README, and the index at the top of `docs/DECISIONS.md`.
 - `python tools/docmap.py check` is the CI gate: stale generated blocks, missing folder
-  descriptions or module docstrings, broken relative links, and forbidden imports fail it.
+  descriptions or module docstrings, broken or wrong-case relative links, forbidden imports, and
+  machine-specific paths in AGENTS.md, the shims, READMEs or code headers fail it.
 - `python tools/docmap.py where NAME`, `show PATH` and `uses PATH` look code up (definition,
   importers, every reference).
 - `python tools/docmap.py runs` adds every local `run_manifest.json` / `report_manifest.json` under
   an `outputs/` folder to `docs/RUNS.md` (run id, start time, command, status, commit). Outputs are
   not committed, so rows from other machines are kept.
 - `python tools/docmap.py rotate` moves work-log entries from earlier months to `docs/worklog/`.
+- `python tools/docmap.py local` prints this machine's detectable facts for `AGENTS.local.md`.
 
 Configuration is the `[tool.docmap]` table in `pyproject.toml`, including the import boundaries
 (`[[tool.docmap.forbid]]`) and the run index (`[tool.docmap.runs]`).

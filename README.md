@@ -77,10 +77,11 @@ For a component-by-component walkthrough with design rationale and research refe
 
 ## Installation
 
-Python 3.11 or newer is required. In the development environment used for this repository:
+Python 3.11 or newer is required. Install Alloy into a dedicated environment (not a base
+interpreter); `python` below means that environment's interpreter:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/army/bin/python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev]'
 cp config.example.toml config.toml
 cp .env.example .env
 ```
@@ -98,7 +99,7 @@ Use either the installed command or the module entry point:
 
 ```bash
 chatbot-eval --help
-/opt/homebrew/Caskroom/miniforge/base/envs/army/bin/python -m chatbot_eval.cli --help
+python -m chatbot_eval.cli --help
 ```
 
 ## Configuration and precedence
@@ -1375,7 +1376,7 @@ protections: documents, questions, answers, and retrieved chunks are untrusted d
 ## Testing
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/army/bin/python -m pytest -q
+python -m pytest -q
 ```
 
 Tests use fake structured LLMs and do not require a Gemini key. They cover quotas, evidence
