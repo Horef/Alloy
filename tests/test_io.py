@@ -1,3 +1,4 @@
+"""Tests for io: lossless CSV/JSONL round trips, formula escaping, provenance checks, safe publishing."""
 import pytest
 
 from chatbot_eval.io import read_questions, write_evaluations, write_questions

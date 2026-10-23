@@ -1,3 +1,4 @@
+"""Tests for evaluator: the classify outcome matrix, fixed-claim recounting, and Evaluator runs."""
 from chatbot_eval.evaluator import Evaluator, apply_fixed_claims, classify
 from chatbot_eval.models import ChatbotResult, ClaimAssessment, ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
 

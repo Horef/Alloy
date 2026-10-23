@@ -1,3 +1,4 @@
+"""End-to-end tests of cli commands with fake models: options, manifests, resume, merge and plans."""
 import json
 from argparse import Namespace
 from types import SimpleNamespace

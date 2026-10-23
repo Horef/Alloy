@@ -1,3 +1,4 @@
+"""Tests for prompt_generator: package validation and repair, bounded evidence, revision traceability."""
 import json
 
 from chatbot_eval.documents import Chunk

@@ -1,3 +1,4 @@
+"""Tests for config.load_settings: defaults, transport keys, and rejection of invalid values."""
 import pytest
 
 from chatbot_eval.config import load_settings

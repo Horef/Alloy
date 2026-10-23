@@ -1,3 +1,8 @@
+"""Tests for generator: quotas, evidence windows, candidate validation, optional checks and variants.
+
+Also covers boundary, broad and user-facing questions, reground, merging, stable IDs and
+concurrency. Fake LLMs return scripted batches; corpora are short synthetic chunks.
+"""
 import re
 from collections import Counter
 

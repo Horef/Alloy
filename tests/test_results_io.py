@@ -1,3 +1,4 @@
+"""Tests for results_io: column aliases and overrides, error rows, metadata, per-row fingerprints."""
 import json
 
 from openpyxl import Workbook

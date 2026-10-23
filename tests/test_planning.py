@@ -1,3 +1,4 @@
+"""Tests for planning: information units, plan quotas and their binding to the graph, `plan` command."""
 import json
 
 import pytest

@@ -1,3 +1,4 @@
+"""Tests for topics.infer_topics: Hebrew labels per batch and harmonization across batches."""
 from chatbot_eval.models import ChatbotResult, SilverQuestion, TopicAssignment, TopicAssignments
 from chatbot_eval.topics import infer_topics
 

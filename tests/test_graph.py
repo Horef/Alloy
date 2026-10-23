@@ -1,3 +1,4 @@
+"""Tests for graph: Hebrew entity normalization, edges, entity and theme clustering, evidence walks."""
 from chatbot_eval.graph import (
     GraphNode,
     KnowledgeGraph,

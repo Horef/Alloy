@@ -1,3 +1,7 @@
+"""Tests for adapters.HttpChatbotAdapter: retries, deadlines, error categories and response checks.
+
+HTTP calls are replaced by monkeypatched `urlopen` fakes; no network.
+"""
 import urllib.error
 from email.message import Message
 

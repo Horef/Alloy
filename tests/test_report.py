@@ -1,3 +1,4 @@
+"""Tests for report: metric populations, variant robustness, anchors, and strict/soft run comparison."""
 from chatbot_eval.models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
 from chatbot_eval.report import build_comparison, build_summary, compare_evaluation_contracts, write_report
 

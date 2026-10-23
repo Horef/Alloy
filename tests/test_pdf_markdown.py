@@ -1,3 +1,8 @@
+"""Tests for pdf_markdown: bidi line order, columns, structure, OCR reporting, Gemini verification.
+
+The PDFs are built at test time (`_pdf`, Helvetica only), so no fonts, LibreOffice or Tesseract
+are needed.
+"""
 import hashlib
 import json
 

@@ -1,3 +1,4 @@
+"""Tests for history loaders: output directories, legacy records, insights status and run contracts."""
 import json
 
 import pytest

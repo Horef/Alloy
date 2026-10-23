@@ -1,3 +1,4 @@
+"""Tests for insights: evidence validation, the prompt budget, and embedding insights in the report."""
 from chatbot_eval.insights import generate_insights, write_insights
 from chatbot_eval.models import (
     ChatbotResult, EvaluationInsights, EvaluationRecord, InsightIssue,

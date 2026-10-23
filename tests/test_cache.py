@@ -1,3 +1,8 @@
+"""Tests for cache.CorpusAnalysisCache: reuse, invalidation by content and fingerprints, and pruning.
+
+Covers every cache kind (chunks, node signals per document, theme vocabulary, graph, question
+topics, insights, prompt packages) with fake extractors that count their calls.
+"""
 import json
 
 import pytest

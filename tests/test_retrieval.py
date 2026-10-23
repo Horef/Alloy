@@ -1,3 +1,4 @@
+"""Tests for retrieval: Hebrew prefix matching, BM25 weighting, dense fusion and embedding fallbacks."""
 from chatbot_eval.documents import Chunk
 from chatbot_eval.llm import EmbeddingCountMismatch
 from chatbot_eval.retrieval import (

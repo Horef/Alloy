@@ -1,3 +1,4 @@
+"""Tests for artifacts: checkpoint resume and contract checks, journal tail repair, manifest redaction."""
 import json
 
 import pytest

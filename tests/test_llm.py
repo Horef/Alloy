@@ -1,3 +1,7 @@
+"""Tests for llm: Gemini client configuration, retries, the seeded call cache, embeddings, media.
+
+The Google GenAI client is replaced by fakes; no network.
+"""
 from chatbot_eval.llm import GeminiStructuredLLM
 from chatbot_eval.models import JudgeScores
 from google.genai import errors

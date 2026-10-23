@@ -1,3 +1,4 @@
+"""Tests for contracts.code_fingerprint: comments, docstrings and layout do not change it."""
 from chatbot_eval.contracts import code_fingerprint
 
 

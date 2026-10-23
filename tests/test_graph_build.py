@@ -1,3 +1,4 @@
+"""Tests for graph_build: per-document signal extraction, theme vocabulary and tagging, topic labels."""
 import re
 
 from chatbot_eval.documents import Chunk
