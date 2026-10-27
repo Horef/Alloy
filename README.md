@@ -615,6 +615,24 @@ chatbot-eval --config config.toml generate \
   --output ./outputs/questions-with-salary
 ```
 
+Add questions for a new document to an existing set: generate from a folder that holds only the new
+document, at the same relative path it has (or will have) under the main corpus root, so its source
+IDs (`<relative path>#chunk-N`) match later `reground`, `revary --documents`, and `add-broad` runs on
+the full corpus. Boundary questions from this run are checked only against the new document (even
+with `verify_unanswerable`), so set the plan's `boundary` quotas to `0`, or review them against the
+whole corpus. In a `user_facing` set, keep `generation.mode = "user_facing"` in the config.
+
+```bash
+mkdir -p ./new_doc_root/<same/subfolder>
+cp ./knowledge_base/<same/subfolder>/new_page.md ./new_doc_root/<same/subfolder>/
+chatbot-eval --config config.toml plan --documents ./new_doc_root --output ./outputs/plan-new-page
+# optional: edit outputs/plan-new-page/generation_plan.json (e.g. boundary quotas to 0)
+chatbot-eval --config config.toml generate --documents ./new_doc_root \
+  --plan ./outputs/plan-new-page/generation_plan.json \
+  --merge-into ./outputs/questions-reviewed/silver_questions.jsonl \
+  --output ./outputs/questions-with-new-page
+```
+
 Exclude previously reviewed, rejected, or deleted questions:
 
 ```bash
