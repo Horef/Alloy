@@ -21,6 +21,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D13 | Generation prompts follow the team-review lessons; optional audience (2026-11-01; status: accepted) |
 | D14 | Provider-neutral model transports; corpus and organisation names removed from tracked files (2026-11-01; status: accepted) |
 | D15 | Plans can be sized by the user-facing set (2026-11-03; status: accepted) |
+| D16 | Personalized questions for synthetic personas from a profile schema (2026-10-27; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -117,3 +118,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** lowering `coverage_target` - cannot go below one question per chunk; hand-editing the plan - error-prone for 100+ topics and loses the derived budgets; a global `max_questions` cap at generation time - would trim topics unevenly.
 - **Consequences:** With a target below the content size, not every chunk is represented; fewer, broader topics (larger `max_cluster_size`) keep per-topic estimates usable.
 - **Evidence / source:** `tests/test_planning.py::test_user_facing_target_scales_canonical_quotas_keeping_ratios`; `docs/design/planning.md`.
+
+## D16. Personalized questions for synthetic personas from a profile schema (2026-10-27; status: accepted)
+- **Context:** The owner wants questions whose answers depend on the user's profile (the fields the chatbot shows: personal details and service data, a list that will grow). The BRIEF excluded personal question types until an allowlisted, masked, auditable data interface existed. The chatbot receives the profile as JSON in its system prompt.
+- **Decision:** Build personal questions only for synthetic personas made by deterministic code from a profile schema file (`profiles.py`, `profile_schema.example.toml`): the schema is the allowlist, synthetic values are the masking, and the personas file will be hashed into run manifests for audit. This supersedes the BRIEF non-goal. Gender and religion may be conditions where documents condition on them (owner). Identifier fields (names, ID number) can never be conditions. Enum lists are provisional (`open_values`) until checked against the chatbot's data. Stages and research: `docs/plans/personalized-questions.md`.
+- **Alternatives:** real profiles through a privacy-controlled adapter - real data would enter caches, prompts and outputs, which the project's data rules forbid; hard-coded fields - every new profile field would need a release; gender and religion as invariance-only - rejected by the owner because some documents condition on them.
+- **Consequences:** `profile-check` validates a schema and a sample profile offline. Generation still rejects personal types until the persona, rule-extraction and question stages exist. Delivering a persona to the chatbot needs an endpoint that accepts a profile (open question in the plan).
+- **Evidence / source:** owner's answers, 2026-10-27; PersonaBench (arXiv 2502.20616) and ProfileFoundry (arXiv 2606.26403) for synthetic personas.

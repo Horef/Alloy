@@ -55,8 +55,8 @@ settings, outputs): [README.md](README.md). Scaffolding: the project-foundations
 
 This project handles internal documents. Never commit or push corpora, outputs, or caches:
 `corpora/`, `knowledge_base/`, `outputs/`, `.chatbot_eval_cache/`, `.env`, `config.toml`,
-`*.pdf`, `*.xlsx`, `*.docx`. They are in `.gitignore` (this machine's own corpus folders are in
-`.git/info/exclude`); check `git status` before every commit and
+`*.pdf`, `*.xlsx`, `*.docx`, `*profile*.json`. They are in `.gitignore` (this machine's own corpus
+folders are in `.git/info/exclude`); check `git status` before every commit and
 never use `git add -f` for them. Never paste corpus text into commit messages, docs, docstrings or
 tests. Tracked files name `AGENTS.local.md` keys, never their values: no absolute paths, user or
 host names (`docmap.py check` flags home paths and the local file's paths).

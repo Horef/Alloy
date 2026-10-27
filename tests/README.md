@@ -33,6 +33,7 @@ The offline pytest suite: one `test_<module>.py` per module in `src/chatbot_eval
 | `test_llm_providers.py` | Tests for llm_providers: the OpenAI-compatible and Bedrock clients, retries, and the transport factory. |  |
 | `test_pdf_markdown.py` | Tests for pdf_markdown: bidi line order, columns, structure, OCR reporting, Gemini verification. |  |
 | `test_planning.py` | Tests for planning: information units, plan quotas and their binding to the graph, `plan` command. |  |
+| `test_profiles.py` | Tests of the profile schema: loading and validation, profile checks without values, derived fields. |  |
 | `test_prompt_generator.py` | Tests for prompt_generator: package validation and repair, bounded evidence, revision traceability. |  |
 | `test_report.py` | Tests for report: metric populations, variant robustness, anchors, and strict/soft run comparison. |  |
 | `test_results_io.py` | Tests for results_io: column aliases and overrides, error rows, metadata, per-row fingerprints. |  |
