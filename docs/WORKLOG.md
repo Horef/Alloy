@@ -4,6 +4,20 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-10-27 - Project foundations (doc lifecycle, FACTS.md); new-document recipe; personalized-questions plan
+Changed: replaced `tools/docmap.py` verbatim with the appendix of the current project-foundations skill (extracted by script; adds Status-line lifecycle checks, the generated `docs/FACTS.md` and the `docs` command). Every doc in `docs/` (ARCHITECTURE, BRIEF, the 18 design files, the theme A/B record as historical) now opens with a Status line; `docs/README.md` and `docs/plans/*` are exempt; `lifecycle_strict = true`. `[tool.docmap.facts]` lists the defaults D2-D4 and D10 talk about. AGENTS.md gains two maintenance rows (100 lines). README Workflow 1 gains a recipe for adding a new document's questions to an existing set (`plan` + `generate --plan --merge-into` on a root holding only the new document at its corpus-relative path). New `docs/plans/personalized-questions.md` (proposed): profile schema, rule extraction, synthetic personas, metamorphic checks, persona delivery to the chatbot, with web research and owner questions; BRIEF links it. Decisions: D13.
+
+Design docs were marked `current (verified 2026-10-27)` on this evidence: no code change since they were split from the reconciled `architecture.md` on 2026-10-23 (`git log -- src`), and a throwaway script found every backticked identifier and file name in ARCHITECTURE and `docs/design/*.md` in `src/`, README or `config.example.toml` (exceptions: example claim IDs `C001`/`C002`). Their prose was not re-read line by line against the code.
+
+| Verification command | Result |
+|---|---|
+| `python tools/docmap.py check` with the new script, before the doc changes | 0 errors, 24 warnings (missing AGENTS.local.md, 23 docs without a Status line) |
+| `python tools/docmap.py check` after (locally and with `CI=1`) | 0 errors, 0 warnings |
+| `python tools/docmap.py docs` | 22 docs, all with a Status line |
+| `python -m pytest -q` (cloud container, Python 3.13 venv) | 340 passed |
+
+Next: owner answers the personalized-questions plan's open questions.
+
 ## 2026-10-23 - Shareable checkout: AGENTS.local.md and project-foundations v4
 Changed: wrote `tools/docmap.py` verbatim from the v4 skill appendix (extracted by script; adds the `local` command, the machine-path scan and local-file key checks). Created the tracked `AGENTS.local.example.md` and this machine's git-ignored `AGENTS.local.md` (from `docmap.py local` and the owner's defaults file); `.gitignore` now ignores `*.local.md`. Removed the interpreter paths from AGENTS.md, the Copilot shim and the README (the README's Homebrew-miniforge path no longer exists); AGENTS.md says `python` and points at the local file, reads it at session start, and gains a row for machine facts (98 lines). Closed the BRIEF two-interpreter question on that evidence. Decisions: D12.
 
