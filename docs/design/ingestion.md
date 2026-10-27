@@ -1,5 +1,7 @@
 # 6. Ingestion and chunking (`documents.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
 Supported inputs are `.txt/.md/.rst`, `.csv` (rows become ` | `-joined lines), `.json/.jsonl`,

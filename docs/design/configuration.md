@@ -1,5 +1,7 @@
 # 4. Configuration and entry points
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 `config.Settings` (`config.py`) is a frozen dataclass loaded from TOML with every value validated up front

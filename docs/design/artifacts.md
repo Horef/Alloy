@@ -1,5 +1,7 @@
 # 17. Artifacts, reliability, and observability (`artifacts.py`, `io.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 - **Atomic writes.** Every final file is written to a temporary file in the same directory, fsynced,

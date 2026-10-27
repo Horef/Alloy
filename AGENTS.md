@@ -80,6 +80,8 @@ against this table before committing, and update docs in the same commit as the 
 | Learn a fact about this machine (path, interpreter, limit, quirk) | `AGENTS.local.md` only; if every machine needs that key, add it to `AGENTS.local.example.md` |
 | Change a default or choose between alternatives | The next D entry in `docs/DECISIONS.md`; to reverse one, add an entry that supersedes it |
 | Start multi-session work | A plan in `docs/plans/` whose first line is `Status: ...`; move it to `docs/archive/` when done |
+| Write or revise a doc in `docs/` (`docmap.py docs` lists the oldest) | Its Status line: `current (verified <today>)`, `proposal (<today>)`, `superseded by D<n>` or `historical` (*guarded*) |
+| Change a default or key value listed in `docs/FACTS.md` | Its source; `docmap.py update` regenerates FACTS.md. Cite FACTS.md instead of copying values (*guarded*) |
 
 `docs/archive/` and `docs/theme-layer-ab-results.md` are dated records. Do not rewrite them; record
 the current state in `docs/design/`. Never describe planned or partial work as done; say how it was

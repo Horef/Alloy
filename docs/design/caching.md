@@ -1,5 +1,7 @@
 # 9. Caching, identity, and invalidation (`cache.py`, `contracts.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## 9.1 What is cached, and by what key

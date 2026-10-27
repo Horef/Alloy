@@ -18,6 +18,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D10 | User-facing generation mode with grounded anchors (2026-10-07; status: accepted) |
 | D11 | Generated project map and a design reference split per component (2026-10-23; status: accepted) |
 | D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
+| D13 | Every doc in docs/ carries an enforced Status line; key defaults in a generated FACTS.md (2026-10-27; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -93,3 +94,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** keep the maintainer's paths in AGENTS.md - wrong on every other machine and the reason the two-interpreter question arose; environment variables only - agents cannot discover them without reading a file anyway.
 - **Consequences:** A new machine needs `python tools/docmap.py local` plus a few answers; `check` warns locally (not in CI) when the local file lacks a key from the example. History (WORKLOG, archive) keeps its original wording.
 - **Evidence / source:** owner's project-foundations skill v4; WORKLOG 2026-10-23.
+
+## D13. Every doc in docs/ carries an enforced Status line; key defaults in a generated FACTS.md (2026-10-27; status: accepted)
+- **Context:** project-foundations v5 adds doc lifecycle checks (dated `Status:` lines, stale-verification and superseded-citation warnings) and a generated facts table. Design docs written as proposals or copied from code can silently turn into stale "facts".
+- **Decision:** Every doc matched by `docs/*.md` (including `docs/design/`) opens with `Status: current (verified DATE) | proposal (DATE) | superseded by D<n> | historical`. `lifecycle_strict = true`: a missing or stale Status line fails `check` and CI. Exempt: `docs/README.md` (its first paragraph feeds the map) and `docs/plans/*` (plans keep their own `Status: proposed | in progress | done` line). `docs/FACTS.md` lists the defaults decisions D2-D4 and D10 talk about, read from `config.py`, `config.example.toml`, `models.py` and `pdf_markdown.py`.
+- **Alternatives:** `lifecycle_strict = false` (the skill's default until every doc has a line) - every doc has one now, and warnings alone were ignored before (D11 context); listing every setting in FACTS.md - the README parameter table already does that and is guarded by `tests/test_docs_consistency.py`.
+- **Consequences:** a "current" doc not re-verified within 60 days, or a proposal open over 30 days, fails CI until someone re-reads it against the code and re-dates it, or marks it superseded/historical.
+- **Evidence / source:** project-foundations skill (2026-10-27 version); WORKLOG 2026-10-27.

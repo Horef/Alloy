@@ -1,5 +1,5 @@
 # Brief
-Updated 2026-10-13. Drawn from README.md; items marked TBD (owner) need Sergiy's confirmation.
+Status: current (verified 2026-10-27). Drawn from README.md; items marked TBD (owner) need Sergiy's confirmation.
 
 ## Goal
 Alloy (`chatbot_eval`) builds evidence-grounded Hebrew evaluation sets ("silver" question sets) from

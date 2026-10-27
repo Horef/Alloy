@@ -35,6 +35,24 @@ testpaths = ["tests"]
 [tool.docmap]
 link_exempt = ["docs/archive/*"]   # dated records; their relative links are historical
 agents_max_lines = 100
+# Doc lifecycle: every doc in docs/ opens with a Status line (plans keep their own "Status: proposed | ..." line).
+lifecycle_exempt = ["docs/README.md", "docs/plans/*"]
+lifecycle_strict = true
+
+# docs/FACTS.md: key defaults read from their source; docs cite it instead of copying values.
+[tool.docmap.facts]
+"code default chunk_chars" = { file = "src/chatbot_eval/config.py", pattern = '"chunk_chars", (\d+)\)', note = "D2" }
+"code default chunk_overlap_chars" = { file = "src/chatbot_eval/config.py", pattern = '"chunk_overlap_chars", (\d+)\)', note = "D2" }
+"example chunk_chars" = { file = "config.example.toml", key = "generation.chunk_chars", note = "D2" }
+"example chunk_overlap_chars" = { file = "config.example.toml", key = "generation.chunk_overlap_chars", note = "D2" }
+"default max_graph_topics" = { file = "src/chatbot_eval/config.py", pattern = '"max_graph_topics", (\d+)\)', note = "D3" }
+"default topic_mode" = { file = "src/chatbot_eval/config.py", pattern = '"topic_mode", "(\w+)"\)', note = "D4" }
+"default generation.mode" = { file = "src/chatbot_eval/config.py", pattern = '"generation", "mode", "(\w+)"\)', note = "D10" }
+"generation modes" = { file = "src/chatbot_eval/models.py", pattern = '^GENERATION_MODES = \((.+)\)' }
+"default max_questions" = { file = "src/chatbot_eval/config.py", pattern = '"max_questions", (\d+)\)' }
+"default generation_model" = { file = "src/chatbot_eval/config.py", pattern = '"generation_model", "([^"]+)"\)' }
+"default judge_model" = { file = "src/chatbot_eval/config.py", pattern = '"judge_model", "([^"]+)"\)' }
+"PDF CONVERTER_VERSION" = { file = "src/chatbot_eval/pdf_markdown.py", pattern = '^CONVERTER_VERSION = (\d+)' }
 
 [[tool.docmap.forbid]]
 source = "chatbot_eval"

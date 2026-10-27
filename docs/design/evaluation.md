@@ -1,5 +1,7 @@
 # 13. Evaluation (`adapters.py`, `results_io.py`, `evaluator.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
 ## 13.1 Getting answers

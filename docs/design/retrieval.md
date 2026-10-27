@@ -1,5 +1,7 @@
 # 8. Retrieval (`retrieval.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
 Retrieval is used wherever evidence must be found *for a specific question* rather than for a topic:

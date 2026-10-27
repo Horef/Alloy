@@ -1,5 +1,7 @@
 # Theme-aware topic layer — live A/B results
 
+Status: historical (live A/B record of 2026-09-23; current design in `design/graph.md`)
+
 Goal of the theme layer: get topic coverage to self-organize so a chatbot requester only has to
 *create and read* — every major theme (the team's example was **שכר / pay**) should surface as its
 own topic automatically, without anyone hand-writing a topic list.

@@ -1,5 +1,7 @@
 # 5. The model layer (`llm.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 The rest of the code depends on one protocol:

@@ -1,5 +1,7 @@
 # 7. The corpus knowledge graph (`graph_build.py`, `graph.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
 ## 7.1 Why a graph at all

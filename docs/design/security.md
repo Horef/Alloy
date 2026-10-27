@@ -1,5 +1,7 @@
 # 18. Security and data handling
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 - Corpora, outputs, caches, `.env`, and `config.toml` are git-ignored; caches contain extracted

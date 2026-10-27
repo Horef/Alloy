@@ -1,5 +1,7 @@
 # 21. References
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 Retrieval-augmented generation, graphs, and topics

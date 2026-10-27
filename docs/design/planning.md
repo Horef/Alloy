@@ -1,5 +1,7 @@
 # 10. Automatic sizing (`planning.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 Most users cannot say how many questions a corpus needs. `plan` measures it instead.

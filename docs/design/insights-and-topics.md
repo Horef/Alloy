@@ -1,5 +1,7 @@
 # 15. Insights and topic inference (`insights.py`, `topics.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 **Insights** (`--generate-insights`) make one call over the aggregate summary plus compact

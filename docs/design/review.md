@@ -1,5 +1,7 @@
 # 12. Human review and set maintenance (`review.py`)
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 Generated questions are silver until reviewed. The review workflow is designed so a reviewer can work

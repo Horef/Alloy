@@ -1,5 +1,7 @@
 # Alloy design: overview
 
+Status: current (verified 2026-10-27)
+
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
 The files in `docs/design/` explain how Alloy (`chatbot_eval`) works internally, component by component, and why

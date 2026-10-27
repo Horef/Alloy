@@ -1,6 +1,6 @@
 # Architecture
 
-Updated 2026-10-23. Only the boundaries and invariants that every change must keep, and an index of
+Status: current (verified 2026-10-27). Only the boundaries and invariants that every change must keep, and an index of
 the design reference. How each component works and why is in [design/](design/overview.md), one
 file per component; the file-level map is generated in [MAP.md](MAP.md). The
 [README](../README.md) is the user manual.
