@@ -19,6 +19,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D11 | Generated project map and a design reference split per component (2026-10-23; status: accepted) |
 | D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
 | D13 | Every doc in docs/ carries an enforced Status line; key defaults in a generated FACTS.md (2026-10-27; status: accepted) |
+| D14 | Personalized questions for synthetic personas from a profile schema (2026-10-27; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -101,3 +102,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** `lifecycle_strict = false` (the skill's default until every doc has a line) - every doc has one now, and warnings alone were ignored before (D11 context); listing every setting in FACTS.md - the README parameter table already does that and is guarded by `tests/test_docs_consistency.py`.
 - **Consequences:** a "current" doc not re-verified within 60 days, or a proposal open over 30 days, fails CI until someone re-reads it against the code and re-dates it, or marks it superseded/historical.
 - **Evidence / source:** project-foundations skill (2026-10-27 version); WORKLOG 2026-10-27.
+
+## D14. Personalized questions for synthetic personas from a profile schema (2026-10-27; status: accepted)
+- **Context:** The owner wants questions whose answers depend on the user's profile (the fields the chatbot shows: personal details and service data, a list that will grow). The BRIEF excluded personal question types until an allowlisted, masked, auditable data interface existed. The chatbot receives the profile as JSON in its system prompt.
+- **Decision:** Build personal questions only for synthetic personas made by deterministic code from a profile schema file (`profiles.py`, `profile_schema.example.toml`): the schema is the allowlist, synthetic values are the masking, and the personas file will be hashed into run manifests for audit. This supersedes the BRIEF non-goal. Gender and religion may be conditions where documents condition on them (owner). Identifier fields (names, ID number) can never be conditions. Enum lists are provisional (`open_values`) until checked against the chatbot's data. Stages and research: `docs/plans/personalized-questions.md`.
+- **Alternatives:** real profiles through a privacy-controlled adapter - real data would enter caches, prompts and outputs, which the project's data rules forbid; hard-coded fields - every new profile field would need a release; gender and religion as invariance-only - rejected by the owner because some documents condition on them.
+- **Consequences:** `profile-check` validates a schema and a sample profile offline. Generation still rejects personal types until the persona, rule-extraction and question stages exist. Delivering a persona to the chatbot needs an endpoint that accepts a profile (open question in the plan).
+- **Evidence / source:** owner's answers, 2026-10-27; PersonaBench (arXiv 2502.20616) and ProfileFoundry (arXiv 2606.26403) for synthetic personas.

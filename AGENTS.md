@@ -50,7 +50,7 @@ settings, outputs): [README.md](README.md).
 
 This project handles internal IDF documents. Never commit or push corpora, outputs, or caches:
 `hova/`, `keva/`, `knowledge_base/`, `outputs/`, `.chatbot_eval_cache/`, `.env`, `config.toml`,
-`*.pdf`, `*.xlsx`, `*.docx`. They are in `.gitignore`; check `git status` before every commit and
+`*.pdf`, `*.xlsx`, `*.docx`, `*profile*.json`. They are in `.gitignore`; check `git status` before every commit and
 never use `git add -f` for them. Never paste corpus text into commit messages, docs, docstrings or
 tests. Tracked files name `AGENTS.local.md` keys, never their values: no absolute paths, user or
 host names (`docmap.py check` flags home paths and the local file's paths).

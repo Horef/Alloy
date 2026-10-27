@@ -27,3 +27,6 @@ knowledge_base/
 .claude/settings.local.json
 Claude outputs/
 *.egg-info/
+
+# Profile JSONs checked with profile-check may be real people's data; never commit them.
+*profile*.json

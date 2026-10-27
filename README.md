@@ -15,6 +15,7 @@ helps managers bootstrap chatbot instructions. It supports these workflows:
 5. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
 6. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
 7. `report`: regenerate a report from completed results, optionally compared with a previous run.
+8. `profile-check`: validate the profile schema that will drive personalized questions (in progress).
 
 Gemini provides structured question generation, answer judging, optional topic inference, and
 optional cross-result insights. The module does not require the existing chatbot fleet; integration
@@ -515,8 +516,9 @@ schema-incompatible entries are logged and recomputed.
 | `personal_basic` | Reserved for direct personal-data questions. | Rejected by document-only generation. |
 | `personal_integration` | Reserved for personal-data plus policy integration. | Rejected by document-only generation. |
 
-Personal types require a future privacy-controlled adapter. The current module will not fabricate
-personal data or infer it from ordinary documents.
+Personal types are not generated yet. They will be built from a profile schema and synthetic personas,
+never real profiles (Workflow 8, `docs/plans/personalized-questions.md`). The current module does not
+invent personal data or infer it from ordinary documents.
 
 ### Question forms and expected behavior
 
@@ -1205,6 +1207,42 @@ chatbot-eval --config config.toml report \
   --output ./outputs/run-002-comparison
 ```
 
+## Workflow 8: check a profile schema (personalized questions, in progress)
+
+Personalized questions (`personal_basic`, `personal_integration`) will be generated for synthetic
+personas whose answers depend on the profile the chatbot receives about its user. The fields are
+described in a schema file, so a new field the chatbot can see takes a schema edit, not a code change.
+Start from `profile_schema.example.toml` (the fields the chatbot shows today, with value lists to
+confirm), set each `key` to the key the chatbot's profile JSON uses, and check it:
+
+```bash
+cp profile_schema.example.toml profile_schema.toml
+chatbot-eval profile-check --schema profile_schema.toml
+chatbot-eval profile-check --schema profile_schema.toml --profile synthetic_profile.json --as-of 2026-10-27
+```
+
+With `--profile`, the command checks a profile JSON against the schema: type and value errors,
+fields missing from the profile, keys the schema does not know, open enum fields holding an unlisted
+value (the value list needs extending), and whether each derived field can be computed. It prints
+field names only, never values, and exits with status 1 when a field has an error. It needs no
+config file and makes no model calls. Use a synthetic profile or your own; never commit one (`*profile*.json` is git-ignored).
+
+| Field setting | Values | Meaning |
+|---|---|---|
+| `key` | text | The chatbot's JSON key; a dotted key (`service.type`) addresses a nested object. |
+| `label`, `group` | text | The Hebrew label and group as the chatbot shows them. |
+| `type` | `enum`, `date`, `bool`, `number`, `text`, `id` | Value type; `enum` needs `values`, `date` takes `date_format` (default `%Y-%m-%d`). |
+| `open_values` | `false` | `true`: the chatbot may hold enum values not listed; personas use only the listed ones. |
+| `sensitivity` | `ordinary`, `special_category`, `identifier` | `id` fields must be `identifier`; identifiers can never be conditions. |
+| `use` | `condition`, `identifier_only`, `excluded` | Whether documents may make answers depend on the field. |
+| `[[derived]]` `derivation` | `years_since`, `months_since`, `days_since`, `days_until` | Computed from a date field against a pinned as-of date (e.g. age, months since discharge). |
+
+| `profile-check` option | Required/default | Meaning |
+|---|---|---|
+| `--schema PATH` | required | Profile schema TOML or JSON. |
+| `--profile PATH` | unset | Profile JSON to check against the schema. |
+| `--as-of DATE` | today | Date (`YYYY-MM-DD`) for derived fields. |
+
 ## Judging logic and outcomes
 
 Gemini receives the question, reference answer, available source evidence, candidate answer, and
@@ -1352,6 +1390,7 @@ only a hash of the live chatbot URL.
 | `planning.py` | Information units and automatic question-set sizing (`generation_plan.json`). |
 | `generator.py` | Quotas, evidence windows, generation, validation, deduplication, variants, broad questions, reground. |
 | `review.py` | Review export and lossless review merge. |
+| `profiles.py` | Profile schema for personalized questions: fields, validation, derived fields. |
 | `validation.py` | Input-boundary normalization and question-set invariants. |
 | `history.py` | Compatible loading of previous evaluations, insights, and current prompts. |
 | `prompt_generator.py` | Document-grounded system-prompt package generation and export. |
@@ -1430,7 +1469,7 @@ confidence intervals, and reporting options.
 - Generation resume replays successful structured responses; it does not attempt to continue from a partially returned model response.
 - Concurrent evaluation is intended only for stateless endpoints and available Gemini/chatbot quota; session-sensitive chatbots should keep the default of one worker.
 - Exclusion is file-based rather than persisted in a review database.
-- Personal types are disabled pending an allowlisted, masked, auditable data interface.
+- Personal types are still rejected by generation. Personalized questions will use synthetic personas built from a profile schema (`docs/plans/personalized-questions.md`); only the schema and `profile-check` exist so far.
 - LLM judges can have style, verbosity, and model-family biases and require human audits.
 - Generated system prompts are starting points and are neither deployed automatically nor security
   controls by themselves.

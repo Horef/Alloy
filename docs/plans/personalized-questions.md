@@ -1,4 +1,4 @@
-Status: proposed (2026-10-27) - needs the owner's answers to the open questions below before any code
+Status: in progress (2026-10-27) - approved by the owner (D14); step 1 (profile schema) done
 
 # Personalized questions: profile-aware generation and evaluation
 
@@ -14,11 +14,11 @@ Profile fields visible to the chatbot as of 2026-10-27 (owner's screenshots), in
 
 | Group | Field (Hebrew label) | Likely type | Role for evaluation |
 |---|---|---|---|
-| Personal details | תאריך לידה | date | condition (via derived age); shown disabled in the screenshot - confirm |
+| Personal details | תאריך לידה | date | condition (via derived age); available (owner, 2026-10-27) |
 | Personal details | שם פרטי | text | identifier only: never a condition |
-| Personal details | מגדר | enum | condition only where a document conditions on it; otherwise an invariance check |
+| Personal details | מגדר | enum | condition where a document conditions on it (owner); otherwise an invariance check |
 | Personal details | שם משפחה | text | identifier only |
-| Personal details | דת | enum | special category: condition only where a document conditions on it; otherwise an invariance check |
+| Personal details | דת | enum | special category; condition where a document conditions on it (owner); otherwise an invariance check |
 | Personal details | מצב משפחתי | enum | condition |
 | Service data | סיום שירות חובה | date | condition (derived: before/after, time since) |
 | Service data | מספר מזהה | id | identifier only: never generated as a real-looking value, never in prompts |
@@ -100,11 +100,15 @@ logic stays out of `cli.py` wiring except for options.
    decisive field (the answer must change) and one that differs only in an `invariance_only` field
    such as דת or מגדר (the answer must not change). The report adds a profile-sensitivity and an
    invariance rate next to the claim metrics.
-6. **Delivering the persona to the chatbot** (adapters). Three strategies, chosen in config:
+6. **Delivering the persona to the chatbot** (adapters). The chatbot receives the profile as JSON
+   inside its system prompt (owner, 2026-10-27), so the persona must replace the logged-in user's
+   profile in that JSON, in the same keys and format. Strategies, chosen in config:
    - `test_accounts`: the chatbot reads the profile of the authenticated user; evaluation logs in as
      pre-provisioned test users whose staging profiles are loaded from `personas.jsonl` (most
      realistic; needs the chatbot team).
-   - `payload`: `HttpChatbotAdapter` sends the persona under a configured dotted `profile_field`.
+   - `payload` (preferred if the endpoint allows it): `HttpChatbotAdapter` sends the persona JSON under
+     a configured dotted `profile_field`, and the chatbot puts it in the system prompt instead of the
+     logged-in user's profile.
    - `in_question`: the persona is written into the question text (tests only reasoning; fallback).
    `ChatbotAdapter.ask` gains an optional persona argument; the judge receives the persona too.
 
@@ -132,12 +136,26 @@ double-reviewed, before personal questions count in any headline metric.
   chunk; start with single-chunk rules and record the rest as a limitation.
 - Persona counts grow with conditions; pairwise coverage and a per-topic cap keep them bounded.
 
+## Owner answers (2026-10-27)
+
+- Profile delivery: the profile is passed as JSON as part of the chatbot's system prompt.
+- Questions may depend on מגדר and דת.
+- תאריך לידה is available (it was only switched off in the screenshot).
+- Value lists, as the owner remembers them and to be confirmed against the chatbot's data:
+  סוג שירות = חובה, קבע, מילואים; מצב משפחתי = רווק, נשוי, אלמן and perhaps more. A web search
+  (2026-10-27) found the population registry's four statuses (רווק, נשוי, גרוש, אלמן) plus פרוד and
+  ידוע בציבור, which forms use but the registry does not record
+  (https://he.wikipedia.org/wiki/%D7%9E%D7%A6%D7%91_%D7%9E%D7%A9%D7%A4%D7%97%D7%AA%D7%99); for service,
+  חובה, קבע and מילואים, with civilian IDF employees as a separate group
+  (https://he.wikipedia.org/wiki/%D7%A9%D7%99%D7%A8%D7%95%D7%AA_%D7%91%D7%A6%D7%94%22%D7%9C). The
+  example schema lists these with `open_values = true`, so unlisted values pass and `profile-check`
+  names the field.
+- The BRIEF non-goal on personal question types is superseded by this design (D14).
+
 ## Open questions (owner)
 
-- [ ] How does the chatbot get the user's profile: authenticated lookup, a request field, or not at all?
-      This decides step 5 and whether test accounts are needed.
-- [ ] May Alloy generate questions conditioned on מגדר and דת where documents condition on them,
-      or should those be invariance-only everywhere?
-- [ ] Is תאריך לידה (disabled in the screenshot) available to the chatbot?
-- [ ] Value domains: the exact values of סוג שירות and מצב משפחתי as the chatbot stores them.
-- [ ] Approve superseding the BRIEF non-goal on personal question types with this synthetic-persona design.
+- [ ] Can the evaluation endpoint take a profile JSON per request (or switch to a test user), so
+      the chatbot puts the persona in its system prompt instead of the logged-in user's profile?
+      This decides step 5.
+- [ ] A synthetic example of the profile JSON exactly as the chatbot inserts it (key names, nesting,
+      date format, gendered values such as רווקה), to set the schema's keys and value lists.

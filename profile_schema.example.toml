@@ -1,0 +1,119 @@
+# Profile schema template: the personal-data fields the chatbot receives about its user.
+# Copy to profile_schema.toml, then replace each `key` with the key the chatbot's profile JSON uses
+# (dotted keys such as "service.type" address nested objects) and confirm every value list.
+# Check it with: chatbot-eval profile-check --schema profile_schema.toml [--profile synthetic.json]
+# Never put a real person's profile in this file; it describes fields, not people.
+#
+# type: enum | date | bool | number | text | id
+# use: condition (documents may make answers depend on it) | identifier_only | excluded
+# sensitivity: ordinary | special_category | identifier (identifiers can never be conditions)
+# open_values = true: the chatbot may hold values not listed (an unconfirmed list); synthetic
+# personas use only the listed values.
+
+version = 1
+
+[[fields]]
+key = "birth_date"
+label = "תאריך לידה"
+group = "פרטים אישיים"
+type = "date"
+date_format = "%Y-%m-%d"
+
+[[fields]]
+key = "first_name"
+label = "שם פרטי"
+group = "פרטים אישיים"
+type = "text"
+sensitivity = "identifier"
+use = "identifier_only"
+
+[[fields]]
+key = "gender"
+label = "מגדר"
+group = "פרטים אישיים"
+type = "enum"
+values = ["זכר", "נקבה"]
+open_values = true
+sensitivity = "special_category"
+
+[[fields]]
+key = "last_name"
+label = "שם משפחה"
+group = "פרטים אישיים"
+type = "text"
+sensitivity = "identifier"
+use = "identifier_only"
+
+[[fields]]
+key = "religion"
+label = "דת"
+group = "פרטים אישיים"
+type = "enum"
+values = ["יהודי", "מוסלמי", "נוצרי", "דרוזי", "אחר"]
+open_values = true
+sensitivity = "special_category"
+
+[[fields]]
+key = "marital_status"
+label = "מצב משפחתי"
+group = "פרטים אישיים"
+type = "enum"
+# The four statuses of the population registry, plus two that the registry does not record but
+# forms and rights often do. Confirm the spelling (and gendered forms) the chatbot's data uses.
+values = ["רווק", "נשוי", "גרוש", "אלמן", "פרוד", "ידוע בציבור"]
+open_values = true
+
+[[fields]]
+key = "mandatory_service_end"
+label = "סיום שירות חובה"
+group = "נתוני שירות"
+type = "date"
+date_format = "%Y-%m-%d"
+
+[[fields]]
+key = "personal_number"
+label = "מספר מזהה"
+group = "נתוני שירות"
+type = "id"
+sensitivity = "identifier"
+use = "identifier_only"
+
+[[fields]]
+key = "discharge_date"
+label = "תאריך שחרור"
+group = "נתוני שירות"
+type = "date"
+date_format = "%Y-%m-%d"
+
+[[fields]]
+key = "service_type"
+label = "סוג שירות"
+group = "נתוני שירות"
+type = "enum"
+values = ["חובה", "קבע", "מילואים"]
+open_values = true
+
+# Derived fields are computed against the question set's pinned as-of date.
+[[derived]]
+key = "age"
+label = "גיל"
+source = "birth_date"
+derivation = "years_since"
+
+[[derived]]
+key = "months_since_mandatory_service_end"
+label = "חודשים מסיום שירות החובה"
+source = "mandatory_service_end"
+derivation = "months_since"
+
+[[derived]]
+key = "months_since_discharge"
+label = "חודשים מהשחרור"
+source = "discharge_date"
+derivation = "months_since"
+
+[[derived]]
+key = "days_until_discharge"
+label = "ימים עד השחרור"
+source = "discharge_date"
+derivation = "days_until"

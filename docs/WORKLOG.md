@@ -4,6 +4,18 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-10-27 - Personalized questions, step 1: profile schema and profile-check
+Changed: owner approved the personalized-questions plan and answered its questions (profile reaches the chatbot as JSON in its system prompt; questions may depend on מגדר and דת; תאריך לידה is available; value lists to confirm). New `profiles.py` (schema loading and validation, profile checks that never print values, derived fields against a pinned date, schema fingerprint), `profile_schema.example.toml` (the ten fields from the owner's screenshots, four derived fields, value lists from a web search marked `open_values`), the offline `profile-check` command, `tests/test_profiles.py`, README Workflow 8 and code map, design section 22 (`docs/design/personalization.md`), security note, BRIEF non-goal superseded, `*profile*.json` git-ignored. Plan status: in progress. Decisions: D14.
+
+| Verification command | Result |
+|---|---|
+| `python -m pytest -q` before the docs (guards) | 2 failed: module and `profile-check` options missing from README/design docs, as intended |
+| `python -m pytest -q` after | 355 passed |
+| `chatbot-eval profile-check --schema profile_schema.example.toml --profile <synthetic JSON> --as-of 2026-10-27` | 10 fields, 4 derived; reported a wrong date format and an unlisted open-enum value by field name only; exit 1 |
+| `python tools/docmap.py check` | 0 errors, 0 warnings |
+
+Next: plan step 2 (synthetic personas); owner sends a synthetic sample of the profile JSON.
+
 ## 2026-10-27 - Project foundations (doc lifecycle, FACTS.md); new-document recipe; personalized-questions plan
 Changed: replaced `tools/docmap.py` verbatim with the appendix of the current project-foundations skill (extracted by script; adds Status-line lifecycle checks, the generated `docs/FACTS.md` and the `docs` command). Every doc in `docs/` (ARCHITECTURE, BRIEF, the 18 design files, the theme A/B record as historical) now opens with a Status line; `docs/README.md` and `docs/plans/*` are exempt; `lifecycle_strict = true`. `[tool.docmap.facts]` lists the defaults D2-D4 and D10 talk about. AGENTS.md gains two maintenance rows (100 lines). README Workflow 1 gains a recipe for adding a new document's questions to an existing set (`plan` + `generate --plan --merge-into` on a root holding only the new document at its corpus-relative path). New `docs/plans/personalized-questions.md` (proposed): profile schema, rule extraction, synthetic personas, metamorphic checks, persona delivery to the chatbot, with web research and owner questions; BRIEF links it. Decisions: D13.
 

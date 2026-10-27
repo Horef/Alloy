@@ -2,7 +2,7 @@
 
 `build_parser()` defines the commands (`generate`, `plan`, `generate-prompt`, `evaluate`,
 `evaluate-file`, `review-export`, `review-merge`, `revary`, `reground`, `add-broad`,
-`convert-pdf`, `report`) and their options. `main(argv)` loads settings, builds the model stack
+`convert-pdf`, `report`, `profile-check`) and their options. `main(argv)` loads settings, builds the model stack
 (`GeminiStructuredLLM`, the seeded call cache, and the generation journal), the corpus cache and the
 chatbot adapter, runs the command, and records it in a run manifest. Commands that need no model do
 not construct a client. Every command and option must appear in the README (a test checks).
@@ -42,6 +42,7 @@ from .llm import CachedStructuredLLM, GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
 from .pdf_markdown import convert_path
+from .profiles import derive, load_profile_schema, missing_keys, profile_errors, unknown_keys, unlisted_value_keys
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .progress import track
@@ -257,7 +258,50 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--insights", type=Path, help="Optional evaluation_insights.json or its output directory")
     report.add_argument("--hide-correct-answer-metrics", action="store_true")
     report.add_argument("--soft-compare", action="store_true", help="Show approximate deltas on matched questions even when the benchmark or evaluation contract changed; warnings remain but are informational")
+
+    profile_check = commands.add_parser(
+        "profile-check", help="Validate a profile schema and, optionally, a synthetic profile JSON against it (offline, no config needed)",
+    )
+    profile_check.add_argument("--schema", type=Path, required=True, help="Profile schema TOML or JSON (see profile_schema.example.toml)")
+    profile_check.add_argument("--profile", type=Path, help="A profile JSON as the chatbot receives it; only field names are printed, never values")
+    profile_check.add_argument("--as-of", help="Date (YYYY-MM-DD) for derived fields; default today")
     return parser
+
+
+def _profile_check(args) -> int:
+    """Print the schema summary and the problems of an optional profile; exit status 1 on problems."""
+    import datetime as dt
+
+    schema = load_profile_schema(args.schema)
+    groups: dict[str, list[str]] = {}
+    for item in schema.fields:
+        groups.setdefault(item.group or "-", []).append(f"{item.key} ({item.type}, {item.use})")
+    print(f"Schema {args.schema}: {len(schema.fields)} fields, {len(schema.derived)} derived, "
+          f"{len(schema.condition_keys())} usable as conditions.")
+    for group, items in groups.items():
+        print(f"  {group}: " + ", ".join(items))
+    if schema.derived:
+        print("  derived: " + ", ".join(f"{item.key} ({item.derivation} {item.source})" for item in schema.derived))
+    if not args.profile:
+        return 0
+    profile = json.loads(args.profile.read_text(encoding="utf-8"))
+    if not isinstance(profile, dict):
+        raise ValueError(f"{args.profile}: a profile must be a JSON object")
+    as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
+    errors = profile_errors(schema, profile)
+    derived = derive(schema, profile, as_of)
+    print(f"Profile {args.profile}: {len(errors)} problem(s).")
+    for error in errors:
+        print(f"  error: {error}")
+    if missing := missing_keys(schema, profile):
+        print("  missing (allowed): " + ", ".join(missing))
+    if unlisted := unlisted_value_keys(schema, profile):
+        print("  value not in the listed values (open_values, so allowed; extend the list?): " + ", ".join(unlisted))
+    if extra := unknown_keys(schema, profile):
+        print("  not in the schema: " + ", ".join(extra))
+    if derived:
+        print(f"  derived at {as_of}: " + ", ".join(f"{key} {'ok' if value is not None else 'not computable'}" for key, value in derived.items()))
+    return 1 if errors else 0
 
 
 def _add_cache_arguments(parser: argparse.ArgumentParser) -> None:
@@ -638,6 +682,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--retry-errors requires --resume")
     if args.command == "generate" and args.resume and args.refresh_cache:
         raise ValueError("generate --resume cannot be combined with --refresh-cache; start a fresh run instead")
+    if args.command == "profile-check":
+        return _profile_check(args)
     _ensure_config(args.config)
     offline_commands = {"report", "review-export", "review-merge"}
     if args.command == "convert-pdf":
