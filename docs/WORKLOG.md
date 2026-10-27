@@ -4,6 +4,17 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-10-27 - Personalized questions, step 2: personas; schema follows the platform
+Changed: read the chatbot platform server's preProd code the owner shared (kept in the session scratchpad, not in this repository). The profile reaches the model as a `label: value, ...` line built on the server from the signed-in user's record, appended to the system prompt and prefixed to the retrieval query; the release-date, end-of-mandatory-service and ID toggles are never sent; the dataset-evaluation upload passes no user line. The example schema now uses the platform's keys and labels (`מין`, `סטטוס`), marks the unsent fields `excluded`, and gives age `sample_values`. `profiles.py` gains `sample_values`, enum-object descriptions and `render_user_info`. New `personas.py` and `personas` command: greedy pairwise covering array over the condition values, exact derived targets, fake identifiers. README Workflow 8, design section 22, plan (steps 1-2 done) updated. Proposed a three-file platform patch for a per-row `פרטי משתמש` column (given to the owner, not compiled). Decisions: D15 (provisional).
+
+| Verification command | Result |
+|---|---|
+| `python -m pytest -q` (Python 3.13 venv; and a Python 3.11 venv in the scratchpad) | 388 passed |
+| `chatbot-eval personas --schema profile_schema.example.toml --as-of 2026-10-27` | 30 personas, 139/139 value pairs (full product 540; 30 is the minimum for domains of 6 and 5) |
+| `python tools/docmap.py check` | 0 errors, 0 warnings |
+
+Next: plan step 3 (rule extraction); platform team decides on the upload column.
+
 ## 2026-10-27 - Personalized questions, step 1: profile schema and profile-check
 Changed: owner approved the personalized-questions plan and answered its questions (profile reaches the chatbot as JSON in its system prompt; questions may depend on מגדר and דת; תאריך לידה is available; value lists to confirm). New `profiles.py` (schema loading and validation, profile checks that never print values, derived fields against a pinned date, schema fingerprint), `profile_schema.example.toml` (the ten fields from the owner's screenshots, four derived fields, value lists from a web search marked `open_values`), the offline `profile-check` command, `tests/test_profiles.py`, README Workflow 8 and code map, design section 22 (`docs/design/personalization.md`), security note, BRIEF non-goal superseded, `*profile*.json` git-ignored. Plan status: in progress. Decisions: D14.
 

@@ -1,26 +1,22 @@
-# Profile schema template: the personal-data fields the chatbot receives about its user.
-# Copy to profile_schema.toml, then replace each `key` with the key the chatbot's profile JSON uses
-# (dotted keys such as "service.type" address nested objects) and confirm every value list.
+# Profile schema template: the personal-data fields the chatbot platform puts in its prompt.
+# Copy to profile_schema.toml and confirm every value list against real (non-committed) data.
 # Check it with: chatbot-eval profile-check --schema profile_schema.toml [--profile synthetic.json]
 # Never put a real person's profile in this file; it describes fields, not people.
 #
+# Keys and labels follow the platform server (preProd code read 2026-10-27): it renders the enabled
+# fields as "label: value, label: value" after "להלן פרטי המשתמש:" in the system prompt, using the
+# labels below (מין and סטטוס, not the admin screen's מגדר and מצב משפחתי) and an enum's description.
+#
 # type: enum | date | bool | number | text | id
-# use: condition (documents may make answers depend on it) | identifier_only | excluded
+# use: condition (documents may make answers depend on it) | identifier_only | excluded (not sent)
 # sensitivity: ordinary | special_category | identifier (identifiers can never be conditions)
-# open_values = true: the chatbot may hold values not listed (an unconfirmed list); synthetic
-# personas use only the listed values.
+# open_values = true: the platform may hold values not listed; personas use only the listed ones.
+# sample_values: values personas take for a date or number field, or for a derived field.
 
 version = 1
 
 [[fields]]
-key = "birth_date"
-label = "תאריך לידה"
-group = "פרטים אישיים"
-type = "date"
-date_format = "%Y-%m-%d"
-
-[[fields]]
-key = "first_name"
+key = "firstName"
 label = "שם פרטי"
 group = "פרטים אישיים"
 type = "text"
@@ -28,8 +24,16 @@ sensitivity = "identifier"
 use = "identifier_only"
 
 [[fields]]
+key = "lastName"
+label = "שם משפחה"
+group = "פרטים אישיים"
+type = "text"
+sensitivity = "identifier"
+use = "identifier_only"
+
+[[fields]]
 key = "gender"
-label = "מגדר"
+label = "מין"
 group = "פרטים אישיים"
 type = "enum"
 values = ["זכר", "נקבה"]
@@ -37,12 +41,12 @@ open_values = true
 sensitivity = "special_category"
 
 [[fields]]
-key = "last_name"
-label = "שם משפחה"
+key = "birthDate"
+label = "תאריך לידה"
 group = "פרטים אישיים"
-type = "text"
-sensitivity = "identifier"
-use = "identifier_only"
+type = "date"
+# The platform prints the database string as is; confirm its format.
+date_format = "%Y-%m-%d"
 
 [[fields]]
 key = "religion"
@@ -54,66 +58,57 @@ open_values = true
 sensitivity = "special_category"
 
 [[fields]]
-key = "marital_status"
-label = "מצב משפחתי"
+key = "tashFamilyStatus"
+label = "סטטוס"
 group = "פרטים אישיים"
 type = "enum"
-# The four statuses of the population registry, plus two that the registry does not record but
-# forms and rights often do. Confirm the spelling (and gendered forms) the chatbot's data uses.
+# The population registry's four statuses plus two that forms use; confirm the platform's spelling.
 values = ["רווק", "נשוי", "גרוש", "אלמן", "פרוד", "ידוע בציבור"]
 open_values = true
 
 [[fields]]
-key = "mandatory_service_end"
-label = "סיום שירות חובה"
-group = "נתוני שירות"
-type = "date"
-date_format = "%Y-%m-%d"
-
-[[fields]]
-key = "personal_number"
-label = "מספר מזהה"
-group = "נתוני שירות"
-type = "id"
-sensitivity = "identifier"
-use = "identifier_only"
-
-[[fields]]
-key = "discharge_date"
-label = "תאריך שחרור"
-group = "נתוני שירות"
-type = "date"
-date_format = "%Y-%m-%d"
-
-[[fields]]
-key = "service_type"
+key = "serviceType"
 label = "סוג שירות"
 group = "נתוני שירות"
 type = "enum"
 values = ["חובה", "קבע", "מילואים"]
 open_values = true
 
+# The admin screen has toggles for these three, but the platform neither fetches nor labels them,
+# so they never reach the prompt. Switch `use` to "condition" (ID: "identifier_only") once it does.
+[[fields]]
+key = "id"
+label = "מספר מזהה"
+group = "נתוני שירות"
+type = "id"
+sensitivity = "identifier"
+use = "excluded"
+
+[[fields]]
+key = "releaseDate"
+label = "תאריך שחרור"
+group = "נתוני שירות"
+type = "date"
+use = "excluded"
+
+[[fields]]
+key = "endHovaService"
+label = "סיום שירות חובה"
+group = "נתוני שירות"
+type = "date"
+use = "excluded"
+
 # Derived fields are computed against the question set's pinned as-of date.
 [[derived]]
 key = "age"
 label = "גיל"
-source = "birth_date"
+source = "birthDate"
 derivation = "years_since"
+sample_values = [18, 21, 26]
 
-[[derived]]
-key = "months_since_mandatory_service_end"
-label = "חודשים מסיום שירות החובה"
-source = "mandatory_service_end"
-derivation = "months_since"
-
-[[derived]]
-key = "months_since_discharge"
-label = "חודשים מהשחרור"
-source = "discharge_date"
-derivation = "months_since"
-
-[[derived]]
-key = "days_until_discharge"
-label = "ימים עד השחרור"
-source = "discharge_date"
-derivation = "days_until"
+# Once releaseDate and endHovaService reach the prompt, add for example:
+# [[derived]]
+# key = "months_since_release"
+# label = "חודשים מהשחרור"
+# source = "releaseDate"
+# derivation = "months_since"

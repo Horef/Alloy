@@ -20,6 +20,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
 | D13 | Every doc in docs/ carries an enforced Status line; key defaults in a generated FACTS.md (2026-10-27; status: accepted) |
 | D14 | Personalized questions for synthetic personas from a profile schema (2026-10-27; status: accepted) |
+| D15 | Profiles follow the chatbot platform's user line; personas reach it through the evaluation upload (2026-10-27; status: provisional - confirm with owner and the platform team) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -109,3 +110,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** real profiles through a privacy-controlled adapter - real data would enter caches, prompts and outputs, which the project's data rules forbid; hard-coded fields - every new profile field would need a release; gender and religion as invariance-only - rejected by the owner because some documents condition on them.
 - **Consequences:** `profile-check` validates a schema and a sample profile offline. Generation still rejects personal types until the persona, rule-extraction and question stages exist. Delivering a persona to the chatbot needs an endpoint that accepts a profile (open question in the plan).
 - **Evidence / source:** owner's answers, 2026-10-27; PersonaBench (arXiv 2502.20616) and ProfileFoundry (arXiv 2606.26403) for synthetic personas.
+
+## D15. Profiles follow the chatbot platform's user line; personas reach it through the evaluation upload (2026-10-27; status: provisional - confirm with owner and the platform team)
+- **Context:** The owner described the profile as JSON in the system prompt. The platform server's preProd code (shared by the owner, read 2026-10-27, not stored here) shows otherwise: the server reads the signed-in user's record, keeps the fields enabled for the chatbot, renders them as one `label: value, ...` line with its own labels (`מין`, `סטטוס`, ...) and enum descriptions, appends it to the system prompt and prefixes it to the retrieval query. Release date, end of mandatory service and ID have toggles but are never fetched or labelled. The dataset-evaluation upload calls the chatbot with no user line.
+- **Decision:** The schema uses the platform's keys and printed labels; `render_user_info` reproduces the line, and each persona stores it. Fields the platform does not send are `use = "excluded"` and left out of personas. For evaluation, propose to the platform team one optional per-row `פרטי משתמש` column in the dataset-evaluation upload, passed as the user line of that row's call; Alloy would write that file and judge the downloaded answers with `evaluate-file`.
+- **Alternatives:** keys from the admin screen (`מגדר`, `מצב משפחתי`) - not what the model sees; test accounts whose records hold the personas - needs records in the user databases for every persona; writing the persona into the question - tests reasoning but not the platform's profile path, kept as a fallback; a per-request profile field on the chat endpoint - needs authentication handling per persona and the same platform change.
+- **Consequences:** Personalized evaluation waits on a small platform change; generation (plan steps 3 and 4) does not. When the platform adds fields or changes labels, the schema must follow; recheck section 22.1.
+- **Evidence / source:** platform server preProd code (user-info line, model field toggles, dataset-evaluation service), read 2026-10-27; owner's answers.

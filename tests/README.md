@@ -31,6 +31,7 @@ The offline pytest suite: one `test_<module>.py` per module in `src/chatbot_eval
 | `test_io.py` | Tests for io: lossless CSV/JSONL round trips, formula escaping, provenance checks, safe publishing. |  |
 | `test_llm.py` | Tests for llm: Gemini client configuration, retries, the seeded call cache, embeddings, media. |  |
 | `test_pdf_markdown.py` | Tests for pdf_markdown: bidi line order, columns, structure, OCR reporting, Gemini verification. |  |
+| `test_personas.py` | Tests of synthetic personas: pairwise coverage, determinism, derived targets, fake identifiers. |  |
 | `test_planning.py` | Tests for planning: information units, plan quotas and their binding to the graph, `plan` command. |  |
 | `test_profiles.py` | Tests of the profile schema: loading and validation, profile checks without values, derived fields. |  |
 | `test_prompt_generator.py` | Tests for prompt_generator: package validation and repair, bounded evidence, revision traceability. |  |

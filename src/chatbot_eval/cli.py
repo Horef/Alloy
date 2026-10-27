@@ -2,7 +2,7 @@
 
 `build_parser()` defines the commands (`generate`, `plan`, `generate-prompt`, `evaluate`,
 `evaluate-file`, `review-export`, `review-merge`, `revary`, `reground`, `add-broad`,
-`convert-pdf`, `report`, `profile-check`) and their options. `main(argv)` loads settings, builds the model stack
+`convert-pdf`, `report`, `profile-check`, `personas`) and their options. `main(argv)` loads settings, builds the model stack
 (`GeminiStructuredLLM`, the seeded call cache, and the generation journal), the corpus cache and the
 chatbot adapter, runs the command, and records it in a run manifest. Commands that need no model do
 not construct a client. Every command and option must appear in the README (a test checks).
@@ -42,6 +42,7 @@ from .llm import CachedStructuredLLM, GeminiStructuredLLM
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
 from .pdf_markdown import convert_path
+from .personas import pair_coverage, synthesize_personas, write_personas
 from .profiles import derive, load_profile_schema, missing_keys, profile_errors, unknown_keys, unlisted_value_keys
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
@@ -265,7 +266,40 @@ def build_parser() -> argparse.ArgumentParser:
     profile_check.add_argument("--schema", type=Path, required=True, help="Profile schema TOML or JSON (see profile_schema.example.toml)")
     profile_check.add_argument("--profile", type=Path, help="A profile JSON as the chatbot receives it; only field names are printed, never values")
     profile_check.add_argument("--as-of", help="Date (YYYY-MM-DD) for derived fields; default today")
+
+    personas = commands.add_parser(
+        "personas", help="Write deterministic synthetic personas covering the profile schema's condition values (offline, no config needed)",
+    )
+    personas.add_argument("--schema", type=Path, required=True, help="Profile schema TOML or JSON")
+    personas.add_argument("--output", type=Path, default=Path("outputs/personas"), help="Destination for personas.jsonl and personas_summary.json")
+    personas.add_argument("--as-of", help="Date (YYYY-MM-DD) the personas' derived values hold at; default today. Pin it: answers depend on it")
+    personas.add_argument("--seed", type=int, default=0, help="Seed of the covering-array search")
+    personas.add_argument("--strength", type=int, choices=[1, 2], default=2, help="1: every value appears; 2: every pair of values of two fields appears")
+    personas.add_argument("--max-personas", type=int, default=200, help="Upper bound; combinations left uncovered are reported")
     return parser
+
+
+def _personas(args) -> int:
+    """Write personas.jsonl and personas_summary.json for a schema."""
+    import datetime as dt
+
+    schema = load_profile_schema(args.schema)
+    as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
+    if args.max_personas < 1:
+        raise ValueError("--max-personas must be positive")
+    personas, diagnostics = synthesize_personas(
+        schema, as_of, seed=args.seed, strength=args.strength, max_personas=args.max_personas,
+    )
+    covered, total = pair_coverage(schema, personas)
+    diagnostics["value_pairs_covered"] = {"covered": covered, "total": total}
+    path = write_personas(personas, args.output / "personas.jsonl")
+    summary = args.output / "personas_summary.json"
+    atomic_write_text(summary, json.dumps(diagnostics, ensure_ascii=False, indent=2) + "\n")
+    print(f"Wrote {len(personas)} synthetic personas over {len(diagnostics['dimensions'])} condition fields "
+          f"({covered}/{total} value pairs covered) as of {as_of}.\nPersonas: {path}\nSummary: {summary}")
+    if diagnostics["uncovered_combinations"]:
+        print(f"Note: {diagnostics['uncovered_combinations']} combinations left uncovered; raise --max-personas.")
+    return 0
 
 
 def _profile_check(args) -> int:
@@ -684,6 +718,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("generate --resume cannot be combined with --refresh-cache; start a fresh run instead")
     if args.command == "profile-check":
         return _profile_check(args)
+    if args.command == "personas":
+        return _personas(args)
     _ensure_config(args.config)
     offline_commands = {"report", "review-export", "review-merge"}
     if args.command == "convert-pdf":

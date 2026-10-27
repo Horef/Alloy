@@ -32,7 +32,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `adapters.py` | Chatbot adapters: the only way evaluation reaches a live chatbot. | `cli`, `evaluator`, `review_probes`, `test_adapters` |
 | `artifacts.py` | Run artifacts: atomic writes, resumable JSONL journals, and run manifests. | `cache`, `cli`, `history`, `insights` (+8) |
 | `cache.py` | Content-addressed local cache for corpus analysis and other expensive stage outputs. | `cli`, `test_cache`, `test_cli`, `theme_ab_probe` |
-| `cli.py` | Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. | `review_probes`, `test_cli`, `test_docs_consistency`, `test_pdf_markdown` (+3) |
+| `cli.py` | Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. | `review_probes`, `test_cli`, `test_docs_consistency`, `test_pdf_markdown` (+4) |
 | `config.py` | Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment. | `artifacts`, `cli`, `test_artifacts`, `test_cli` (+2) |
 | `contracts.py` | Small nonsecret identities for model-derived artifacts and evaluation records. | `cache`, `cli`, `evaluator`, `generator` (+8) |
 | `documents.py` | Corpus ingestion: reads supported documents and splits them into structure-aware chunks. | `cache`, `generator`, `graph`, `graph_build` (+12) |
@@ -48,8 +48,9 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `logging_utils.py` | Logging setup: console plus optional file handler, with SDK transport chatter quieted. | `cli` |
 | `models.py` | Pydantic data contracts shared by every component. | `adapters`, `artifacts`, `cache`, `cli` (+33) |
 | `pdf_markdown.py` | PDF to Markdown conversion for LLM processing, with Hebrew (right-to-left) support. | `cli`, `documents`, `test_llm`, `test_pdf_markdown` |
+| `personas.py` | Synthetic personas: deterministic, obviously fake profiles covering the schema's condition values. | `cli`, `test_personas` |
 | `planning.py` | Heuristic sizing of a question set from what a knowledge base actually contains. | `cli`, `config`, `generator`, `test_cli` (+1) |
-| `profiles.py` | Profile schema: the personal-data fields a chatbot sees about its user, described as data. | `cli`, `test_profiles` |
+| `profiles.py` | Profile schema: the personal-data fields a chatbot sees about its user, described as data. | `cli`, `personas`, `test_personas`, `test_profiles` |
 | `progress.py` | Progress bars (`track`) that show elapsed time and can be switched off with `--no-progress`. | `cli`, `documents`, `evaluator`, `generator` (+3) |
 | `prompt_generator.py` | Drafts a reviewable Hebrew chatbot system prompt package from the corpus and prior results. | `cli`, `test_prompt_generator` |
 | `prompt_policy.py` | Versioned, model-independent behavioral guidance assembled outside the LLM. | `cache`, `cli`, `prompt_generator`, `test_cache` (+1) |

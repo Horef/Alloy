@@ -1,4 +1,4 @@
-Status: in progress (2026-10-27) - approved by the owner (D14); step 1 (profile schema) done
+Status: in progress (2026-10-27) - approved by the owner (D14); steps 1 (profile schema) and 2 (personas) done; platform facts in D15
 
 # Personalized questions: profile-aware generation and evaluation
 
@@ -10,7 +10,9 @@ generation today), so a chatbot that reads the user's profile is evaluated on wh
 documents to *that* user. The set of profile fields is data, not code: adding a field the chatbot can
 see should take a schema edit, not a release.
 
-Profile fields visible to the chatbot as of 2026-10-27 (owner's screenshots), in two groups:
+Profile fields visible to the chatbot as of 2026-10-27 (owner's screenshots), in two groups. The
+platform's own keys, printed labels and which fields actually reach the prompt are in
+`docs/design/personalization.md` (section 22.1): the last three service fields do not, yet.
 
 | Group | Field (Hebrew label) | Likely type | Role for evaluation |
 |---|---|---|---|
@@ -100,9 +102,14 @@ logic stays out of `cli.py` wiring except for options.
    decisive field (the answer must change) and one that differs only in an `invariance_only` field
    such as דת or מגדר (the answer must not change). The report adds a profile-sensitivity and an
    invariance rate next to the claim metrics.
-6. **Delivering the persona to the chatbot** (adapters). The chatbot receives the profile as JSON
-   inside its system prompt (owner, 2026-10-27), so the persona must replace the logged-in user's
-   profile in that JSON, in the same keys and format. Strategies, chosen in config:
+6. **Delivering the persona to the chatbot** (adapters). The platform renders the enabled profile
+   fields as one `label: value, ...` line appended to the system prompt and prefixed to the retrieval
+   query (platform code, D15), so a persona must reach that same code path as its rendered line
+   (`Persona.user_info`). The platform's dataset-evaluation upload passes no user line today. Proposed
+   platform change (D15, provisional): an optional `פרטי משתמש` column in the upload, read with the
+   question and expected answer and passed as the user line of that row's chatbot call; Alloy then
+   writes the upload file with that column and judges the downloaded answers with `evaluate-file`.
+   Other strategies, if that change is not made:
    - `test_accounts`: the chatbot reads the profile of the authenticated user; evaluation logs in as
      pre-provisioned test users whose staging profiles are loaded from `personas.jsonl` (most
      realistic; needs the chatbot team).
@@ -114,10 +121,11 @@ logic stays out of `cli.py` wiring except for options.
 
 ## Steps (each a tested commit; the first two need no model calls)
 
-1. `profiles.py` + schema validation + `config.example.toml` keys + tests with a synthetic schema;
-   D entry superseding the BRIEF non-goal (owner).
-2. `personas.py`: partitioning, boundary dates, pairwise array; property tests (every rule has a
-   satisfying and a violating persona; identifiers never look real).
+1. Done 2026-10-27: `profiles.py`, `profile_schema.example.toml`, `profile-check`, tests; D14
+   superseding the BRIEF non-goal. No setting yet: the schema path becomes one with step 4.
+2. Done 2026-10-27: `personas.py` and the `personas` command: pairwise covering array over the
+   condition values, derived targets (age) through exact source dates, fake identifiers, tests.
+   Rule-driven boundary values and cross-field constraints arrive with step 3.
 3. `conditions.py` with a fake LLM in tests; cache key includes the schema hash.
 4. Generator stage, `SilverQuestion` fields, review-export columns (`persona_readable`), README.
 5. Adapter strategies and judge input; `evaluate` options; README tables (guarded).
@@ -152,10 +160,18 @@ double-reviewed, before personal questions count in any headline metric.
   names the field.
 - The BRIEF non-goal on personal question types is superseded by this design (D14).
 
+Second round (2026-10-27): the owner shared the platform server's preProd code (not stored in this
+repository); the direct evaluation endpoint has no default profile and the owner believes it can
+accept one, with insertion happening only in the frontend; סיום שירות חובה is a date. The code shows
+the profile line is built on the server from the signed-in user's record (the frontend only asks for
+it per message), and the dataset-evaluation path passes none (section 22.1).
+
 ## Open questions (owner)
 
-- [ ] Can the evaluation endpoint take a profile JSON per request (or switch to a test user), so
-      the chatbot puts the persona in its system prompt instead of the logged-in user's profile?
-      This decides step 5.
-- [ ] A synthetic example of the profile JSON exactly as the chatbot inserts it (key names, nesting,
-      date format, gendered values such as רווקה), to set the schema's keys and value lists.
+- [ ] Platform team: add the per-row `פרטי משתמש` column to the dataset-evaluation upload (step 5),
+      or name another way to run the chatbot with a given user line.
+- [ ] Platform team: should the release-date, end-of-mandatory-service and ID toggles reach the
+      prompt? Today they are configurable but never sent.
+- [ ] The exact value strings of gender, religion, family status and service type as the user
+      databases return them (descriptions, possibly gendered), and the birth-date string format.
+      `profile-check --profile` on one real record, run locally, lists the mismatches by field name.

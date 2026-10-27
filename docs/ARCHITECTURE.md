@@ -74,7 +74,7 @@ By convention (reviewed, not tested):
 17. [Artifacts, reliability, and observability (`artifacts.py`, `io.py`)](design/artifacts.md)
 18. [Security and data handling](design/security.md)
 19. [Known limitations](design/limitations.md)
-22. [Personalization (`profiles.py`)](design/personalization.md)
+22. [Personalization (`profiles.py`, `personas.py`)](design/personalization.md)
 
 Section 22 was added after the split. Section 21, [References](design/references.md), lists the works cited as [R1], [R2], and so on.
 Sections keep their original numbers, so "section 9" still means caching. The original section 20,
