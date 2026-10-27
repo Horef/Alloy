@@ -7,7 +7,7 @@ import pytest
 
 from chatbot_eval import cli
 from chatbot_eval.profiles import (
-    ProfileSchema, derive, load_profile_schema, missing_keys, profile_errors, profile_value,
+    ProfileSchema, derive, load_profile_schema, missing_keys, profile_errors, profile_value, render_user_info,
     schema_errors, schema_fingerprint, unknown_keys, unlisted_value_keys,
 )
 
@@ -37,9 +37,11 @@ def _schema(**extra) -> ProfileSchema:
 def test_example_schema_loads_and_keeps_identifiers_out_of_conditions():
     schema = load_profile_schema(EXAMPLE)
     identifiers = {item.key for item in schema.fields if item.sensitivity == "identifier"}
-    assert identifiers == {"first_name", "last_name", "personal_number"}
+    assert identifiers == {"firstName", "lastName", "id"}
     assert not identifiers & set(schema.condition_keys())
-    assert {"gender", "religion", "marital_status", "service_type", "age"} <= set(schema.condition_keys())
+    assert {"gender", "religion", "tashFamilyStatus", "serviceType", "age"} <= set(schema.condition_keys())
+    # The platform does not send these yet, so nothing may condition on them.
+    assert not {"releaseDate", "endHovaService"} & set(schema.condition_keys())
 
 
 @pytest.mark.parametrize("field, message", [
@@ -113,10 +115,44 @@ def test_fingerprint_changes_with_the_schema_only():
 
 def test_profile_check_command_prints_field_names_and_fails_on_problems(tmp_path, capsys):
     profile = tmp_path / "synthetic.json"
-    profile.write_text(json.dumps({"gender": "נקבה", "discharge_date": "01/12/2026", "marital_status": "רווקה"}), encoding="utf-8")
+    profile.write_text(json.dumps({"gender": "נקבה", "birthDate": "01/12/2004", "tashFamilyStatus": "רווקה"}), encoding="utf-8")
     assert cli.main(["profile-check", "--schema", str(EXAMPLE)]) == 0
     code = cli.main(["profile-check", "--schema", str(EXAMPLE), "--profile", str(profile), "--as-of", "2026-10-27"])
     out = capsys.readouterr().out
     assert code == 1
-    assert "discharge_date: not a date" in out and "marital_status" in out
-    assert "01/12/2026" not in out and "רווקה" not in out
+    assert "birthDate: not a date" in out and "tashFamilyStatus" in out
+    assert "01/12/2004" not in out and "רווקה" not in out
+
+
+def test_platform_enum_objects_yield_their_description():
+    schema = _schema()
+    profile = {"service": {"type": {"code": "2", "description": "קבע"}}}
+    assert profile_value(profile, "service.type") == "קבע"
+    assert profile_errors(schema, profile) == []
+
+
+def test_render_user_info_matches_the_platform_line_and_skips_excluded_fields():
+    schema = _schema()
+    schema.fields[4].use = "excluded"
+    profile = {"pn": "000000000", "status": "נשוי", "service": {"type": {"code": "1", "description": "חובה"}}}
+    assert render_user_info(schema, profile) == "סוג שירות: חובה, מצב משפחתי: נשוי"
+    assert render_user_info(schema, {}) is None
+
+
+@pytest.mark.parametrize("field, message", [
+    ({"key": "d", "label": "x", "type": "date", "sample_values": ["31/12/2000"]}, "dates in date_format"),
+    ({"key": "n", "label": "x", "type": "number", "sample_values": ["3"]}, "must be numbers"),
+    ({"key": "e", "label": "x", "type": "enum", "values": ["a", "b"], "sample_values": ["a"]}, "only date and number"),
+])
+def test_sample_values_are_validated(field, message):
+    schema = ProfileSchema.model_validate({"fields": [field]})
+    assert any(message in error for error in schema_errors(schema))
+
+
+def test_derived_sample_values_cannot_duplicate_or_go_negative():
+    schema = _schema()
+    schema.fields[2].sample_values = ["01/01/2000"]
+    schema.derived[0].sample_values = [-1]
+    errors = schema_errors(schema)
+    assert any("not both" in error for error in errors)
+    assert any("cannot be negative" in error for error in errors)

@@ -9,9 +9,10 @@ Usage: `load_profile_schema(path)` reads TOML or JSON and raises `ValueError` li
 `profile_errors(schema, profile)` checks a profile dict without echoing its values (with
 `missing_keys`, `unknown_keys` and `unlisted_value_keys` for the rest of a field-by-field check);
 `derive(schema, profile, as_of)` computes the derived fields against a pinned date;
-`schema_fingerprint(schema)` is the cache identity of the schema.
+`render_user_info(schema, profile)` writes the "label: value, ..." line the chatbot platform puts in
+its system prompt; `schema_fingerprint(schema)` is the cache identity of the schema.
 
-Contracts: no LLM and no I/O beyond reading the schema file. Keys are the chatbot's own JSON keys;
+Contracts: no LLM and no I/O beyond reading the schema file. Keys are the chatbot platform's own keys;
 a dotted key (`service.type`) addresses a nested object. Identifier fields (names, ID numbers) can
 never be conditions. Error messages name fields, never values, so a real profile checked locally
 does not leak into logs.
@@ -46,6 +47,9 @@ class ProfileField(BaseModel):
     sensitivity: Sensitivity = "ordinary"
     use: FieldUse = "condition"
     date_format: str = "%Y-%m-%d"
+    # Values synthetic personas may take for a date or number field (dates in `date_format`); enum
+    # and bool fields use their whole domain. A field with neither is left out of personas.
+    sample_values: list[str | int | float] = Field(default_factory=list)
 
 
 class DerivedField(BaseModel):
@@ -53,6 +57,8 @@ class DerivedField(BaseModel):
     label: str
     source: str = Field(description="Key of the date field this is computed from")
     derivation: Derivation
+    # Values personas may take (e.g. ages); personas set the source date so the field has that value.
+    sample_values: list[int] = Field(default_factory=list)
 
 
 class ProfileSchema(BaseModel):
@@ -99,12 +105,25 @@ def schema_errors(schema: ProfileSchema) -> list[str]:
                 errors.append(f"{name}: date_format does not round-trip a date")
         elif item.date_format != "%Y-%m-%d":
             errors.append(f"{name}: only date fields take date_format")
+        if item.sample_values:
+            if item.type == "date":
+                if any(_parse_date(item, value) is None for value in item.sample_values):
+                    errors.append(f"{name}: sample_values must be dates in date_format")
+            elif item.type == "number":
+                if any(isinstance(value, (str, bool)) for value in item.sample_values):
+                    errors.append(f"{name}: sample_values must be numbers")
+            else:
+                errors.append(f"{name}: only date and number fields take sample_values")
     for item in schema.derived:
         source = schema.field(item.source)
         if not item.label.strip():
             errors.append(f"{item.key}: label is empty")
         if source is None or source.type != "date" or source.use == "excluded":
             errors.append(f"{item.key}: source {item.source!r} must be a date field that is not excluded")
+        elif source.sample_values and item.sample_values:
+            errors.append(f"{item.key}: give sample_values on the derived field or on {item.source!r}, not both")
+        if item.derivation in {"years_since", "months_since"} and any(value < 0 for value in item.sample_values):
+            errors.append(f"{item.key}: completed years/months sample_values cannot be negative")
     if not schema.fields:
         errors.append("the schema has no fields")
     return errors
@@ -134,14 +153,21 @@ def schema_fingerprint(schema: ProfileSchema) -> str:
 
 
 def profile_value(profile: dict, key: str, default: Any = None) -> Any:
-    """Value at `key` (dotted keys address nested objects), or `default` when absent."""
+    """Value at `key` (dotted keys address nested objects), or `default` when absent.
+
+    A `{"code": ..., "description": ...}` object (how the platform's user databases return enums)
+    yields its description, which is what the platform shows the model.
+    """
     if key in profile:
-        return profile[key]
-    value: Any = profile
-    for part in key.split("."):
-        if not isinstance(value, dict) or part not in value:
-            return default
-        value = value[part]
+        value = profile[key]
+    else:
+        value = profile
+        for part in key.split("."):
+            if not isinstance(value, dict) or part not in value:
+                return default
+            value = value[part]
+    if isinstance(value, dict) and "description" in value:
+        return value["description"]
     return value
 
 
@@ -175,6 +201,22 @@ def profile_errors(schema: ProfileSchema, profile: dict) -> list[str]:
             hint = {"enum": "not one of the schema's values", "date": f"not a date in format {item.date_format}"}
             errors.append(f"{item.key}: {hint.get(item.type, 'wrong type for ' + item.type)}")
     return errors
+
+
+def render_user_info(schema: ProfileSchema, profile: dict) -> str | None:
+    """The profile as the chatbot platform puts it in the prompt: "label: value, label: value".
+
+    Mirrors the platform's user-info string (fields in schema order, excluded and absent fields
+    skipped, booleans as JavaScript prints them); None when no field is present.
+    """
+    parts = []
+    for item in schema.fields:
+        value = profile_value(profile, item.key)
+        if item.use == "excluded" or value is None:
+            continue
+        text = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        parts.append(f"{item.label}: {text}")
+    return ", ".join(parts) or None
 
 
 def unlisted_value_keys(schema: ProfileSchema, profile: dict) -> list[str]:
