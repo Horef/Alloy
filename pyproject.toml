@@ -34,7 +34,17 @@ testpaths = ["tests"]
 # tools/docmap.py: project map, code lookups and doc-health checks (see tools/README.md).
 [tool.docmap]
 link_exempt = ["docs/archive/*"]   # dated records; their relative links are historical
-agents_max_lines = 100
+agents_max_lines = 120
+
+# docs/FACTS.md: key defaults read from the shipped config; docs cite it instead of copying the value.
+[tool.docmap.facts]
+"generation model" = { file = "config.example.toml", key = "gemini.generation_model" }
+"judge model" = { file = "config.example.toml", key = "gemini.judge_model" }
+"sampling seed" = { file = "config.example.toml", key = "gemini.seed" }
+"max questions" = { file = "config.example.toml", key = "generation.max_questions" }
+"chunk size (chars)" = { file = "config.example.toml", key = "generation.chunk_chars" }
+"topic mode" = { file = "config.example.toml", key = "generation.topic_mode" }
+"unanswerable ratio" = { file = "config.example.toml", key = "generation.unanswerable_ratio" }
 
 [[tool.docmap.forbid]]
 source = "chatbot_eval"

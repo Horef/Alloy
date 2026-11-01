@@ -1,4 +1,5 @@
 # 12. Human review and set maintenance (`review.py`)
+Status: current (verified 2026-10-23)
 
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 

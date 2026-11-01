@@ -3,7 +3,8 @@
 Alloy (`chatbot_eval`) generates evidence-grounded Hebrew evaluation sets from a document corpus
 and judges internal chatbots against them. It is **not** a source of ground truth: silver questions
 need domain review. Goal, non-goals and open questions: `docs/BRIEF.md`. User manual (workflows,
-settings, outputs): [README.md](README.md).
+settings, outputs): [README.md](README.md). Scaffolding: the project-foundations skill (version in
+`tools/docmap.py`, `DOCMAP_VERSION`).
 
 ## Start of every session
 
@@ -11,7 +12,9 @@ settings, outputs): [README.md](README.md).
 2. Read `AGENTS.local.md` (git-ignored): this machine's interpreter, limits and quirks. If it is
    missing, create it from `AGENTS.local.example.md` with `python tools/docmap.py local` and the user's answers.
 3. Read `docs/STATUS.md` and skim the latest entry in `docs/WORKLOG.md`.
-4. Before changing a default or design choice, check `docs/DECISIONS.md` (index at the top).
+4. Before changing a default or design choice, find the decision with `python tools/docmap.py find <topic>`
+   and read it with `python tools/docmap.py get D<n>`. Never read `docs/DECISIONS.md` or the archived
+   work-log months whole: they only grow.
 
 ## Finding your way
 
@@ -80,6 +83,11 @@ against this table before committing, and update docs in the same commit as the 
 | Learn a fact about this machine (path, interpreter, limit, quirk) | `AGENTS.local.md` only; if every machine needs that key, add it to `AGENTS.local.example.md` |
 | Change a default or choose between alternatives | The next D entry in `docs/DECISIONS.md`; to reverse one, add an entry that supersedes it |
 | Start multi-session work | A plan in `docs/plans/` whose first line is `Status: ...`; move it to `docs/archive/` when done |
+| Write or substantially revise a doc in `docs/` | Its Status line: `current (verified <today>)`, `proposal (<today>)`, `superseded by <id>` or `historical`; a decided proposal is superseded by its D entry |
+| Change a default or key number listed in `[tool.docmap.facts]` | Its source (`config.example.toml`); `docmap.py update` regenerates `docs/FACTS.md`; docs cite FACTS.md rather than copying the value |
+| Supersede a decision | The old entry's heading says `superseded by D<n>`; fix the live docs that `check` then lists |
+| Find that this scaffolding itself (a template rule, the docs layout, a `docmap.py` check or command) misleads you, is missing something or costs too much | Nothing here: send it to the skill that installed it, `python3 "$(cat ~/.config/strange-loop/genome)/plugins/strange-loop/skills/strange-loop/scripts/loop.py" note project-foundations <kind> "<what happened, what would have helped>" --context Alloy` (if that fails and the person takes part in improving their skills, an `Observations for project-foundations` block in your reply) |
+| Reach a milestone (a result merged, a phase closed) | A docs audit: `python tools/docmap.py docs`; re-read the oldest or affected docs against code, DECISIONS and RESULTS, fix them and re-date their Status lines |
 
 `docs/archive/` and `docs/theme-layer-ab-results.md` are dated records. Do not rewrite them; record
 the current state in `docs/design/`. Never describe planned or partial work as done; say how it was
@@ -93,6 +101,6 @@ These instructions load into every session, so a wrong or missing line costs eve
   that was not written down, or an instruction that turned out wrong), fix this file or the folder
   README in the same change and mention it in the commit body.
 - Prefer a guard to prose: a test in `tests/test_docs_consistency.py` or a `[tool.docmap]` rule
-  instead of another sentence. `docmap.py check` warns when this file exceeds 100 lines.
+  instead of another sentence. `docmap.py check` warns when this file exceeds 120 lines.
 - Keep entries short, specific, and checkable: a command, a path, or a rule. Folder-specific rules
   belong in that folder's README, project knowledge in `docs/`.

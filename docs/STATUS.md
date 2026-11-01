@@ -1,11 +1,11 @@
 # Status
-Updated 2026-10-23. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
+Updated 2026-11-01. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
 
 ## Works (verified)
 | Capability | How verified |
 |---|---|
 | All CLI workflows (`convert-pdf`, `plan`, `generate`, `review-export`/`review-merge`, `reground`, `revary`, `add-broad`, `evaluate`, `evaluate-file`, `generate-prompt`, `report`) | Offline suite with fake LLMs: `python -m pytest -q` → **340 passed** in 1.9 s, 2026-10-23 (`python` from `AGENTS.local.md`, Python 3.13) |
-| Project map and doc checks (`tools/docmap.py`, skill v4) | `python tools/docmap.py check` → 0 errors, 0 warnings, locally and with `CI=1`, 2026-10-23 |
+| Project map and doc checks (`tools/docmap.py`, skill 5.3.0) | `python tools/docmap.py check` → 0 errors, 0 warnings, 2026-11-01; every doc in `docs/` has a Status line (verified dates are last-edit dates, not a fresh read) |
 | Shareable checkout: machine facts only in the git-ignored `AGENTS.local.md` | `git check-ignore -v AGENTS.local.md` → `*.local.md`; `docmap.py check` finds no home paths in AGENTS.md, shims, READMEs or code headers, 2026-10-23 |
 | Import boundaries (only `llm.py` imports the Gemini SDK; nothing imports `cli.py`) | `docmap.py check` (forbid rules), 2026-10-23 |
 | Run index | `python tools/docmap.py runs` → 16 local runs in `docs/RUNS.md`, 2026-10-23 |
@@ -21,9 +21,10 @@ Updated 2026-10-23. Snapshot only - overwrite each session; history is in `docs/
 - Exclusion lists are files, not a review database.
 
 ## Next actions
-1. Check the GitHub Actions run for this update (docmap now also scans for machine paths).
-2. Owner: answer the remaining open questions in `docs/BRIEF.md`.
-3. TBD (owner): next feature priority.
+1. Check the GitHub Actions run for this update (docmap 5.3.0).
+2. Re-verify the design docs against the code at the next milestone (`python tools/docmap.py docs`), then set `lifecycle_strict = true`.
+3. Owner: answer the remaining open questions in `docs/BRIEF.md`.
+4. TBD (owner): next feature priority.
 
 ## Blockers
 - None recorded.

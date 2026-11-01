@@ -1,4 +1,5 @@
 # Brief
+Status: current (verified 2026-10-23)
 Updated 2026-10-13. Drawn from README.md; items marked TBD (owner) need Sergiy's confirmation.
 
 ## Goal

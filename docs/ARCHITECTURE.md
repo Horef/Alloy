@@ -1,4 +1,5 @@
 # Architecture
+Status: current (verified 2026-10-23)
 
 Updated 2026-10-23. Only the boundaries and invariants that every change must keep, and an index of
 the design reference. How each component works and why is in [design/](design/overview.md), one
