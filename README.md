@@ -208,6 +208,7 @@ log_level = "INFO"
 | `generation.broad_corpus_questions` | `2` | Corpus-level broad questions. |
 | `generation.broad_population_limit` | `8` | Most population-level broad questions; only populations the documents explicitly address are used. |
 | `generation.broad_min_key_points` | `3` | Fewest confirmed key points a broad question keeps. A correct answer must name about half of them (`min_key_points`, at least 2). |
+| `generation.audience` | `""` | Who the chatbot serves, in free text (at most 500 characters). When set, canonical and boundary generation is told to ask only what this audience would ask and to skip content that concerns only other populations. |
 | `generation.questions_per_call` | `8` | Most questions requested from one model call. A larger topic quota is spread over more, smaller evidence windows instead of one oversized request. |
 | `generation.context_nodes` | `4` | Neighbor chunks shown with each focus window as context for integration questions; questions are based mainly on the window's focus chunks. |
 | `generation.closed_book_check` | `off` | `tag` marks questions a model answers fully without the documents (`closed_book_answerable=true`) and keeps them; `reject` drops them. Rejecting removes legitimate questions whose answers are also public, so `tag` is recommended. Costs two small calls per canonical candidate. |

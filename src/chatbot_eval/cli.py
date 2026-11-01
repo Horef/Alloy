@@ -1083,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
                 "embedding_model": settings.embedding_model,
                 "verify_unanswerable": settings.verify_unanswerable,
                 "closed_book_check": settings.closed_book_check,
+                "audience": settings.audience,
                 "seed": settings.seed,
                 "continue_on_call_failure": settings.continue_on_call_failure,
                 "cache_enabled": cache.enabled, "refresh_cache": cache.refresh,
@@ -1130,6 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
                 broad_corpus_questions=settings.broad_corpus_questions,
                 broad_population_limit=settings.broad_population_limit,
                 broad_min_key_points=settings.broad_min_key_points,
+                audience=settings.audience,
                 concurrency=settings.max_concurrency if args.max_concurrency is None else args.max_concurrency,
             )
             # The knowledge graph is built (incrementally) before the question-generation calls, and

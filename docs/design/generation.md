@@ -93,6 +93,18 @@ The feedback in the prompt turns retries into targeted repairs rather than re-ro
 relaxation exists so a window that cannot support, say, a `cross_document` question still fills its
 quota instead of leaving a shortfall.
 
+**Prompt rules from team review (November 2026).** The hova and keva review teams edited or rejected
+questions in recurring ways, so the canonical prompt now asks for: answers phrased as the chatbot's
+reply, with no "the document says" references (reviewers asked what "במסמך מצוין" meant); answers that
+cover only what was asked (reviewers deleted facts appended from a second document, often in
+`cross_document` answers); the application channel, approver and limiting conditions when the evidence
+states them (the most common addition); one need per question; and no trivia from lists, calendars or
+tables. Boundary answers are addressed to the user and refer to the responsible office or channel when
+the evidence names one. The optional `generation.audience` setting adds one line restricting both
+prompts to the population the chatbot serves (keva reviewers flagged questions that belonged to the
+compulsory-service set). Prompt text is part of the call-cache key, so cached generation calls are
+not reused after this change.
+
 ## 11.5 `validate_candidate`: the grounding contract
 
 An answerable candidate is accepted only if all of the following hold:

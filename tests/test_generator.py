@@ -458,6 +458,38 @@ def test_requested_topic_also_scopes_boundary_questions():
     assert {question.topic for question in questions} == {"נושא א"}
 
 
+def test_audience_restricts_canonical_and_boundary_prompts_only_when_set():
+    def run(audience):
+        prompts = []
+
+        class FakeLLM:
+            def generate(self, prompt, schema, model):
+                prompts.append(prompt)
+                if "boundary questions" in prompt:
+                    return QuestionBatch(questions=[GeneratedQuestion(
+                        question="מה לגבי מקרה שאין במסמך?", expected_answer="המידע אינו זמין", answerable=False,
+                        difficulty="medium", rationale="גבול", source_ids=["a#1"], reference_claims=[],
+                        question_type=QuestionType.UNANSWERABLE,
+                    )])
+                return QuestionBatch(questions=[_candidate()])
+
+        chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם")]
+        SilverSetGenerator(FakeLLM(), "test").generate(
+            chunks,
+            GenerationOptions(
+                max_questions=2, batch_chunks=1, min_topic_questions=1, max_topic_share=1,
+                unanswerable_ratio=0.5, max_candidate_rounds=1, audience=audience,
+            ),
+            bundle=_bundle(chunks, [("נושא", 5, ["a#1"])]),
+        )
+        return prompts
+
+    restricted = run("משרתי קבע")
+    assert len(restricted) == 2
+    assert all("AUDIENCE: the chatbot serves משרתי קבע." in prompt for prompt in restricted)
+    assert not any("AUDIENCE:" in prompt for prompt in run(""))
+
+
 def _answerable_question():
     return SilverQuestion(
         id="Q0001", topic="נושא", question="מהו הסכום?", expected_answer="הסכום הוא 100 שקלים",

@@ -96,6 +96,7 @@ class Settings:
     broad_corpus_questions: int = 2
     broad_population_limit: int = 8
     broad_min_key_points: int = 3
+    audience: str = ""
     retry_deadline_seconds: float = 0.0
     conversion_backend: str = "local"
     conversion_model: str = "gemini-3.1-flash-lite"
@@ -142,6 +143,8 @@ class Settings:
             errors.append("evaluation.canonical_scoring must be gap, include, or exclude")
         if min(self.broad_corpus_questions, self.broad_population_limit) < 0 or not 1 <= self.broad_min_key_points <= 8:
             errors.append("generation.broad_* counts must be non-negative and broad_min_key_points in [1, 8]")
+        if len(self.audience) > 500:
+            errors.append("generation.audience must be at most 500 characters")
         if not 1 <= self.questions_per_call <= 20:
             errors.append("generation.questions_per_call must be in [1, 20]")
         if self.context_nodes < 0:
@@ -386,6 +389,7 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         broad_corpus_questions=int(_get(data, "generation", "broad_corpus_questions", 2)),
         broad_population_limit=int(_get(data, "generation", "broad_population_limit", 8)),
         broad_min_key_points=int(_get(data, "generation", "broad_min_key_points", 3)),
+        audience=" ".join(str(_get(data, "generation", "audience", "")).split()),
         retry_deadline_seconds=float(_get(data, "evaluation", "retry_deadline_seconds", 0.0)),
         conversion_backend=str(_get(data, "conversion", "backend", "local")).strip().lower(),
         conversion_model=str(_get(data, "conversion", "model", "gemini-3.1-flash-lite")).strip(),

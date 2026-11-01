@@ -18,6 +18,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D10 | User-facing generation mode with grounded anchors (2026-10-07; status: accepted) |
 | D11 | Generated project map and a design reference split per component (2026-10-23; status: accepted) |
 | D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
+| D13 | Generation prompts follow the team-review lessons; optional audience (2026-11-01; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -93,3 +94,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** keep the maintainer's paths in AGENTS.md - wrong on every other machine and the reason the two-interpreter question arose; environment variables only - agents cannot discover them without reading a file anyway.
 - **Consequences:** A new machine needs `python tools/docmap.py local` plus a few answers; `check` warns locally (not in CI) when the local file lacks a key from the example. History (WORKLOG, archive) keeps its original wording.
 - **Evidence / source:** owner's project-foundations skill v4; WORKLOG 2026-10-23.
+
+## D13. Generation prompts follow the team-review lessons; optional audience (2026-11-01; status: accepted)
+- **Context:** The hova and keva review teams (373 and 595 reviewed rows) repeatedly removed "במסמך מצוין" phrasing, deleted facts appended from unrelated documents, added how-to-apply/approver details, rejected list and calendar trivia, and flagged keva questions that belonged to the compulsory-service set. Nine keva rejections were intent duplicates, but their embedding similarity (0.82-0.91) overlaps that of distinct variants (80% have a neighbour at 0.84 or more), so no duplicate threshold separates them.
+- **Decision:** The canonical and boundary prompts state those rules (design/generation.md section 11.4). Boundary answers address the user and name the responsible channel when the evidence does. A new `generation.audience` setting (default empty, no prompt change) restricts both prompts to the chatbot's population. The duplicate threshold is unchanged.
+- **Alternatives:** a post-hoc LLM filter for each rule - one more call per question for issues a prompt rule prevents; lowering `semantic_duplicate_threshold` - would drop most distinct variants.
+- **Consequences:** Cached generation calls are not reused (prompt text is in the call key). Sets generated before and after differ in answer style, which matters when comparing runs by boundary or `cross_document` share.
+- **Evidence / source:** `{hova,keva}/outputs/review-final-20261101/` review history; WORKLOG 2026-11-01.

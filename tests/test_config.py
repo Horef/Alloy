@@ -202,3 +202,12 @@ def test_optional_generation_checks_default_off_and_are_validated(tmp_path):
     bad_path.write_text("[generation]\nsemantic_duplicate_threshold = 1.5\nvariation_batch_size = 0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="semantic_duplicate_threshold.*variation_batch_size"):
         load_settings(bad_path, require_api_key=False)
+
+
+def test_audience_is_whitespace_normalized_and_bounded(tmp_path):
+    path = tmp_path / "audience.toml"
+    path.write_text('[generation]\naudience = "  משרתי   קבע\\n ומשפחותיהם "\n', encoding="utf-8")
+    assert load_settings(path, require_api_key=False).audience == "משרתי קבע ומשפחותיהם"
+    path.write_text(f'[generation]\naudience = "{"א" * 501}"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="generation.audience"):
+        load_settings(path, require_api_key=False)
