@@ -102,7 +102,7 @@ def test_manifest_redacts_apigee_api_key(tmp_path, monkeypatch):
 [gemini]
 transport = "apigee"
 apigee_api_key_env = "TEST_APIGEE_KEY"
-apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+apigee_base_url = "https://gateway.example.com/v1/team"
 """,
         encoding="utf-8",
     )

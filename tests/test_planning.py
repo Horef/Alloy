@@ -12,14 +12,14 @@ from chatbot_eval.planning import (
 
 
 def _chunk(chunk_id: str, statements: int) -> Chunk:
-    text = " ".join(f"החייל זכאי להטבה מספר {i} בתנאים מסוימים." for i in range(statements))
+    text = " ".join(f"העובד זכאי להטבה מספר {i} בתנאים מסוימים." for i in range(statements))
     return Chunk(chunk_id, chunk_id.split("#")[0], "d", text)
 
 
 def test_information_units_count_distinct_statements():
     assert information_units("") == 0
     assert information_units("קצר") == 1
-    text = "- **חייל בודד** זכאי למענק חודשי קבוע.\n- חייל בודד זכאי למענק חודשי קבוע.\n- הזכאות נבדקת פעם בשנה בלשכה."
+    text = "- **עובד בודד** זכאי למענק חודשי קבוע.\n- עובד בודד זכאי למענק חודשי קבוע.\n- הזכאות נבדקת פעם בשנה בלשכה."
     assert information_units(text) == 2
 
 
@@ -135,7 +135,7 @@ def test_plan_command_writes_an_editable_plan(tmp_path, monkeypatch):
 
     bundle = GraphBundle(KnowledgeGraph([], []), [GraphTopic("נושא", "", 3, [c.id for c in chunks])])
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "build_llm", lambda *args, **kwargs: object())
     monkeypatch.setattr(cli, "_analysis_cache", lambda *args, **kwargs: Cache())
     monkeypatch.setattr(cli, "_build_graph_bundle", lambda *args, **kwargs: bundle)
 

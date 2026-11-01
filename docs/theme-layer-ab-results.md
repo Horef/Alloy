@@ -12,7 +12,7 @@ changes the per-document cache key); after that both graphs rebuild cheaply.
 
 Run against the live gateway (`gemini-3.7-flash`, `--max-concurrency 6`).
 
-## hova
+## corpus A
 
 | | entity mode (default) | theme mode (opt-in) |
 |---|---|---|
@@ -21,11 +21,11 @@ Run against the live gateway (`gemini-3.7-flash`, `--max-concurrency 6`).
 | largest topic | 29 chunks | 15 chunks |
 | שכר as its own topic | only a thin 1-chunk topic | yes — "רמות פעילות ותוספות שכר" (grouped) |
 
-Entity mode fragments hova into a swarm of singletons plus one 29-chunk lump; pay is barely visible.
+Entity mode fragments corpus A into a swarm of singletons plus one 29-chunk lump; pay is barely visible.
 Theme mode organizes the corpus into 10 balanced, human-legible themes with no giant topic, and pay
 is a first-class topic.
 
-## keva
+## corpus B
 
 | | entity mode (default) | theme mode (opt-in) |
 |---|---|---|
@@ -48,11 +48,11 @@ Theme mode remains **opt-in** (`topic_mode = "theme"`); entity mode stays the de
 runs are unchanged. Enable theme mode on corpora where coverage of every theme matters more than
 tight entity cohesion.
 
-## Full hova question-generation run (theme mode) vs the previous entity run
+## Full corpus A question-generation run (theme mode) vs the previous entity run
 
-Beyond the topic-map probe, a complete `generate` was run on hova in theme mode
-(`hova/outputs/questions-kb-theme`, 300 questions) and compared to the previous entity-mode run
-(`hova/outputs/questions-kb`, 295 questions). Both used the same 85-node graph and a 12-topic budget.
+Beyond the topic-map probe, a complete `generate` was run on corpus A in theme mode
+(`corpus_a/outputs/questions-kb-theme`, 300 questions) and compared to the previous entity-mode run
+(`corpus_a/outputs/questions-kb`, 295 questions). Both used the same 85-node graph and a 12-topic budget.
 
 **Topic balance (from generation diagnostics):**
 
@@ -69,7 +69,7 @@ Beyond the topic-map probe, a complete `generate` was run on hova in theme mode
 ("בקשות תנאי שירות...") and another 45 in "זכויות פרט, תשלומים והיתרי עבודה" — over half the set in
 two broad buckets, with pay folded inside them. The theme run spread questions far more evenly: the
 largest topic held 42 of 300 (14%) and the twelve topics are human-legible, non-overlapping subjects
-(economic aid, lone soldiers, attendance/command authority, leave, service length, legal counsel,
+(economic aid, special-population benefits, attendance/command authority, leave, service length, legal counsel,
 welfare, travel reimbursement, discharge, dietary provision, housing, mental health).
 
 **Takeaway:** on a real generation, theme mode produced a more balanced, better-organized question

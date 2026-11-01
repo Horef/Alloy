@@ -253,7 +253,7 @@ def _implementation_hash() -> str:
 
 def _dependency_versions() -> dict[str, str]:
     installed = {}
-    for package in ("google-genai", "httpx", "requests", "pydantic"):
+    for package in ("google-genai", "boto3", "httpx", "requests", "pydantic"):
         try:
             installed[package] = version(package)
         except PackageNotFoundError:
@@ -274,6 +274,7 @@ class RunManifest:
         safe_settings = asdict(settings)
         safe_settings.pop("api_key", None)
         safe_settings.pop("apigee_api_key", None)
+        safe_settings.pop("openai_api_key", None)
         self.path = output_dir / ("report_manifest.json" if command == "report" else "run_manifest.json")
         self.data: dict[str, Any] = {
             "schema_version": 1,

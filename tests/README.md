@@ -30,6 +30,7 @@ The offline pytest suite: one `test_<module>.py` per module in `src/chatbot_eval
 | `test_insights.py` | Tests for insights: evidence validation, the prompt budget, and embedding insights in the report. |  |
 | `test_io.py` | Tests for io: lossless CSV/JSONL round trips, formula escaping, provenance checks, safe publishing. |  |
 | `test_llm.py` | Tests for llm: Gemini client configuration, retries, the seeded call cache, embeddings, media. |  |
+| `test_llm_providers.py` | Tests for llm_providers: the OpenAI-compatible and Bedrock clients, retries, and the transport factory. |  |
 | `test_pdf_markdown.py` | Tests for pdf_markdown: bidi line order, columns, structure, OCR reporting, Gemini verification. |  |
 | `test_planning.py` | Tests for planning: information units, plan quotas and their binding to the graph, `plan` command. |  |
 | `test_prompt_generator.py` | Tests for prompt_generator: package validation and repair, bounded evidence, revision traceability. |  |

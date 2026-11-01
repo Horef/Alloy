@@ -50,7 +50,7 @@ class PlanningParameters:
 
     # Share of a chunk's statements its questions should touch; 1.0 would aim at every statement.
     coverage_target: float = 0.35
-    # Average atomic claims per canonical question (measured ~3.2-3.3 on hova/keva).
+    # Average atomic claims per canonical question (measured ~3.2-3.3 on corpus A/B).
     claims_per_question: float = 3.2
     # Half-width of a 95% confidence interval for each topic's accuracy; sets a per-topic floor.
     margin_of_error: float = 0.20
@@ -99,7 +99,7 @@ class GenerationPlan(BaseModel):
 def suggest_graph_parameters(chunk_count: int, questions_per_chunk: float = 2.0, questions_per_call: int = 8) -> dict:
     """Topic granularity and window size that suit a corpus of ``chunk_count`` chunks.
 
-    About sqrt(chunks) topics keeps both small and large corpora legible (hova ~9, keva ~15);
+    About sqrt(chunks) topics keeps both small and large corpora legible (corpus A ~9, corpus B ~15);
     a theme above twice the average topic size is split. Windows hold roughly one call's worth
     of questions, so each call focuses on a few chunks.
     """

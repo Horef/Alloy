@@ -177,7 +177,7 @@ def write_review_file(
     When ``hebrew_columns`` is set, the CSV header uses Hebrew labels (except the machine
     ``id`` column). ``review-merge`` reads either language, so the choice is purely
     cosmetic for the reviewer. ``basename`` sets the file stem (e.g. a per-corpus name like
-    ``questions_for_review_hova``) so multiple exports can live side by side without manual
+    ``questions_for_review_corpus_a``) so multiple exports can live side by side without manual
     renaming. Anchors (canonical intents behind user phrasings) are shown only as each variant's
     ``parent_question`` unless ``include_anchors`` is set. Returns the CSV path (the file the
     reviewer edits) and the Markdown path.

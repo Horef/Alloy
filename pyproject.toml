@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+bedrock = ["boto3>=1.35"]
 
 [project.scripts]
 chatbot-eval = "chatbot_eval.cli:main"
@@ -35,6 +36,7 @@ testpaths = ["tests"]
 [tool.docmap]
 link_exempt = ["docs/archive/*"]   # dated records; their relative links are historical
 agents_max_lines = 120
+lifecycle_strict = true            # a missing or stale Status line in a doc fails the check
 
 # docs/FACTS.md: key defaults read from the shipped config; docs cite it instead of copying the value.
 [tool.docmap.facts]
@@ -51,6 +53,12 @@ source = "chatbot_eval"
 except = ["chatbot_eval.llm"]
 imports = ["google"]
 reason = "only llm.py talks to the Gemini SDK; other modules depend on the StructuredLLM protocol, so they run with fakes"
+
+[[tool.docmap.forbid]]
+source = "chatbot_eval"
+except = ["chatbot_eval.llm_providers"]
+imports = ["boto3", "botocore"]
+reason = "boto3 is an optional extra; only llm_providers.py imports it, lazily, when transport = bedrock"
 
 [[tool.docmap.forbid]]
 source = "chatbot_eval"

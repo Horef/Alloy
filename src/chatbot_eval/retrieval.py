@@ -2,7 +2,7 @@
 
 Lexical retrieval is BM25 over Hebrew-aware tokens: each token is canonicalized like graph entities
 (NFKC, niqqud and gershayim removed), and attached one-letter prefixes (ו/ה/ב/ל/כ/מ/ש) are tolerated
-only when the other side contains the bare word, so "לחייל" matches "חייל" while "הורה" and "מורה"
+only when the other side contains the bare word, so "לעובד" matches "עובד" while "הורה" and "מורה"
 (which merely share the remainder "ורה") do not. IDF weighting keeps frequent function words ("של",
 "את") from dominating the ranking. When an embedding model is configured, dense cosine ranking is fused with
 BM25 by reciprocal rank fusion; embedding failures degrade to lexical-only retrieval.
@@ -59,7 +59,7 @@ def index_terms(text: str) -> list[str]:
 
 def query_terms(text: str) -> list[str]:
     """BM25 terms for a query, matching a document token when the two are equal or one is the
-    other with prefixes attached ("חייל" ~ "לחייל"), but not when both merely share a stem."""
+    other with prefixes attached ("עובד" ~ "לעובד"), but not when both merely share a stem."""
     terms: list[str] = []
     for token in normalize_entity(text).split():
         terms.extend((token, _STEM_MARK + token, *prefix_stems(token)))

@@ -95,4 +95,4 @@ Desired tests: gateway change invalidates; schema/validator change invalidates; 
 
 ## Completion criteria
 
-Deliver small changes in the order 1, 3, 2, 4, 5; run focused tests after each and the full army suite at integration. Update README with exact retry call behavior and manifest/cache migration semantics. Existing historical artifacts remain intact. No live gateway/chatbot call is needed to establish the offline behavior; network compatibility and timeout behavior against the real service remain separately identified live checks.
+Deliver small changes in the order 1, 3, 2, 4, 5; run focused tests after each and the full suite at integration. Update README with exact retry call behavior and manifest/cache migration semantics. Existing historical artifacts remain intact. No live gateway/chatbot call is needed to establish the offline behavior; network compatibility and timeout behavior against the real service remain separately identified live checks.

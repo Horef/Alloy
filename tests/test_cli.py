@@ -287,7 +287,7 @@ def test_generate_persists_diagnostics_and_inventories_them_in_manifest(tmp_path
             return [], bundle.topics
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "build_llm", lambda *args, **kwargs: object())
     monkeypatch.setattr(cli, "_analysis_cache", lambda *args, **kwargs: Cache())
     monkeypatch.setattr(cli, "_build_graph_bundle", lambda *args, **kwargs: GraphBundle(KnowledgeGraph([], []), []))
     monkeypatch.setattr(cli, "SilverSetGenerator", Generator)
@@ -330,7 +330,7 @@ def test_revary_regenerates_only_variations(tmp_path, monkeypatch):
             ])
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: VarLLM())
+    monkeypatch.setattr(cli, "build_llm", lambda *args, **kwargs: VarLLM())
 
     assert cli.main([
         "--config", str(config), "revary", "--questions", str(jsonl_path),
@@ -388,7 +388,7 @@ def test_generate_merge_into_appends_to_existing_set(tmp_path, monkeypatch):
             return list(generated), bundle.topics
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "build_llm", lambda *a, **k: object())
     monkeypatch.setattr(cli, "_analysis_cache", lambda *a, **k: Cache())
     monkeypatch.setattr(cli, "_build_graph_bundle", lambda *a, **k: GraphBundle(KnowledgeGraph([], []), []))
     monkeypatch.setattr(cli, "SilverSetGenerator", Generator)
@@ -419,7 +419,7 @@ def test_generate_rejects_plan_with_topic_before_building_the_graph(tmp_path, mo
         raise AssertionError("the graph must not be built for an invalid argument combination")
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "build_llm", lambda *args, **kwargs: object())
     monkeypatch.setattr(cli, "_build_graph_bundle", must_not_build)
     with pytest.raises(ValueError, match="do not combine them with --topic"):
         cli.main([
@@ -467,7 +467,7 @@ def test_generate_with_plan_reuses_the_plans_theme_vocabulary(tmp_path, monkeypa
         return GraphBundle(KnowledgeGraph([], []), [])
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "GeminiStructuredLLM", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "build_llm", lambda *args, **kwargs: object())
     monkeypatch.setattr(cli, "_analysis_cache", lambda *args, **kwargs: Cache())
     monkeypatch.setattr(cli, "_build_graph_bundle", build)
     monkeypatch.setattr(cli, "SilverSetGenerator", Generator)

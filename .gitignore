@@ -7,11 +7,12 @@ dist/
 build/
 outputs/
 .vscode/
-hova/
-keva/
+corpora/
 config.toml
 .DS_Store
 .chatbot_eval_cache/
+# Local run index (paths of local run folders); regenerate with `python tools/docmap.py runs`.
+docs/RUNS.md
 # Source corpora and evaluation artifacts may contain internal documents; never commit them.
 knowledge_base/
 *.xlsx

@@ -21,7 +21,7 @@ class SignalLLM:
     def generate(self, prompt, schema, model):
         if schema is NodeSignalsBatch:
             return NodeSignalsBatch(signals=[
-                NodeSignals(chunk_id=i, entities=['צה"ל'], keyphrases=["מבנה שכר"], summary=f"s {i}")
+                NodeSignals(chunk_id=i, entities=['מע"מ'], keyphrases=["מבנה שכר"], summary=f"s {i}")
                 for i in _ids(prompt)
             ])
         if schema is GraphTopicLabelBatch:
@@ -33,7 +33,7 @@ def test_extract_document_signals_returns_one_record_per_chunk_in_order():
     chunks = [Chunk("a#1", "a.md", "d", "x"), Chunk("a#2", "a.md", "d", "y")]
     signals = GraphBuilder(SignalLLM(), "m").extract_document_signals("a.md", chunks, batch_chunks=1)
     assert [s.chunk_id for s in signals] == ["a#1", "a#2"]
-    assert all(s.entities == ['צה"ל'] for s in signals)
+    assert all(s.entities == ['מע"מ'] for s in signals)
 
 
 def test_extraction_degrades_gracefully_when_model_returns_nothing():
@@ -96,7 +96,7 @@ def test_build_theme_vocabulary_enforces_ceiling_and_drops_blank_names():
                 GraphTopicLabel(name="שכר", description="תשלומים"),
                 GraphTopicLabel(name="  ", description="ריק"),      # blank name dropped
                 GraphTopicLabel(name="חופשות", description="ימי חופשה"),
-                GraphTopicLabel(name="מילואים", description="שירות מילואים"),
+                GraphTopicLabel(name="חופשה", description="ימי חופשה"),
             ])
 
     builder = GraphBuilder(VocabLLM(), "m")

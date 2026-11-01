@@ -98,7 +98,7 @@ auditable instead of being a second model.
 
 **3.3 Hebrew output, Hebrew-aware matching.** Every prompt asks for Hebrew output. Matching code
 (entity keys, quote checks, BM25 tokens, near-duplicate detection) normalizes niqqud, gershayim and
-geresh (`צה"ל` / `צה״ל`), Unicode compatibility forms, bidi control marks, and some attached one-letter
+geresh (`מע"מ` / `מע״מ`), Unicode compatibility forms, bidi control marks, and some attached one-letter
 prefixes. Hebrew's rich morphology is the main reason off-the-shelf English text processing
 underperforms [R24]; Alloy deliberately uses a light, rule-based normalization rather than a
 morphological analyzer *(inferred: no dependency, deterministic, cache-stable)*.

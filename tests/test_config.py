@@ -27,7 +27,7 @@ def test_apigee_transport_uses_its_own_environment_key(tmp_path, monkeypatch):
 [gemini]
 transport = "apigee"
 apigee_api_key_env = "TEST_APIGEE_KEY"
-apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+apigee_base_url = "https://gateway.example.com/v1/team"
 """,
         encoding="utf-8",
     )
@@ -39,10 +39,10 @@ apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
     assert settings.gemini_transport == "apigee"
     assert settings.api_key == ""
     assert settings.apigee_api_key == "apigee-secret"
-    assert settings.apigee_base_url.endswith("/ai_gateway/v1/hr")
+    assert settings.apigee_base_url.endswith("/v1/team")
 
 
-def test_apigee_transport_requires_https_ai_gateway_url(tmp_path):
+def test_apigee_transport_requires_an_https_url(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text(
         """
@@ -53,7 +53,43 @@ apigee_base_url = "http://example.test/not-the-gateway"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="HTTPS AI Gateway"):
+    with pytest.raises(ValueError, match="HTTPS gateway URL"):
+        load_settings(path, require_api_key=False)
+
+
+def test_openai_transport_reads_its_key_and_needs_a_base_url(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[gemini]\ntransport = "openai"\nopenai_api_key_env = "TEST_OPENAI_KEY"\n'
+        'openai_base_url = "https://llm.example.com/v1/"\nopenai_auth_header = "api-key"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_OPENAI_KEY", "openai-secret")
+
+    settings = load_settings(path)
+
+    assert settings.openai_api_key == "openai-secret"
+    assert settings.openai_base_url == "https://llm.example.com/v1"
+    assert settings.openai_auth_header == "api-key"
+    path.write_text('[gemini]\ntransport = "openai"\nopenai_api_key_env = ""\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="openai_base_url"):
+        load_settings(path)
+    path.write_text(
+        '[gemini]\ntransport = "openai"\nopenai_api_key_env = ""\nopenai_base_url = "http://localhost:8000/v1"\n',
+        encoding="utf-8",
+    )
+    assert load_settings(path).openai_api_key == ""  # a keyless local server needs no credentials
+
+
+def test_bedrock_transport_needs_no_api_key_and_rejects_unknown_transports(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text('[gemini]\ntransport = "bedrock"\nbedrock_region = "eu-west-1"\n', encoding="utf-8")
+    for name in ("GEMINI_API_KEY", "OPENAI_API_KEY", "APIGEE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert load_settings(path).bedrock_region == "eu-west-1"
+    path.write_text('[gemini]\ntransport = "azure"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="gemini.transport must be one of"):
         load_settings(path, require_api_key=False)
 
 
@@ -206,8 +242,8 @@ def test_optional_generation_checks_default_off_and_are_validated(tmp_path):
 
 def test_audience_is_whitespace_normalized_and_bounded(tmp_path):
     path = tmp_path / "audience.toml"
-    path.write_text('[generation]\naudience = "  משרתי   קבע\\n ומשפחותיהם "\n', encoding="utf-8")
-    assert load_settings(path, require_api_key=False).audience == "משרתי קבע ומשפחותיהם"
+    path.write_text('[generation]\naudience = "  עובדים   קבועים\\n ומשפחותיהם "\n', encoding="utf-8")
+    assert load_settings(path, require_api_key=False).audience == "עובדים קבועים ומשפחותיהם"
     path.write_text(f'[generation]\naudience = "{"א" * 501}"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="generation.audience"):
         load_settings(path, require_api_key=False)

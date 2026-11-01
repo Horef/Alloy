@@ -10,7 +10,7 @@ reviewer source hints.
 - **Lexical:** Okapi BM25 [R9] (k1 = 1.5, b = 0.75) over tokens produced by the same Hebrew
   normalization as the graph. Attached prefixes are tolerated only against an attested bare word: a
   document indexes each prefixed token's candidate stems as marked terms, and a query adds its own
-  stems plus a marked copy of each token. So `לחייל` matches `חייל` in either direction, while `הורה`
+  stems plus a marked copy of each token. So `לעובד` matches `עובד` in either direction, while `הורה`
   and `מורה`, which only share the remainder `ורה`, do not match. IDF keeps frequent function words
   from dominating.
 - **Dense (optional):** when `embedding_model` is set, chunks and queries are embedded and ranked by

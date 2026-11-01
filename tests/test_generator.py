@@ -210,8 +210,8 @@ def test_cross_document_question_requires_two_documents():
 
 
 def test_duplicate_detection_includes_prior_review_sets():
-    accepted = [SilverQuestion(id="Q1", topic="", question="כמה ימי חופש מגיעים לחייל?", expected_answer="")]
-    assert _is_duplicate("כמה ימי חופש מגיעים לחייל", accepted)
+    accepted = [SilverQuestion(id="Q1", topic="", question="כמה ימי חופש מגיעים לעובד?", expected_answer="")]
+    assert _is_duplicate("כמה ימי חופש מגיעים לעובד", accepted)
     assert _is_duplicate("מהם תנאי הפטור מתורנות?", [], ("מהם תנאי הפטור מתורנות",))
 
 
@@ -222,7 +222,7 @@ def test_ambiguous_variation_expects_a_follow_up_and_preserves_provenance():
     )
     variation = GeneratedVariation(
         source_question_id="Q0001", question="איך אני מקבל התש 3?",
-        question_form="ambiguous", required_clarification="האם מדובר בחייל חובה או קבע?",
+        question_form="ambiguous", required_clarification="האם מדובר בעובד זמני או קבוע?",
         rationale="חסר סוג השירות",
     )
 
@@ -230,7 +230,7 @@ def test_ambiguous_variation_expects_a_follow_up_and_preserves_provenance():
 
     assert result.question_form == QuestionForm.AMBIGUOUS
     assert result.expected_behavior == ExpectedBehavior.CLARIFY
-    assert result.expected_answer == "האם מדובר בחייל חובה או קבע?"
+    assert result.expected_answer == "האם מדובר בעובד זמני או קבוע?"
     assert result.parent_question_id == "Q0001"
     assert result.clarification_acceptable is False
 
@@ -279,7 +279,7 @@ def test_merge_question_sets_appends_and_dedups():
     from chatbot_eval.generator import merge_question_sets
 
     existing = [
-        SilverQuestion(id="Q-a", topic="t", question="כמה ימי חופשה מגיעים לחייל?", expected_answer="20",
+        SilverQuestion(id="Q-a", topic="t", question="כמה ימי חופשה מגיעים לעובד?", expected_answer="20",
                        reference_claims=["20"]),
         SilverQuestion(id="Q-b", topic="t", question="מי מאשר יציאה לחופשה?", expected_answer="המפקד",
                        reference_claims=["המפקד"]),
@@ -289,7 +289,7 @@ def test_merge_question_sets_appends_and_dedups():
         SilverQuestion(id="Q-c", topic="שכר", question="כיצד מחושב התמריץ הכספי?", expected_answer="לפי קבוצה",
                        reference_claims=["לפי קבוצה"]),
         # A near-duplicate of an existing question -> dropped.
-        SilverQuestion(id="Q-d", topic="t", question="כמה ימי חופשה מגיעים לחייל", expected_answer="20",
+        SilverQuestion(id="Q-d", topic="t", question="כמה ימי חופשה מגיעים לעובד", expected_answer="20",
                        reference_claims=["20"]),
     ]
     merged, diag = merge_question_sets(existing, new, stable_question_ids=True)
@@ -484,9 +484,9 @@ def test_audience_restricts_canonical_and_boundary_prompts_only_when_set():
         )
         return prompts
 
-    restricted = run("משרתי קבע")
+    restricted = run("עובדים קבועים")
     assert len(restricted) == 2
-    assert all("AUDIENCE: the chatbot serves משרתי קבע." in prompt for prompt in restricted)
+    assert all("AUDIENCE: the chatbot serves עובדים קבועים." in prompt for prompt in restricted)
     assert not any("AUDIENCE:" in prompt for prompt in run(""))
 
 
@@ -502,7 +502,7 @@ def _answerable_question():
 
 
 def test_reground_one_regenerates_grounding_and_resets_status():
-    chunks = [Chunk("a.md#chunk-1", "a.md", "document", "הסכום הוא 100 שקלים לכל חייל.")]
+    chunks = [Chunk("a.md#chunk-1", "a.md", "document", "הסכום הוא 100 שקלים לכל עובד.")]
 
     class RegroundLLM:
         def generate(self, prompt, schema, model, *, required_fields=None):
@@ -532,10 +532,10 @@ def test_reground_one_regenerates_grounding_and_resets_status():
 
 def _hint_corpus():
     return [
-        Chunk("a.md#chunk-1", "a.md", "d", "---\nid: aaa-111\ntitle: \"חופשות למשרתים\"\n---\nחופשה שנתית של 18 יום."),
+        Chunk("a.md#chunk-1", "a.md", "d", "---\nid: aaa-111\ntitle: \"חופשות לעובדים\"\n---\nחופשה שנתית של 18 יום."),
         Chunk("a.md#chunk-2", "a.md", "d", "חופשת אבל של שבעה ימים לכל קרוב מדרגה ראשונה."),
-        Chunk("מענק-שחרור.md#chunk-1", "מענק-שחרור.md", "d", "---\ntitle: \"מענק שחרור\"\n---\nהמענק משולם בתום השירות."),
-        Chunk("c.md#chunk-1", "c.md", "d", "---\ntitle: \"כוורת\"\n---\nהנחות ברשת כוורת לכל החיילים."),
+        Chunk("מענק-פרישה.md#chunk-1", "מענק-פרישה.md", "d", "---\ntitle: \"מענק פרישה\"\n---\nהמענק משולם בתום ההעסקה."),
+        Chunk("c.md#chunk-1", "c.md", "d", "---\ntitle: \"כוורת\"\n---\nהנחות ברשת כוורת לכל העובדים."),
     ]
 
 
@@ -547,9 +547,9 @@ def test_source_hint_finds_documents_by_link_title_or_id_and_passages():
 
     chunks = _hint_corpus()
     retriever = ChunkRetriever(chunks)
-    by_link = _hinted_chunks(f"https://hova.digital.idf.il/{quote('מענק-שחרור')}", chunks, retriever, "מתי משולם?")
-    assert [c.id for c in by_link] == ["מענק-שחרור.md#chunk-1"]
-    by_title = _hinted_chunks("בעמוד חופשות למשרתים", chunks, retriever, "כמה ימי אבל?")
+    by_link = _hinted_chunks(f"https://docs.example.com/{quote('מענק-פרישה')}", chunks, retriever, "מתי משולם?")
+    assert [c.id for c in by_link] == ["מענק-פרישה.md#chunk-1"]
+    by_title = _hinted_chunks("בעמוד חופשות לעובדים", chunks, retriever, "כמה ימי אבל?")
     assert {c.file for c in by_title} == {"a.md"}
     by_passage = _hinted_chunks("כתוב שם: \"חופשת אבל של שבעה ימים לכל קרוב\"", chunks, retriever, "q")
     assert by_passage[0].id == "a.md#chunk-2"
@@ -572,11 +572,11 @@ def test_reground_puts_hinted_evidence_first_and_shows_the_hint():
 
     question = SilverQuestion(
         id="Q-manual-1", topic="t", question="כמה ימי אבל מגיעים?", expected_answer="שבעה ימים",
-        review_status="needs_reground", source_hint="דף חופשות למשרתים, הסעיף על אבל",
+        review_status="needs_reground", source_hint="דף חופשות לעובדים, הסעיף על אבל",
     )
     updated, reason = SilverSetGenerator(RegroundLLM(), "m").reground_one(question, chunks, evidence_limit=2)
     assert reason is None and updated.sources[0].source_id == "a.md#chunk-2"
-    assert "דף חופשות למשרתים, הסעיף על אבל" in prompts[0]
+    assert "דף חופשות לעובדים, הסעיף על אבל" in prompts[0]
     assert "[SOURCE_ID: c.md#chunk-1]" not in prompts[0]
 
 
@@ -721,15 +721,15 @@ def test_generate_runs_completeness_pass_and_records_diagnostics():
             if schema is AnswerCompletenessReview:
                 return AnswerCompletenessReview(
                     verdict="incomplete",
-                    corrected_answer="המדיניות חלה מחר על כל המשרתים",
-                    corrected_reference_claims=["המדיניות חלה מחר על כל המשרתים"],
+                    corrected_answer="המדיניות חלה מחר על כל העובדים",
+                    corrected_reference_claims=["המדיניות חלה מחר על כל העובדים"],
                     corrected_source_ids=["a#1"],
-                    corrected_supporting_quotes=[EvidenceQuote(source_id="a#1", quote="חלה מחר על כל המשרתים")],
+                    corrected_supporting_quotes=[EvidenceQuote(source_id="a#1", quote="חלה מחר על כל העובדים")],
                 )
             raise AssertionError(schema)
 
     generator = SilverSetGenerator(FakeLLM(), "model")
-    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כל המשרתים בשירות")]
+    chunks = [Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כל העובדים בשירות")]
     questions, _ = generator.generate(
         chunks,
         GenerationOptions(
@@ -740,7 +740,7 @@ def test_generate_runs_completeness_pass_and_records_diagnostics():
     )
 
     assert len(questions) == 1
-    assert questions[0].expected_answer == "המדיניות חלה מחר על כל המשרתים"
+    assert questions[0].expected_answer == "המדיניות חלה מחר על כל העובדים"
     diagnostics = generator.last_generation_diagnostics["answer_completeness_verification"]
     assert diagnostics["enabled"] is True
     assert diagnostics["outcomes"].get("corrected") == 1
@@ -768,11 +768,11 @@ def test_generate_completeness_pass_off_by_default_makes_no_review_call():
 
 
 def test_quote_validation_tolerates_markdown_and_hebrew_punctuation_but_not_rewording():
-    chunks = {"a#1": Chunk("a#1", "a.md", "document", '- **חיילים נשואים:** זכאים למענק בסך 500 ש״ח\u200e בחודש.')}
-    tolerant = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote='חיילים נשואים: זכאים למענק בסך 500 ש"ח בחודש')])
+    chunks = {"a#1": Chunk("a#1", "a.md", "document", '- **עובדים נשואים:** זכאים למענק בסך 500 ש״ח\u200e בחודש.')}
+    tolerant = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote='עובדים נשואים: זכאים למענק בסך 500 ש"ח בחודש')])
     assert validate_candidate(tolerant, chunks)[1] is None
 
-    reworded = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote="חיילים נשואים זכאים למענק של 500 ש״ח")])
+    reworded = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote="עובדים נשואים זכאים למענק של 500 ש״ח")])
     assert validate_candidate(reworded, chunks)[1] == "quote_not_verbatim"
 
     formatting_only = _candidate(quotes=[EvidenceQuote(source_id="a#1", quote="**:**")])
@@ -859,11 +859,11 @@ def test_merge_keeps_existing_ids_and_drops_orphaned_variants():
     from chatbot_eval.generator import merge_question_sets
 
     existing = [
-        SilverQuestion(id="Q0001", topic="t", question="כמה ימי חופשה מגיעים לחייל?", expected_answer="20"),
+        SilverQuestion(id="Q0001", topic="t", question="כמה ימי חופשה מגיעים לעובד?", expected_answer="20"),
         SilverQuestion(id="Q0002", topic="t", question="מי מאשר יציאה לחופשה?", expected_answer="המפקד"),
     ]
     new = [
-        SilverQuestion(id="Q0001", topic="t", question="כמה ימי חופשה מגיעים לחייל", expected_answer="20"),
+        SilverQuestion(id="Q0001", topic="t", question="כמה ימי חופשה מגיעים לעובד", expected_answer="20"),
         SilverQuestion(id="Q0002", topic="שכר", question="כיצד מחושב התמריץ הכספי?", expected_answer="לפי קבוצה"),
         SilverQuestion(id="Q0003", topic="t", question="כמה חופש יש לי?", expected_answer="20",
                        question_form=QuestionForm.NATURAL_USER, parent_question_id="Q0001"),
@@ -933,14 +933,14 @@ def test_boundary_questions_record_kind_and_are_checked_against_the_whole_corpus
                 return AnswerabilityCheck(answerable_from_evidence="כמה מענק" in prompt)
             if "boundary questions" in prompt:
                 return QuestionBatch(questions=[
-                    _boundary("כמה מענק חודשי מקבל חייל בודד?"),
+                    _boundary("כמה מענק חודשי מקבל עובד בודד?"),
                     _boundary("האם מגיעה לי תוספת על כל יום שבת?", kind="false_premise"),
                 ])
             return QuestionBatch(questions=[_candidate()])
 
     chunks = [
         Chunk("a#1", "a.md", "document", "המדיניות חלה מחר על כולם"),
-        Chunk("b#1", "b.md", "document", "מענק חודשי לחייל בודד בסך 500 שקלים"),
+        Chunk("b#1", "b.md", "document", "מענק חודשי לעובד בודד בסך 500 שקלים"),
     ]
     generator = SilverSetGenerator(FakeLLM(), "test")
     questions, _ = generator.generate(
@@ -1178,14 +1178,14 @@ def test_large_quota_on_small_topic_is_split_into_bounded_calls():
 def test_natural_variant_must_be_simpler_than_its_parent():
     parent = SilverQuestion(
         id="Q1", topic="t", expected_answer="תשובה",
-        question="מהם המסמכים שקצין נדרש להכין ולהגיש לצורך עדכון השכלה במערכות הצבאיות?",
+        question="מהם המסמכים שעובד נדרש להכין ולהגיש לצורך עדכון השכלה במערכות של הארגון?",
     )
 
     class FakeLLM:
         def generate(self, prompt, schema, model):
             return VariationBatch(variations=[
                 GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
-                                   question="אילו מסמכים קצין צריך להכין ולהגיש כדי לעדכן השכלה במערכות של הצבא?"),
+                                   question="אילו מסמכים עובד צריך להכין ולהגיש כדי לעדכן השכלה במערכות של הארגון?"),
                 GeneratedVariation(source_question_id="Q1", question_form="natural_user", rationale="r",
                                    question="מה להגיש כדי שיזינו לי תואר?"),
             ])
@@ -1330,9 +1330,9 @@ def test_standard_mode_never_marks_anchors():
 
 def _broad_corpus():
     chunks = [
-        Chunk("a.md#chunk-1", "a.md", "d", '---\ntitle: "מענק לחייל בודד"\nsubtitle: "סיוע חודשי"\n---\nחייל בודד מקבל מענק חודשי.'),
-        Chunk("b.md#chunk-1", "b.md", "d", '---\ntitle: "דיור לחיילים בודדים"\n---\nחייל בודד זכאי לבית חייל.'),
-        Chunk("c.md#chunk-1", "c.md", "d", '---\ntitle: "חופשות"\n---\nחייל בודד זכאי לחופשה מיוחדת פעם בשנה.'),
+        Chunk("a.md#chunk-1", "a.md", "d", '---\ntitle: "מענק לעובד בודד"\nsubtitle: "סיוע חודשי"\n---\nעובד בודד מקבל מענק חודשי.'),
+        Chunk("b.md#chunk-1", "b.md", "d", '---\ntitle: "דיור לעובדים בודדים"\n---\nעובד בודד זכאי לבית עובד.'),
+        Chunk("c.md#chunk-1", "c.md", "d", '---\ntitle: "חופשות"\n---\nעובד בודד זכאי לחופשה מיוחדת פעם בשנה.'),
     ]
     return chunks, _bundle(chunks, [("סיוע לבודדים", 5, ["a.md#chunk-1", "b.md#chunk-1", "c.md#chunk-1"])])
 
@@ -1350,7 +1350,7 @@ def test_broad_questions_keep_only_document_supported_key_points():
             question=question, level=level, scope=scope, min_key_points=2,
             key_points=[
                 BroadKeyPoint(point="מענק חודשי", document_ids=["D01"]),
-                BroadKeyPoint(point="בית חייל", document_ids=["D02"]),
+                BroadKeyPoint(point="בית עובד", document_ids=["D02"]),
                 BroadKeyPoint(point="חופשה מיוחדת", document_ids=["D03"]),
                 BroadKeyPoint(point="הנחה בתחבורה", document_ids=["D09"]),
             ],
@@ -1365,7 +1365,7 @@ def test_broad_questions_keep_only_document_supported_key_points():
                     return BroadQuestionBatch(questions=[broad("topic", "סיוע לבודדים", "מה יש לבודדים?")])
                 return BroadQuestionBatch(questions=[
                     broad("corpus", "", "מה הזכויות שלי?"),
-                    broad("population", "חיילים בודדים", "אני חייל בודד, מה מגיע לי?"),
+                    broad("population", "עובדים בודדים", "אני עובד בודד, מה מגיע לי?"),
                     broad("topic", "x", "שאלה ברמה הלא נכונה"),
                 ])
             assert schema is BroadSupportCheck
@@ -1382,10 +1382,10 @@ def test_broad_questions_keep_only_document_supported_key_points():
     assert [q.broad_level for q in questions] == ["corpus", "population", "topic"]
     first = questions[0]
     assert first.question_form == QuestionForm.BROAD and first.clarification_acceptable
-    assert first.reference_claims == ["מענק חודשי", "בית חייל"] and first.min_key_points == 2
+    assert first.reference_claims == ["מענק חודשי", "בית עובד"] and first.min_key_points == 2
     assert {s.source_id for s in first.sources} == {"a.md#chunk-1", "b.md#chunk-1"}
     assert rejected["broad_point_without_document"] == 3 and rejected["broad_level_over_budget"] == 1
-    assert "[D01] מענק לחייל בודד -- סיוע חודשי" in prompts[0]
+    assert "[D01] מענק לעובד בודד -- סיוע חודשי" in prompts[0]
 
 
 def test_broad_question_without_enough_supported_points_is_rejected():

@@ -19,6 +19,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D11 | Generated project map and a design reference split per component (2026-10-23; status: accepted) |
 | D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
 | D13 | Generation prompts follow the team-review lessons; optional audience (2026-11-01; status: accepted) |
+| D14 | Provider-neutral model transports; corpus and organisation names removed from tracked files (2026-11-01; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -46,17 +47,17 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Decision:** `generation.topic_mode = "theme"`: a small controlled theme vocabulary per corpus, one theme per chunk, topics grouped by theme. Themes never create graph edges. `entity` remains as an explicit opt-out.
 - **Alternatives:** entity mode (the earlier default; theme mode was first opt-in pending a live A/B).
 - **Consequences:** One corpus-level vocabulary call plus a cheap tagging pass, both cached per document.
-- **Evidence / source:** commits e87ef07, 90cab46; live A/B on hova and keva in `docs/theme-layer-ab-results.md`.
+- **Evidence / source:** commits e87ef07, 90cab46; live A/B on corpora A and B in `docs/theme-layer-ab-results.md`.
 
 ## D5. Prune superseded cache entries by default (2026-09-23; status: accepted)
-- **Context:** Content-addressed entries were never removed; changed keying inputs left orphans (hova: 34 documents → 136 node-signal entries).
+- **Context:** Content-addressed entries were never removed; changed keying inputs left orphans (corpus A: 34 documents → 136 node-signal entries).
 - **Decision:** Each run tracks the keys it looked up and sweeps only the cache kinds it touched. Opt out with `--keep-stale-cache`; removal counts go to the run manifest.
 - **Alternatives:** keep everything (unbounded growth). Others not recorded.
 - **Evidence / source:** commit 90cab46.
 
 ## D6. Hebrew-aware BM25 retrieval with optional embedding fusion (2026-09-27; status: accepted)
 - **Decision:** BM25 over canonical tokens plus prefix-stripped Hebrew variants; optional dense ranking fused by reciprocal rank fusion; embedding failures fall back to lexical.
-- **Alternatives:** plain lexical matching (keva recall@1 0.76 vs 0.87 with the Hebrew-aware variant).
+- **Alternatives:** plain lexical matching (corpus B recall@1 0.76 vs 0.87 with the Hebrew-aware variant).
 - **Evidence / source:** commit d1c026b.
 
 ## D7. Corpus caches keyed on the model route, not whole-module hashes (2026-09-27; status: accepted)
@@ -96,8 +97,15 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Evidence / source:** owner's project-foundations skill v4; WORKLOG 2026-10-23.
 
 ## D13. Generation prompts follow the team-review lessons; optional audience (2026-11-01; status: accepted)
-- **Context:** The hova and keva review teams (373 and 595 reviewed rows) repeatedly removed "במסמך מצוין" phrasing, deleted facts appended from unrelated documents, added how-to-apply/approver details, rejected list and calendar trivia, and flagged keva questions that belonged to the compulsory-service set. Nine keva rejections were intent duplicates, but their embedding similarity (0.82-0.91) overlaps that of distinct variants (80% have a neighbour at 0.84 or more), so no duplicate threshold separates them.
+- **Context:** The corpora A and B review teams (373 and 595 reviewed rows) repeatedly removed "במסמך מצוין" phrasing, deleted facts appended from unrelated documents, added how-to-apply/approver details, rejected list and calendar trivia, and flagged corpus B questions that belonged to another population's set. Nine corpus B rejections were intent duplicates, but their embedding similarity (0.82-0.91) overlaps that of distinct variants (80% have a neighbour at 0.84 or more), so no duplicate threshold separates them.
 - **Decision:** The canonical and boundary prompts state those rules (design/generation.md section 11.4). Boundary answers address the user and name the responsible channel when the evidence does. A new `generation.audience` setting (default empty, no prompt change) restricts both prompts to the chatbot's population. The duplicate threshold is unchanged.
 - **Alternatives:** a post-hoc LLM filter for each rule - one more call per question for issues a prompt rule prevents; lowering `semantic_duplicate_threshold` - would drop most distinct variants.
 - **Consequences:** Cached generation calls are not reused (prompt text is in the call key). Sets generated before and after differ in answer style, which matters when comparing runs by boundary or `cross_document` share.
-- **Evidence / source:** `{hova,keva}/outputs/review-final-20261101/` review history; WORKLOG 2026-11-01.
+- **Evidence / source:** `{corpus_a,corpus_b}/outputs/review-final-20261101/` review history; WORKLOG 2026-11-01.
+
+## D14. Provider-neutral model transports; corpus and organisation names removed from tracked files (2026-11-01; status: accepted)
+- **Context:** The model layer was hard-wired to the Google GenAI SDK (`direct`, `apigee`), so a team on AWS Bedrock or another gateway could not run generation, judging or embeddings. The tracked tree also named the maintainer's organisation, corpora and gateway URL, which blocks sharing the library.
+- **Decision:** `gemini.transport` also accepts `openai` (any OpenAI-compatible chat-completions and embeddings endpoint, key in a configurable header) and `bedrock` (Converse API, structured output as one forced tool call, boto3 optional extra). `llm_providers.build_llm` picks the client; the `StructuredLLM` protocol is unchanged. The `[gemini]` section keeps its name so existing configs work. Cache identities include the endpoint. The Apigee transport has no built-in URL and only needs an HTTPS URL. Corpus names became "corpus A/B/C" in docs, `.gitignore` uses generic patterns (this machine's folders are in `.git/info/exclude`), `docs/RUNS.md` is git-ignored, and test fixtures use neutral Hebrew examples. The owner chose to keep the generation prompts unchanged (their soldier persona and examples came from real team review), so those prompts and the docs that describe them still use that wording.
+- **Alternatives:** renaming `[gemini]` to `[model]` - breaks every existing config for a cosmetic gain; LiteLLM as the only bridge - another dependency and service to run; rewriting the prompts for a neutral persona - loses wording tuned on team review (owner declined).
+- **Consequences:** `openai` has no attachments (`conversion.backend = gemini` needs a Gemini transport) and Bedrock has no seed, so its repeatability is model-dependent. Both clients were tested offline only (local HTTP server, fake Bedrock client); a model without forced tool choice or a gateway without `json_schema` fails at call time. History in git still contains the old names.
+- **Evidence / source:** `tests/test_llm_providers.py`; `docs/design/model-layer.md`; WORKLOG 2026-11-01.

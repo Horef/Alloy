@@ -37,8 +37,8 @@ permanent signals.
 casefold, collapse punctuation to spaces). `entity_match_keys` then adds a prefix-stripped variant,
 but **only** for acronym-like entities (the original contained a gershayim mark) or multi-word
 entities, and only for the first token: one prefix letter from ו/ה/ב/ל/כ/מ/ש is removed from a token of
-four or more letters, plus a second stacked prefix when four letters still remain (so `ולצה"ל`
-matches `צה"ל`). Two entities match when their key sets
+four or more letters, plus a second stacked prefix when four letters still remain (so `ולמע"מ`
+matches `מע"מ`). Two entities match when their key sets
 intersect. Single-word entities keep only their canonical form, because many base words start with a
 prefix letter (`שכר`, `מעטפת`) and blind stripping would corrupt them. This is "light stemming", the
 approach that works well for IR in Semitic languages without a full analyzer [R25].

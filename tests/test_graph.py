@@ -14,7 +14,7 @@ from chatbot_eval.graph import (
 
 def test_normalization_is_lossless_and_does_not_corrupt_base_words():
     # Gershayim/niqqud stripped, casefolded, but leading letters of real words are preserved.
-    assert normalize_entity('צה"ל') == normalize_entity("צה״ל") == "צהל"
+    assert normalize_entity('מע"מ') == normalize_entity("מע״מ") == "מעמ"
     assert normalize_entity("שכר") == "שכר"          # must NOT become כר
     assert normalize_entity("מעטפת") == "מעטפת"      # must NOT become עטפת
     assert normalize_entity("Benefits") == "benefits"
@@ -23,8 +23,8 @@ def test_normalization_is_lossless_and_does_not_corrupt_base_words():
 
 def test_entity_match_keys_tolerate_attached_prefixes_only_where_safe():
     # An attached conjunction/preposition on a gershayim acronym should match the bare acronym.
-    assert "צהל" in entity_match_keys('ולצה"ל')
-    assert entity_match_keys('צה"ל') & entity_match_keys('ולצה"ל')
+    assert "מעמ" in entity_match_keys('ולמע"מ')
+    assert entity_match_keys('מע"מ') & entity_match_keys('ולמע"מ')
     # A plain single base word gets no risky prefix-stripped variant (avoids false merges).
     assert entity_match_keys("ושכר") == {"ושכר"}
     assert not (entity_match_keys("שכר") & entity_match_keys("ושכר"))
@@ -32,8 +32,8 @@ def test_entity_match_keys_tolerate_attached_prefixes_only_where_safe():
 
 def test_shared_entity_edges_use_inverted_index_and_prefix_tolerant_matching():
     nodes = [
-        GraphNode("a#1", "a.md", "d", "x", entities=['צה"ל']),
-        GraphNode("a#2", "a.md", "d", "x", entities=['ולצה"ל']),
+        GraphNode("a#1", "a.md", "d", "x", entities=['מע"מ']),
+        GraphNode("a#2", "a.md", "d", "x", entities=['ולמע"מ']),
         GraphNode("b#1", "b.md", "d", "x", entities=["תמריץ"]),
     ]
     edges = build_edges(nodes)
@@ -72,12 +72,12 @@ def test_weak_single_hub_link_does_not_fuse_clusters():
     # A single shared "hub" entity (weight 1) must NOT merge two otherwise-distinct nodes into one
     # topic (avoids the knowledge-graph hairball). They remain separate clusters.
     nodes = [
-        GraphNode("a#1", "a.md", "d", "x", entities=["צבא", "חופשה"]),
-        GraphNode("b#1", "b.md", "d", "x", entities=["צבא", "שכר"]),
+        GraphNode("a#1", "a.md", "d", "x", entities=["חברה", "חופשה"]),
+        GraphNode("b#1", "b.md", "d", "x", entities=["חברה", "שכר"]),
     ]
     graph = KnowledgeGraph(nodes, build_edges(nodes))
     clusters = derive_topic_clusters(graph, max_topics=12, min_cluster_edge_weight=2.0)
-    assert not any(len(c) == 2 for c in clusters)  # not fused by the single shared "צבא"
+    assert not any(len(c) == 2 for c in clusters)  # not fused by the single shared "חברה"
 
 
 def test_dense_corpus_neither_collapses_nor_explodes():
@@ -160,8 +160,8 @@ def test_theme_clusters_group_by_theme_even_with_low_entity_overlap():
     # Three pay chunks that share almost no entities still form ONE topic because they share a theme.
     # Entity mode would scatter them; theme mode keeps them together.
     nodes = [
-        GraphNode("a#1", "a.md", "d", "x", entities=["קצין", "טופס 101"], theme="שכר"),
-        GraphNode("b#1", "b.md", "d", "x", entities=["מילואים", "החזר"], theme="שכר"),
+        GraphNode("a#1", "a.md", "d", "x", entities=["עובד", "טופס 101"], theme="שכר"),
+        GraphNode("b#1", "b.md", "d", "x", entities=["חופשה", "החזר"], theme="שכר"),
         GraphNode("c#1", "c.md", "d", "x", entities=["דרגה", "ותק"], theme="שכר"),
         GraphNode("d#1", "d.md", "d", "x", entities=["חופשה"], theme="חופשות"),
     ]

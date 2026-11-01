@@ -22,11 +22,11 @@ non-empty chunk counts as at least 1, and so does any topic. For example, this c
 
 ```
 # חופשה
-- חייל זכאי לחופשה שנתית של 18 ימים.        <- 1
+- עובד זכאי לחופשה שנתית של 18 ימים.        <- 1
 - את הבקשה מגישים למפקד הישיר.              <- 2
 | סוג | ימים |                              <- cells under four words: 0
-| חופשה מיוחדת לחייל בודד | 30 |            <- 3 (the "30" cell does not count)
-חייל זכאי לחופשה שנתית של 18 ימים.          <- repeat of 1: 0
+| חופשה מיוחדת לעובד חדש | 30 |            <- 3 (the "30" cell does not count)
+עובד זכאי לחופשה שנתית של 18 ימים.          <- repeat of 1: 0
 ```
 
 The count needs no model call and gives the same result on every run. It measures how many facts a
@@ -93,7 +93,7 @@ The feedback in the prompt turns retries into targeted repairs rather than re-ro
 relaxation exists so a window that cannot support, say, a `cross_document` question still fills its
 quota instead of leaving a shortfall.
 
-**Prompt rules from team review (November 2026).** The hova and keva review teams edited or rejected
+**Prompt rules from team review (November 2026).** The corpora A and B review teams edited or rejected
 questions in recurring ways, so the canonical prompt now asks for: answers phrased as the chatbot's
 reply, with no "the document says" references (reviewers asked what "במסמך מצוין" meant); answers that
 cover only what was asked (reviewers deleted facts appended from a second document, often in
@@ -101,7 +101,7 @@ cover only what was asked (reviewers deleted facts appended from a second docume
 states them (the most common addition); one need per question; and no trivia from lists, calendars or
 tables. Boundary answers are addressed to the user and refer to the responsible office or channel when
 the evidence names one. The optional `generation.audience` setting adds one line restricting both
-prompts to the population the chatbot serves (keva reviewers flagged questions that belonged to the
+prompts to the population the chatbot serves (corpus B reviewers flagged questions that belonged to the
 compulsory-service set). Prompt text is part of the call-cache key, so cached generation calls are
 not reused after this change.
 

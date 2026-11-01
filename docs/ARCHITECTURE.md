@@ -20,8 +20,9 @@ the same pieces. The system map and design principles are in
 
 Enforced by `python tools/docmap.py check` (`[[tool.docmap.forbid]]` in `pyproject.toml`):
 
-- Only `llm.py` imports the Gemini SDK (`google`). Every other module depends on the
-  `StructuredLLM` protocol, so the whole suite runs offline with fakes.
+- Only `llm.py` imports the Gemini SDK (`google`) and only `llm_providers.py` imports `boto3`
+  (lazily, an optional extra). Every other module depends on the `StructuredLLM` protocol, so the
+  whole suite runs offline with fakes, and any provider that implements the protocol can be used.
 - No module imports `cli.py`. It is the only module that wires components together.
 
 Enforced by tests:
@@ -60,7 +61,7 @@ By convention (reviewed, not tested):
 2. [System map](design/overview.md#2-system-map)
 3. [Design principles that cut across every component](design/overview.md#3-design-principles-that-cut-across-every-component)
 4. [Configuration and entry points](design/configuration.md)
-5. [The model layer (`llm.py`)](design/model-layer.md)
+5. [The model layer (`llm.py`, `llm_providers.py`)](design/model-layer.md)
 6. [Ingestion and chunking (`documents.py`, `pdf_markdown.py`)](design/ingestion.md)
 7. [The corpus knowledge graph (`graph_build.py`, `graph.py`)](design/graph.md)
 8. [Retrieval (`retrieval.py`)](design/retrieval.md)

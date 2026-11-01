@@ -1,10 +1,22 @@
 [gemini]
-# Use "direct" for Google Gemini or "apigee" for the internal AI Gateway.
+# How model calls are made (this section configures every provider; the name is historical):
+#   "direct"  Google Gemini API              "apigee"  Gemini behind an API gateway
+#   "openai"  any OpenAI-compatible endpoint  "bedrock" AWS Bedrock (pip install '.[bedrock]')
 transport = "direct"
 # The secret itself belongs in .env; this file only names the environment variable.
 api_key_env = "GEMINI_API_KEY"
 apigee_api_key_env = "APIGEE_API_KEY"
-apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+apigee_base_url = "https://gateway.example.com/v1/team"
+# openai transport: base URL ending before /chat/completions; an empty key variable name sends no credentials.
+openai_base_url = ""
+openai_api_key_env = "OPENAI_API_KEY"
+openai_auth_header = "Authorization"          # "Authorization" sends "Bearer <key>"; other names send the raw key
+openai_structured_output = "json_schema"      # or "json_object" for servers without schema support
+# bedrock transport: credentials come from the standard AWS chain (env vars, profile, role), never from this file.
+bedrock_region = ""
+bedrock_profile = ""
+bedrock_max_tokens = 4096
+# Model ids for the selected transport (for Bedrock a model id or inference profile).
 generation_model = "gemini-3.7-flash"
 judge_model = "gemini-3.7-flash"
 # Fixed sampling seed for every structured call, so identical prompts give identical responses and
@@ -80,7 +92,7 @@ broad_questions = false
 broad_corpus_questions = 2
 broad_population_limit = 8
 broad_min_key_points = 3
-# Who the chatbot serves, e.g. "משרתי קבע ובני משפחותיהם". Generation then skips content that concerns
+# Who the chatbot serves, e.g. "new employees and their families". Generation then skips content that concerns
 # only other populations. Empty means no restriction.
 audience = ""
 # Independent prompt-generation budgets keep large corpora and prior runs from creating unbounded calls.

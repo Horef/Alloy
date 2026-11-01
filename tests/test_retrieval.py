@@ -23,12 +23,12 @@ def test_model_embedder_falls_back_to_single_requests_for_aggregating_models():
 
 
 def test_prefixed_and_bare_words_match_but_shared_stems_do_not():
-    assert set(index_terms("לחייל")) & set(query_terms("חייל"))
-    assert set(index_terms("חייל")) & set(query_terms("לחייל"))
-    assert "צהל" in query_terms('בצה"ל')
+    assert set(index_terms("לעובד")) & set(query_terms("עובד"))
+    assert set(index_terms("עובד")) & set(query_terms("לעובד"))
+    assert "מעמ" in query_terms('במע"מ')
     # הורה (parent) and מורה (teacher) share the remainder ורה but neither is the other with a prefix.
     assert not set(index_terms("מורה")) & set(query_terms("הורה"))
-    assert token_similarity(dedup_tokens("השכר של החייל"), dedup_tokens("שכר של חייל")) == 1.0
+    assert token_similarity(dedup_tokens("השכר של העובד"), dedup_tokens("שכר של עובד")) == 1.0
     assert token_similarity(dedup_tokens("הורה"), dedup_tokens("מורה")) == 0.0
 
 
@@ -41,10 +41,10 @@ def test_bm25_downweights_terms_present_in_every_document():
 
 def test_retriever_matches_prefixed_words_and_omits_unrelated_chunks():
     chunks = [
-        Chunk("a#1", "a.md", "d", "זכאות חייל בודד למענק חודשי"),
+        Chunk("a#1", "a.md", "d", "זכאות עובד בודד למענק חודשי"),
         Chunk("b#1", "b.md", "d", "שעות פעילות ומסדרים ביחידה"),
     ]
-    ranked = ChunkRetriever(chunks).rank("מה מגיע לחייל הבודד?", 5)
+    ranked = ChunkRetriever(chunks).rank("מה מגיע לעובד הבודד?", 5)
     assert [c.id for c in ranked] == ["a#1"]
 
 

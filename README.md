@@ -41,7 +41,7 @@ a subject spread thinly across many documents (the motivating example was pay/ש
 own topic instead of scattering, so topic coverage self-organizes and a reviewer only has to create
 and read. Themes are kept as a separate layer and never create graph edges, so theme mode cannot
 cause the entity hairball. Theme mode is the default (`entity` remains available as an opt-out); see
-`docs/theme-layer-ab-results.md` for the hova/keva validation behind that choice.
+`docs/theme-layer-ab-results.md` for the corpus A/B validation behind that choice.
 
 ```text
 local documents -> chunks -> node signals (entities/keyphrases/summary, extracted per document)
@@ -92,8 +92,9 @@ For direct Gemini access, set the Gemini API key in `.env`:
 GEMINI_API_KEY=replace-me
 ```
 
-For the internal Apigee AI Gateway, set `APIGEE_API_KEY` instead and select the `apigee` transport
-as described below. Do not put either secret in `config.toml` or commit `.env`.
+For an API gateway in front of Gemini, an OpenAI-compatible endpoint or AWS Bedrock, select the
+matching transport as described under "Model transports" below and set that transport's key (or AWS
+credentials). Do not put any secret in `config.toml` or commit `.env`.
 
 Use either the installed command or the module entry point:
 
@@ -115,7 +116,7 @@ Global CLI options must appear **before** `generate`, `evaluate`, or `evaluate-f
 transport = "direct"
 api_key_env = "GEMINI_API_KEY"
 apigee_api_key_env = "APIGEE_API_KEY"
-apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+apigee_base_url = "https://gateway.example.com/v1/team"
 generation_model = "gemini-3.7-flash"
 judge_model = "gemini-3.7-flash"
 
@@ -163,13 +164,20 @@ log_level = "INFO"
 
 | Parameter | Code default | Meaning |
 |---|---:|---|
-| `gemini.transport` | `direct` | `direct` uses Google Gemini; `apigee` routes every structured Gemini call through the internal AI Gateway. |
-| `gemini.api_key_env` | `GEMINI_API_KEY` | Environment variable containing the Gemini key. |
-| `gemini.apigee_api_key_env` | `APIGEE_API_KEY` | Environment variable containing the Apigee API key. The key itself is never written to manifests. |
-| `gemini.apigee_base_url` | preprod `/ai_gateway/v1/hr` | HTTPS client-specific AI Gateway base URL. Change the environment/client segment only according to registered access. |
-| `gemini.generation_model` | `gemini-2.5-flash` | Topic-discovery and question-generation model. The example config explicitly selects another model. |
-| `gemini.judge_model` | `gemini-2.5-flash` | Answer-judging, topic-inference, and insights model. |
-| `gemini.seed` | `7` | Fixed sampling seed for every structured call, so identical prompts give identical responses (verified through the Apigee gateway). Use `-1` for fresh sampling. |
+| `gemini.transport` | `direct` | How model calls are made (the `[gemini]` section configures every provider): `direct` uses the Google Gemini API; `apigee` sends Gemini calls through an API gateway; `openai` uses any OpenAI-compatible chat-completions and embeddings endpoint; `bedrock` uses the AWS Bedrock Converse API. |
+| `gemini.api_key_env` | `GEMINI_API_KEY` | Environment variable containing the Gemini key (`direct`). |
+| `gemini.apigee_api_key_env` | `APIGEE_API_KEY` | Environment variable containing the gateway API key (`apigee`). The key itself is never written to manifests. |
+| `gemini.apigee_base_url` | empty | HTTPS base URL of the gateway client (`apigee`); required for that transport. |
+| `gemini.openai_base_url` | empty | Base URL of an OpenAI-compatible API, such as `https://llm.example.com/v1` (`openai`); required for that transport. Alloy calls `<url>/chat/completions` and `<url>/embeddings`. |
+| `gemini.openai_api_key_env` | `OPENAI_API_KEY` | Environment variable containing the key (`openai`). Set it to an empty string for an endpoint that needs no key. The key is never written to manifests. |
+| `gemini.openai_auth_header` | `Authorization` | Header that carries the key: `Authorization` sends `Bearer <key>`; any other name (for example `api-key` or `x-apikey`) sends the raw key. |
+| `gemini.openai_structured_output` | `json_schema` | `json_schema` sends the response schema in `response_format`; `json_object` uses plain JSON mode with the schema in the prompt, for servers without schema support. |
+| `gemini.bedrock_region` | empty | AWS region for `bedrock`; empty uses the AWS default (`AWS_REGION`, profile or config). |
+| `gemini.bedrock_profile` | empty | Named AWS profile for `bedrock`; empty uses the default credential chain (environment, shared config, role, or `AWS_BEARER_TOKEN_BEDROCK`). |
+| `gemini.bedrock_max_tokens` | `4096` | Output-token ceiling for each Bedrock call. Raise it when a model allows more and large structured responses are cut off. |
+| `gemini.generation_model` | `gemini-2.5-flash` | Topic-discovery and question-generation model: a model id for the selected transport (for example a Bedrock model id or inference profile, or an OpenAI-compatible model name). The example config explicitly selects another model. |
+| `gemini.judge_model` | `gemini-2.5-flash` | Answer-judging, topic-inference, and insights model, in the same format. |
+| `gemini.seed` | `7` | Fixed sampling seed for every structured call, so identical prompts give identical responses (verified through a Gemini gateway). Sent to `direct`, `apigee` and `openai`; Bedrock has no seed, so its responses are only as repeatable as the model. Use `-1` for fresh sampling. |
 | `generation.max_questions` | `30` | Maximum requested questions. This is a ceiling, not a guaranteed count. |
 | `generation.chunk_chars` | `12000` | Maximum normalized characters in one document chunk. The shipped example and corpus configs use `2000` (~500 tokens): smaller chunks give each document multiple knowledge-graph nodes (enabling `document_wide` questions and finer edges) and are easier for smaller models to process, while staying large enough to keep a typical rule intact. |
 | `generation.chunk_overlap_chars` | `800` | Overlap between consecutive chunks; must be smaller than `chunk_chars`. The example/corpus configs use `200` to match the smaller chunk size. |
@@ -189,7 +197,7 @@ log_level = "INFO"
 | `generation.max_cluster_nodes` | `12` | Maximum focus chunks in one evidence window. A larger topic is split into several contiguous windows; each call also sees up to `context_nodes` graph neighbors. |
 | `generation.min_cluster_edge_weight` | `2.0` | Minimum shared-entity strength for two nodes to merge into one topic cluster. Higher values prevent a single hub entity from fusing the whole corpus into one topic (the knowledge-graph "hairball"). |
 | `generation.max_cluster_size` | `40` | Clusters larger than this are split by weakest-edge removal so no single topic dominates. |
-| `generation.topic_mode` | `theme` | How topics are formed. `theme` (default) tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. `entity` clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin themes. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and one cheap theme-tagging pass over chunk summaries (both cached per document). Returned themes are snapped onto the vocabulary. See `docs/theme-layer-ab-results.md` for the hova/keva validation. |
+| `generation.topic_mode` | `theme` | How topics are formed. `theme` (default) tags each chunk with one theme from a small controlled vocabulary and groups by theme, so a subject spread thinly across the corpus (e.g. pay) becomes its own topic even when its chunks share few entities — coverage self-organizes without a hand-written topic list. `entity` clusters chunks by shared entities instead, which can fragment sparse corpora and bury thin themes. Themes are a separate layer from entities and never create graph edges, so theme mode does not risk the entity hairball. Theme mode adds one corpus-level vocabulary call and one cheap theme-tagging pass over chunk summaries (both cached per document). Returned themes are snapped onto the vocabulary. See `docs/theme-layer-ab-results.md` for the corpus A/B validation. |
 | `generation.extract_themes` | `false` | Tag chunks with a theme without switching clustering (useful for inspection). Implied by `topic_mode = "theme"`. |
 | `generation.max_theme_vocabulary` | `20` | Ceiling on the controlled theme-vocabulary size derived for the corpus. |
 | `generation.verify_answer_completeness` | `false` | When `true`, each accepted answerable canonical question is re-checked against evidence re-selected for that specific question (not just its topic). Catches reference answers left incomplete or wrong by narrow topic-driven chunk selection; the answer is corrected against the broader evidence or the candidate is rejected. Costs one extra judge/generation model call per answerable canonical candidate. |
@@ -213,7 +221,7 @@ log_level = "INFO"
 | `generation.context_nodes` | `4` | Neighbor chunks shown with each focus window as context for integration questions; questions are based mainly on the window's focus chunks. |
 | `generation.closed_book_check` | `off` | `tag` marks questions a model answers fully without the documents (`closed_book_answerable=true`) and keeps them; `reject` drops them. Rejecting removes legitimate questions whose answers are also public, so `tag` is recommended. Costs two small calls per canonical candidate. |
 | `planning.coverage_target` | `0.35` | Share of each chunk's information units its questions should touch (see *Automatic sizing*). |
-| `planning.claims_per_question` | `3.2` | Average atomic claims per canonical question (measured on hova/keva). |
+| `planning.claims_per_question` | `3.2` | Average atomic claims per canonical question (measured on corpus A/B). |
 | `planning.margin_of_error` | `0.20` | 95% CI half-width for each topic's accuracy; sets a per-topic minimum (25 at 0.20). `0` disables it. |
 | `planning.max_topic_coverage` | `0.6` | The per-topic minimum never asks a topic for more than this share of its information units. |
 | `planning.variation_share` | `0.5` | Natural + ambiguous variants per canonical question; `generation.ambiguous_variation_share` sets the ambiguous part and `generation.unanswerable_ratio` the boundary share of the whole set. |
@@ -235,7 +243,7 @@ log_level = "INFO"
 | `evaluation.judge_max_answer_chars` | `20000` | Maximum chatbot-answer characters placed in one judge prompt. Longer values retain the beginning and end and record the omitted count. |
 | `evaluation.judge_max_context_chars` | `60000` | Maximum retrieved-context characters placed in one judge prompt, with the same bounded truncation metadata. |
 | `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
-| `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for direct and Apigee Gemini SDK requests. |
+| `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for model requests on every transport (the name is historical). |
 | `evaluation.retry_deadline_seconds` | `0` | Optional limit on retrying one Gemini or chatbot call: no retry starts later than this many seconds after the first attempt, so a call takes at most this plus one request timeout. `0` disables the limit. Part of the live evaluation contract. |
 | `evaluation.max_concurrency` | `1` | Chatbot/judge workers. Keep `1` for session-sensitive endpoints; values above `1` are opt-in. For `generate`, the same value (or `--max-concurrency`) sets graph-extraction workers, concurrent topic workers for question and boundary generation, and embedding requests; `1` keeps generation fully sequential and reproducible. |
 | `runtime.progress_enabled` | `true` | Enables English terminal progress bars. |
@@ -249,16 +257,21 @@ log_level = "INFO"
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
 
-### Apigee AI Gateway transport
+### Model transports
 
-To route question generation, judging, topic inference, insights, and prompt generation through the
-proprietary endpoint, change the transport and provide the key through `.env`:
+Question generation, judging, topic inference, insights, prompt generation and embeddings all go
+through one client chosen by `gemini.transport`. The `[gemini]` section name is historical: it
+configures every provider. Model names (`generation_model`, `judge_model`, `generation.embedding_model`)
+are ids for the selected provider. The chatbot under test is separate: `HttpChatbotAdapter` posts to
+any HTTP(S) endpoint with any headers.
+
+**API gateway in front of Gemini (`apigee`).**
 
 ```toml
 [gemini]
 transport = "apigee"
 apigee_api_key_env = "APIGEE_API_KEY"
-apigee_base_url = "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr"
+apigee_base_url = "https://gateway.example.com/v1/team"
 generation_model = "gemini-3.7-flash"
 judge_model = "gemini-3.7-flash"
 ```
@@ -268,11 +281,46 @@ APIGEE_API_KEY=replace-me
 ```
 
 Alloy configures the Google GenAI SDK in Vertex-compatible mode with an SDK placeholder key and
-sends the real credential only in the `x-apikey` header. The base URL must use HTTPS and include the
-AI Gateway client path. Unified quota response headers are recorded at `INFO` level as metric,
-request usage, daily usage, limit, and remaining allowance; no API key or response content is logged.
-The offline `report`, `review-export`, and `review-merge` commands do not initialize either Gemini
-transport and need no API key.
+sends the real credential only in the `x-apikey` header. The base URL must use HTTPS. Unified quota
+response headers, when the gateway returns them, are recorded at `INFO` level as metric, request
+usage, daily usage, limit, and remaining allowance; no API key or response content is logged.
+
+**OpenAI-compatible endpoint (`openai`).** Works with any server that implements
+`/chat/completions` (with `response_format` JSON schema, or JSON mode) and `/embeddings`: hosted
+OpenAI-style APIs, Azure-style gateways (`openai_auth_header = "api-key"`), LiteLLM, vLLM, Ollama.
+Attachments are not supported, so `conversion.backend = gemini` needs a Gemini transport.
+
+```toml
+[gemini]
+transport = "openai"
+openai_base_url = "https://llm.example.com/v1"
+openai_api_key_env = "OPENAI_API_KEY"
+generation_model = "your-model-name"
+judge_model = "your-model-name"
+```
+
+**AWS Bedrock (`bedrock`).** Uses the Converse API: the response schema is given to the model as one
+tool it must call, which every Bedrock model with tool use supports (Anthropic Claude, Amazon Nova and others;
+pick a Converse model id or inference profile). Install the optional client with
+`pip install -e '.[bedrock]'`. Credentials come from boto3's standard chain (environment variables,
+shared config or profile, instance role, or a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`), never from
+`config.toml`. PDF and image attachments are sent as document and image blocks. Embeddings support
+Amazon Titan and Cohere Embed models. Bedrock has no sampling seed.
+
+```toml
+[gemini]
+transport = "bedrock"
+bedrock_region = "us-east-1"
+generation_model = "anthropic.claude-3-5-sonnet-20241022-v2:0"   # or an inference-profile id
+judge_model = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+bedrock_max_tokens = 8192
+```
+
+The `openai` and `bedrock` clients are tested offline with a local HTTP server and a fake Bedrock
+client; they have not been run against a live endpoint here. Each endpoint (URL or region) gets its own
+call and corpus caches, and no transport's secret is written to manifests.
+The offline `report`, `review-export`, and `review-merge` commands do not initialize any model
+client and need no API key.
 
 ### Global CLI parameters
 
@@ -346,9 +394,9 @@ How many questions a knowledge base needs depends on how much it says, so Alloy 
 instead of guessing a `max_questions`:
 
 ```bash
-chatbot-eval --config hova_config.toml plan --documents hova_knowledge_base --output outputs/plan
+chatbot-eval --config corpus_config.toml plan --documents corpus_knowledge_base --output outputs/plan
 # review or edit outputs/plan/generation_plan.json, then:
-chatbot-eval --config hova_config.toml generate --documents hova_knowledge_base \
+chatbot-eval --config corpus_config.toml generate --documents corpus_knowledge_base \
   --plan outputs/plan/generation_plan.json --output outputs/questions --max-concurrency 6
 ```
 
@@ -363,8 +411,8 @@ generation). Each topic's canonical quota is the larger of
 
 Variations are `variation_share` of the canonical questions and boundary questions are
 `unanswerable_ratio` of the set, at least `min_boundary_per_topic` per topic. The plan also suggests
-topic granularity and window size for the corpus size (`plan --auto-graph` applies them). On hova
-(85 chunks, ~1,400 units) it proposes ~420 questions; on keva (240 chunks, ~4,300 units) ~830.
+topic granularity and window size for the corpus size (`plan --auto-graph` applies them). On corpus A
+(85 chunks, ~1,400 units) it proposes ~420 questions; on corpus B (240 chunks, ~4,300 units) ~830.
 
 `generation_plan.json` lists totals, per-topic `canonical` and `boundary` quotas with the rule
 that set each, and the graph settings used. Edit any number; `generate --plan` uses the per-topic
@@ -712,7 +760,7 @@ links, or the relevant passage; `reground` uses it to find the evidence). `quest
 |---|---|---|
 | `--questions PATH` | required | Silver CSV or JSONL to export for review. |
 | `--output DIR` | `outputs/review` | Destination for the review CSV and `.md`. |
-| `--name STEM` | `questions_for_review` | Base filename (stem) for the exported CSV/`.md`, e.g. `questions_for_review_hova`, so per-corpus exports do not need manual renaming. Unsafe characters are stripped. |
+| `--name STEM` | `questions_for_review` | Base filename (stem) for the exported CSV/`.md`, e.g. `questions_for_review_corpus_a`, so per-corpus exports do not need manual renaming. Unsafe characters are stripped. |
 | `--hebrew-columns` | off | Write Hebrew column headers for Hebrew-speaking reviewers. The `id` column keeps its English name because it is the machine join key. `review-merge` reads either language, so this choice is purely cosmetic. |
 | `--include-anchors` | off | Also export anchor rows. By default anchors are not reviewed as separate rows: each user phrasing shows its anchor's text in `parent_question`. `review-merge` keeps every anchor whose variant survived review, and `evaluate --approved-only` includes an anchor when its variant is approved. |
 
@@ -1303,7 +1351,7 @@ chatbot-eval --config config.toml \
 Logs include command state, counts, models, IDs, outcomes, latency, retries, candidate rejection
 reasons, and errors. They avoid complete questions/answers, API keys, and authentication headers.
 
-Gemini calls—direct or through Apigee—retry only transient timeouts, connection problems, throttling,
+Model calls (every transport) retry only transient timeouts, connection problems, throttling,
 and selected server errors according to `evaluation.max_retries`, with jittered exponential backoff
 and `Retry-After` support. Authentication, configuration, and schema-validation errors fail
 immediately. Every call uses `evaluation.gemini_request_timeout_seconds`, and
@@ -1344,6 +1392,7 @@ only a hash of the live chatbot URL.
 | `results_io.py` | Premade file import, column resolution, stored-error detection. |
 | `adapters.py` | Chatbot protocol and generic HTTP adapter. |
 | `llm.py` | Structured LLM protocol, Gemini implementation, persistent call cache. |
+| `llm_providers.py` | OpenAI-compatible and AWS Bedrock clients, and `build_llm`, which picks the client for `gemini.transport`. |
 | `evaluator.py` | Claim-level judging and outcome classification. |
 | `topics.py` | Optional Hebrew topic inference. |
 | `insights.py` | Cross-result diagnosis. |

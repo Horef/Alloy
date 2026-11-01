@@ -3,7 +3,7 @@
 `build_parser()` defines the commands (`generate`, `plan`, `generate-prompt`, `evaluate`,
 `evaluate-file`, `review-export`, `review-merge`, `revary`, `reground`, `add-broad`,
 `convert-pdf`, `report`) and their options. `main(argv)` loads settings, builds the model stack
-(`GeminiStructuredLLM`, the seeded call cache, and the generation journal), the corpus cache and the
+(`build_llm` picks the Gemini, OpenAI-compatible or Bedrock client; plus the seeded call cache and the generation journal), the corpus cache and the
 chatbot adapter, runs the command, and records it in a run manifest. Commands that need no model do
 not construct a client. Every command and option must appear in the README (a test checks).
 """
@@ -38,7 +38,8 @@ from .history import (
 )
 from .insights import generate_insights, insights_fingerprint, write_insights
 from .io import read_questions, write_evaluations, write_questions
-from .llm import CachedStructuredLLM, GeminiStructuredLLM
+from .llm import CachedStructuredLLM
+from .llm_providers import build_llm
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
 from .pdf_markdown import convert_path
@@ -50,7 +51,7 @@ from .report import write_report
 from .retrieval import CachedEmbedder, ModelEmbedder
 from .review import MergeDiagnostics, merge_review_file, write_review_file
 from .results_io import ImportDiagnostics, ResultColumns, read_premade_results
-from .contracts import cache_identity, model_identity, records_hash
+from .contracts import cache_identity, model_endpoint, model_identity, records_hash
 from .topics import infer_topics, topic_inference_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_export.add_argument("--questions", type=Path, required=True, help="Silver CSV or JSONL to export for review")
     review_export.add_argument("--output", type=Path, default=Path("outputs/review"), help="Destination for the review CSV/.md")
-    review_export.add_argument("--name", default="questions_for_review", help="Base filename (stem) for the exported CSV/.md, e.g. 'questions_for_review_hova'")
+    review_export.add_argument("--name", default="questions_for_review", help="Base filename (stem) for the exported CSV/.md, e.g. 'questions_for_review_corpus_a'")
     review_export.add_argument("--hebrew-columns", action="store_true", help="Write Hebrew column headers for reviewers (the 'id' column stays English); review-merge reads either language")
     review_export.add_argument("--include-anchors", action="store_true", help="Also export anchor (canonical intent) rows; by default they appear only as each variant's parent_question")
 
@@ -356,7 +357,7 @@ def _embedder(settings, llm, cache: CorpusAnalysisCache, concurrency: int = 4) -
         identity = hashlib.sha256(json.dumps({
             "model": settings.embedding_model, "dimensions": settings.embedding_dimensions,
             "transport": settings.gemini_transport,
-            "endpoint": settings.apigee_base_url if settings.gemini_transport == "apigee" else "",
+            "endpoint": model_endpoint(settings, direct=""),
         }, sort_keys=True).encode("utf-8")).hexdigest()[:16]
         path = cache.directory / "embeddings" / f"{identity}.jsonl"
     return CachedEmbedder(ModelEmbedder(
@@ -732,16 +733,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "convert-pdf" and "convert-pdf" in offline_commands:
         return _convert_pdf(args, settings, None, progress_enabled)
 
-    llm = GeminiStructuredLLM(
-        settings.api_key,
-        settings.max_retries,
-        transport=settings.gemini_transport,
-        apigee_api_key=settings.apigee_api_key,
-        apigee_base_url=settings.apigee_base_url,
-        request_timeout_seconds=settings.gemini_request_timeout_seconds,
-        seed=settings.seed,
-        retry_deadline_seconds=settings.retry_deadline_seconds,
-    )
+    llm = build_llm(settings)
     call_cache = _call_cache(args, settings, llm)
     if call_cache is not None:
         llm = call_cache

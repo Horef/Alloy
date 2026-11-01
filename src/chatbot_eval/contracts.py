@@ -39,11 +39,23 @@ def records_hash(records) -> str:
                                     ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def model_endpoint(settings, direct: str = "direct") -> str:
+    """The model endpoint a transport talks to, so a different gateway, server or region gets its own caches."""
+    transport = getattr(settings, "gemini_transport", "direct")
+    if transport == "apigee":
+        return getattr(settings, "apigee_base_url", "").rstrip("/")
+    if transport == "openai":
+        return getattr(settings, "openai_base_url", "").rstrip("/")
+    if transport == "bedrock":
+        return f"bedrock:{getattr(settings, 'bedrock_region', '')}:{getattr(settings, 'bedrock_profile', '')}"
+    return direct
+
+
 def model_identity(settings) -> dict:
     from .llm import STRUCTURED_CALL_CONTRACT
 
     transport = getattr(settings, "gemini_transport", "direct")
-    endpoint = getattr(settings, "apigee_base_url", "").rstrip("/") if transport == "apigee" else "direct"
+    endpoint = model_endpoint(settings)
     # Schemas, input normalization, and error categories decide what a judged record means; the call
     # mechanics in llm.py are versioned by STRUCTURED_CALL_CONTRACT instead of by their source.
     return {"contract_version": 3, "transport": transport,
@@ -61,7 +73,7 @@ def cache_identity(settings) -> dict:
     from .llm import STRUCTURED_CALL_CONTRACT
 
     transport = getattr(settings, "gemini_transport", "direct")
-    endpoint = getattr(settings, "apigee_base_url", "").rstrip("/") if transport == "apigee" else "direct"
+    endpoint = model_endpoint(settings)
     return {"contract_version": 3, "transport": transport,
             "endpoint_sha256": hashlib.sha256(endpoint.encode()).hexdigest(),
             "structured_call_contract": STRUCTURED_CALL_CONTRACT,

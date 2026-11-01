@@ -1,8 +1,8 @@
 """Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment.
 
 `load_settings(config_path, require_api_key=True)` reads the TOML file, loads a `.env` from the
-config file's folder, takes the Gemini or Apigee key from the environment variable the config names,
-and returns `Settings.validate()`d settings, so a bad value fails before any paid call. Every TOML
+config file's folder, takes the key for the selected transport (`direct`, `apigee`, `openai`) from the
+environment variable the config names (`bedrock` uses the AWS credential chain instead), and returns `Settings.validate()`d settings, so a bad value fails before any paid call. Every TOML
 key read here must also be in `config.example.toml` and the README parameter table (a test checks).
 """
 from __future__ import annotations
@@ -17,6 +17,11 @@ from typing import Any
 from dotenv import load_dotenv
 
 from .models import CANONICAL_SCORING, GENERATION_MODES
+
+
+# `direct`: Google Gemini API; `apigee`: Gemini through an API gateway; `openai`: any OpenAI-compatible
+# chat-completions endpoint; `bedrock`: AWS Bedrock Converse API.
+TRANSPORTS = frozenset({"direct", "apigee", "openai", "bedrock"})
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,13 @@ class Settings:
     conversion_min_precision: float = 0.8
     conversion_ocr: str = "auto"
     conversion_ocr_languages: str = "heb+eng"
+    openai_api_key: str = ""
+    openai_base_url: str = ""
+    openai_auth_header: str = "Authorization"
+    openai_structured_output: str = "json_schema"
+    bedrock_region: str = ""
+    bedrock_profile: str = ""
+    bedrock_max_tokens: int = 4096
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -161,14 +173,20 @@ class Settings:
             errors.append("generation.prompt_instruction_profile must be compact or guided")
         if self.prompt_answer_policy not in {"balanced", "conservative"}:
             errors.append("generation.prompt_answer_policy must be balanced or conservative")
-        if self.gemini_transport not in {"direct", "apigee"}:
-            errors.append("gemini.transport must be direct or apigee")
-        if self.gemini_transport == "apigee" and not (
-            self.apigee_base_url.startswith("https://") and "/ai_gateway/" in self.apigee_base_url
-        ):
-            errors.append("gemini.apigee_base_url must be an HTTPS AI Gateway client URL")
+        if self.gemini_transport not in TRANSPORTS:
+            errors.append(f"gemini.transport must be one of {', '.join(sorted(TRANSPORTS))}")
+        if self.gemini_transport == "apigee" and not self.apigee_base_url.startswith("https://"):
+            errors.append("gemini.apigee_base_url must be an HTTPS gateway URL")
+        if self.gemini_transport == "openai" and not self.openai_base_url.startswith(("https://", "http://")):
+            errors.append("gemini.openai_base_url must be an HTTP(S) URL when transport is openai")
+        if self.openai_structured_output not in {"json_schema", "json_object"}:
+            errors.append("gemini.openai_structured_output must be json_schema or json_object")
+        if self.bedrock_max_tokens < 1:
+            errors.append("gemini.bedrock_max_tokens must be positive")
+        if not self.openai_auth_header.strip():
+            errors.append("gemini.openai_auth_header must not be empty")
         if not self.generation_model.strip() or not self.judge_model.strip():
-            errors.append("Gemini model names must not be empty")
+            errors.append("generation_model and judge_model must not be empty")
         if self.max_questions < 1:
             errors.append("generation.max_questions must be positive")
         if self.chunk_chars < 80:
@@ -285,10 +303,19 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
     transport = str(_get(data, "gemini", "transport", "direct")).strip().lower()
     key_name = str(_get(data, "gemini", "api_key_env", "GEMINI_API_KEY"))
     apigee_key_name = str(_get(data, "gemini", "apigee_api_key_env", "APIGEE_API_KEY"))
+    openai_key_name = str(_get(data, "gemini", "openai_api_key_env", "OPENAI_API_KEY")).strip()
     api_key = os.getenv(key_name, "")
     apigee_api_key = os.getenv(apigee_key_name, "")
-    selected_key_name = apigee_key_name if transport == "apigee" else key_name
-    selected_key = apigee_api_key if transport == "apigee" else api_key
+    openai_api_key = os.getenv(openai_key_name, "") if openai_key_name else ""
+    selected_key_name, selected_key = {
+        "apigee": (apigee_key_name, apigee_api_key),
+        "openai": (openai_key_name, openai_api_key),
+        # Bedrock credentials come from the AWS credential chain (environment, profile, role).
+        "bedrock": ("", "unused"),
+    }.get(transport, (key_name, api_key))
+    # An empty openai_api_key_env means the endpoint needs no key (for example a local server).
+    if transport == "openai" and not openai_key_name:
+        selected_key = "unused"
     if require_api_key and not selected_key:
         raise ValueError(
             f"Missing {selected_key_name}. Copy .env.example to {config_path.parent / '.env'} "
@@ -298,10 +325,7 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         api_key=api_key,
         gemini_transport=transport,
         apigee_api_key=apigee_api_key,
-        apigee_base_url=str(_get(
-            data, "gemini", "apigee_base_url",
-            "https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr",
-        )).strip().rstrip("/"),
+        apigee_base_url=str(_get(data, "gemini", "apigee_base_url", "")).strip().rstrip("/"),
         generation_model=str(_get(data, "gemini", "generation_model", "gemini-2.5-flash")),
         judge_model=str(_get(data, "gemini", "judge_model", "gemini-2.5-flash")),
         max_questions=int(_get(data, "generation", "max_questions", 30)),
@@ -398,6 +422,13 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         conversion_min_precision=float(_get(data, "conversion", "min_text_precision", 0.8)),
         conversion_ocr=str(_get(data, "conversion", "ocr", "auto")).strip().lower(),
         conversion_ocr_languages=str(_get(data, "conversion", "ocr_languages", "heb+eng")).strip(),
+        openai_api_key=openai_api_key,
+        openai_base_url=str(_get(data, "gemini", "openai_base_url", "")).strip().rstrip("/"),
+        openai_auth_header=str(_get(data, "gemini", "openai_auth_header", "Authorization")).strip(),
+        openai_structured_output=str(_get(data, "gemini", "openai_structured_output", "json_schema")).strip().lower(),
+        bedrock_region=str(_get(data, "gemini", "bedrock_region", "")).strip(),
+        bedrock_profile=str(_get(data, "gemini", "bedrock_profile", "")).strip(),
+        bedrock_max_tokens=int(_get(data, "gemini", "bedrock_max_tokens", 4096)),
     ).validate()
 
 

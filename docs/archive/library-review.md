@@ -6,10 +6,10 @@ Reviewed 2026-09-06 against the then-current `src/chatbot_eval` checkout and imp
 
 The library is about 4,680 Python lines, with useful separation between documents, generation, adapters, evaluation, reports, and persistence. It does not need a rewrite. Its main weakness is **inconsistent contracts between those components**: the same input can acquire different meaning depending on the import path; classification can disagree with claim evidence; checkpoint identity covers some incidental settings while omitting other consequential ones.
 
-The baseline suite passed: **87 tests in 1.57 seconds**, using `conda run -n army python -m pytest -q`. Additional synthetic probes reproduced failures not covered by that suite. [Probe code](review_probes.py) and [observed results](review-probe-results.jsonl) are included. Run with:
+The baseline suite passed: **87 tests in 1.57 seconds**, using `conda run -n <env> python -m pytest -q`. Additional synthetic probes reproduced failures not covered by that suite. [Probe code](review_probes.py) and [observed results](review-probe-results.jsonl) are included. Run with:
 
 ```sh
-conda run --no-capture-output -n army python docs/review_probes.py
+conda run --no-capture-output -n <env> python docs/review_probes.py
 ```
 
 These probes print current behavior; they are not regression tests asserting that the bugs should remain. They use temporary files and fake adapters/LLMs, make no network calls, and should be converted into desired-behavior tests during implementation.
@@ -23,7 +23,7 @@ P1 means prioritize before relying on a new benchmark or long run. P2 means addr
 | E1 | P1 | Substring abstention detection overrides the judge even for a substantive correct answer. “The optional attachment is not provided. Submit the application tomorrow.” becomes `incorrect_abstention`. | Reproduced; `evaluator.py:looks_like_abstention`, `_evaluate_one` | [Evaluation](plans/evaluation-correctness.md) |
 | E2 | P1 | Clarification/abstention success takes precedence over false claims. Two false claims can coexist with `correct_abstention` or `correct_clarification`; reported risky rate and aggregate false-claim count can both be zero. | Reproduced with accepted judge-score objects; `classify`, `report.py:build_summary` | Evaluation |
 | E3 | P1 | Identical benchmark IDs are insufficient for metric comparability when errors change denominators. Turning the sole failed answer into a judge error yields a favorable 50-point accuracy delta, with zero paired improvements. | Reproduced; `report.py:build_comparison` | Evaluation |
-| D1 | P1 | Premade imports erase clarification/form/parent metadata and atomic claim structure. The clarification-label bug is established in the prior hova review; `reference_claims` are also always rebuilt as one whole-answer claim. | Code inspection and prior CSV evidence; `results_io.py` | [Data/generation](plans/data-generation-integrity.md) |
+| D1 | P1 | Premade imports erase clarification/form/parent metadata and atomic claim structure. The clarification-label bug is established in the prior corpus A review; `reference_claims` are also always rebuilt as one whole-answer claim. | Code inspection and prior CSV evidence; `results_io.py` | [Data/generation](plans/data-generation-integrity.md) |
 | D2 | P1 | CSV source serialization is lossy. `Name \| Amount \| Deadline` round-trips as `Name`, while JSONL preserves it. Real table extraction uses this same delimiter. | Reproduced; `io.py:write_questions`, `read_questions` | Data/generation |
 | R1 | P1 | A valid final checkpoint entry without a newline loads, but the next append concatenates JSON objects and breaks subsequent resume. Both checkpoint types are affected. | Reproduced; `artifacts.py` | [Run reliability](plans/run-reliability.md) |
 | R2 | P1 | A generation-checkpoint signature mismatch on the last line without a newline is treated as a torn write, and the entry is discarded instead of rejecting the incompatible resume. | Reproduced, synthetic file becomes zero bytes; `StructuredCallCheckpoint._load` | Run reliability |
@@ -75,6 +75,6 @@ Avoid adding an agent system, vector store, optimizer, generic plugin framework,
 
 ## Scope and confidence
 
-Reviewed the source modules, associated tests, CLI paths, package configuration, and the prior hova evidence. Confirmed cases are marked as reproduced or inspected; semantic-generation concerns are explicitly limitations. No paid LLM calls, live chatbot requests, deployment, or historical data edits were performed. No claim is made that this is an exhaustive security audit or that the remaining code is defect-free.
+Reviewed the source modules, associated tests, CLI paths, package configuration, and the prior corpus A evidence. Confirmed cases are marked as reproduced or inspected; semantic-generation concerns are explicitly limitations. No paid LLM calls, live chatbot requests, deployment, or historical data edits were performed. No claim is made that this is an exhaustive security audit or that the remaining code is defect-free.
 
 The three plans include concrete implementation boundaries, compatibility choices, and desired tests. A smaller implementer can take one plan at a time; it should not attempt a simultaneous broad rewrite.

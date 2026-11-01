@@ -4,15 +4,27 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
-## 2026-11-01 - Prompt rules from the hova/keva team review; optional audience
-Changed: merged the closed hova and keva team reviews (`review-merge`, then `reground` of team-edited rows; rows the KB cannot ground were dropped from the sets and archived in `dropped_ungrounded_team_questions.jsonl`). Compared every reviewer edit before/after and every rejection (keva rejections from the domain the owner asked to skip were excluded). Lessons now in the generation prompts: answers speak to the user and never cite "the document"; answer only what is asked (reviewers cut facts appended from a second document); state the apply channel and approver when the evidence has them; skip calendar/list/table trivia and compound questions; unanswerable answers refer the user to the responsible channel. New optional `generation.audience` keeps questions to one population (keva had hova-population questions). Intent duplicates reviewers flagged sit at cosine 0.82-0.91, inside the range of distinct variants, so the duplicate threshold is unchanged. Decisions: D13.
+## 2026-11-01 - Strict doc lifecycle, provider-neutral model transports, organisation names removed
+Changed: `lifecycle_strict = true` and `tools/docmap.py` 5.4.0 from the skill. New `llm_providers.py`: `gemini.transport` also accepts `openai` (any OpenAI-compatible chat-completions and embeddings endpoint, key in a configurable header, optional JSON-object mode) and `bedrock` (AWS Converse API, forced tool call carries the schema, boto3 as the optional `[bedrock]` extra, PDF/image attachments, Titan and Cohere embeddings); `build_llm` picks the client and `contracts.model_endpoint` puts the endpoint in every cache identity. The Apigee transport lost its built-in URL and the `/ai_gateway/` check. Removed organisation, corpus and personal names from tracked files: corpora became "corpus A/B/C", Hebrew test fixtures and acronym examples are neutral, `.gitignore` uses generic patterns (this machine's folders moved to `.git/info/exclude`), `docs/RUNS.md` is git-ignored. Kept on the owner's instruction: the generation prompts and the docs that describe them (soldier persona and examples). Decisions: D14.
+
+| Verification command | Result |
+|---|---|
+| `python -m pytest -q` | 359 passed (19 new: 15 in `tests/test_llm_providers.py` with real HTTP round trips, retries, a fake Bedrock client, the factory and cache identity, plus config tests) |
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors, 0 warnings, with `lifecycle_strict` on |
+| `git ls-files \| xargs grep -rIniE 'hova\|keva\|meitav\|digital\.idf\|\barmy\b'` | no matches outside `tools/docmap.py` |
+| `git check-ignore -v hova keva meitav docs/RUNS.md` | ignored by `.git/info/exclude` and `.gitignore` |
+
+Not verified: both new transports against a live endpoint or a real boto3 client. Next: try them live; decide on a neutral prompt variant.
+
+## 2026-11-01 - Prompt rules from the corpus A/B team review; optional audience
+Changed: merged the closed corpora A and B team reviews (`review-merge`, then `reground` of team-edited rows; rows the KB cannot ground were dropped from the sets and archived in `dropped_ungrounded_team_questions.jsonl`). Compared every reviewer edit before/after and every rejection (corpus B rejections from the domain the owner asked to skip were excluded). Lessons now in the generation prompts: answers speak to the user and never cite "the document"; answer only what is asked (reviewers cut facts appended from a second document); state the apply channel and approver when the evidence has them; skip calendar/list/table trivia and compound questions; unanswerable answers refer the user to the responsible channel. New optional `generation.audience` keeps questions to one population (corpus B had corpus A-population questions). Intent duplicates reviewers flagged sit at cosine 0.82-0.91, inside the range of distinct variants, so the duplicate threshold is unchanged. Decisions: D13.
 
 | Verification command | Result |
 |---|---|
 | `python -m pytest -q` | 342 passed |
 | `python tools/docmap.py update && python tools/docmap.py check` | 0 errors; 1 warning (skill 5.4.0 available, upgrade not in scope) |
 
-Next: generate the meitav set with these prompts and watch the review for document references.
+Next: generate the corpus C set with these prompts and watch the review for document references.
 
 ## 2026-11-01 - Upgrade to project-foundations 5.3 (docmap 5.3.0)
 Changed: replaced `tools/docmap.py` with the skill's 5.3.0 copy (adds `find`, `get`, `stats`, `docs`, the doc-lifecycle and FACTS checks, `rotate`). Gave every doc in `docs/` a Status line (the "verified" dates are the docs' last-edit date, 2026-10-23, not a fresh read; `theme-layer-ab-results.md` is `historical`). Rotated the work log (six entries moved to `docs/worklog/2026-10.md`). Added `[tool.docmap.facts]` (seven shipped defaults from `config.example.toml`, generated into `docs/FACTS.md`; existing docs still copy those values, to be replaced as they are touched) and raised `agents_max_lines` to 120. AGENTS.md gained the Scaffolding line, `find`/`get` at session start and five maintenance rows (Status lines, FACTS, superseding decisions, scaffolding feedback, milestone audit). Decisions: none.

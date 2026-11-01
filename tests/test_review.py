@@ -220,11 +220,11 @@ def test_review_merge_preserves_clarification_task_edits(tmp_path):
 
 
 def test_review_export_custom_basename_names_both_files(tmp_path):
-    csv_path, md_path = write_review_file([_question()], tmp_path, basename="questions_for_review_hova")
-    assert csv_path.name == "questions_for_review_hova.csv"
-    assert md_path.name == "questions_for_review_hova.md"
+    csv_path, md_path = write_review_file([_question()], tmp_path, basename="questions_for_review_corpus_a")
+    assert csv_path.name == "questions_for_review_corpus_a.csv"
+    assert md_path.name == "questions_for_review_corpus_a.md"
     # The read-only markdown points reviewers at the correctly named editable CSV.
-    assert "questions_for_review_hova.csv" in md_path.read_text(encoding="utf-8")
+    assert "questions_for_review_corpus_a.csv" in md_path.read_text(encoding="utf-8")
 
 
 def test_review_export_sanitizes_unsafe_basename(tmp_path):

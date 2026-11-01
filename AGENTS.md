@@ -51,9 +51,10 @@ settings, outputs): [README.md](README.md). Scaffolding: the project-foundations
 
 ## Data safety
 
-This project handles internal IDF documents. Never commit or push corpora, outputs, or caches:
-`hova/`, `keva/`, `knowledge_base/`, `outputs/`, `.chatbot_eval_cache/`, `.env`, `config.toml`,
-`*.pdf`, `*.xlsx`, `*.docx`. They are in `.gitignore`; check `git status` before every commit and
+This project handles internal documents. Never commit or push corpora, outputs, or caches:
+`corpora/`, `knowledge_base/`, `outputs/`, `.chatbot_eval_cache/`, `.env`, `config.toml`,
+`*.pdf`, `*.xlsx`, `*.docx`. They are in `.gitignore` (this machine's own corpus folders are in
+`.git/info/exclude`); check `git status` before every commit and
 never use `git add -f` for them. Never paste corpus text into commit messages, docs, docstrings or
 tests. Tracked files name `AGENTS.local.md` keys, never their values: no absolute paths, user or
 host names (`docmap.py check` flags home paths and the local file's paths).
@@ -79,7 +80,7 @@ against this table before committing, and update docs in the same commit as the 
 | Add or change an import boundary | `docs/ARCHITECTURE.md` and `[[tool.docmap.forbid]]` in `pyproject.toml` |
 | Add a relative link in a doc | Make sure it resolves, with exact case: macOS ignores case, CI does not (*guarded*) |
 | Finish a unit of work | `docs/STATUS.md` (overwrite) and a new entry at the top of `docs/WORKLOG.md` with commands and results |
-| Run a command whose results you report | `python tools/docmap.py runs` and commit `docs/RUNS.md`; cite the run id in `docs/WORKLOG.md` |
+| Run a command whose results you report | `python tools/docmap.py runs` (updates the git-ignored local `docs/RUNS.md`); cite the run id in `docs/WORKLOG.md` |
 | Learn a fact about this machine (path, interpreter, limit, quirk) | `AGENTS.local.md` only; if every machine needs that key, add it to `AGENTS.local.example.md` |
 | Change a default or choose between alternatives | The next D entry in `docs/DECISIONS.md`; to reverse one, add an entry that supersedes it |
 | Start multi-session work | A plan in `docs/plans/` whose first line is `Status: ...`; move it to `docs/archive/` when done |

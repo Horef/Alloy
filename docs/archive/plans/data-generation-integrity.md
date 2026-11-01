@@ -22,7 +22,7 @@ Files: `models.py`, `validation.py`, `io.py`, `results_io.py`, `cli.py`, their t
 
 Tests: equivalent CSV/JSONL tasks normalize identically; legacy answerability; three behaviors; missing versus contradictory form; strict booleans; atomic claims; source/reference separation; parent mapping; partial import; all invalid; malformed headers/extra cells. Include a synthetic two-claim answer and verify that its evaluation still has two fixed claims after premade import.
 
-Acceptance for local hova: fresh imports retain 236 answer / 50 clarify / 50 abstain tasks and 50 ambiguous forms, preserve known parent relationships, and recognize the historical placeholders. Run this read-only check against the source CSVs; do not overwrite or silently relabel old evaluated JSONL.
+Acceptance for local corpus A: fresh imports retain 236 answer / 50 clarify / 50 abstain tasks and 50 ambiguous forms, preserve known parent relationships, and recognize the historical placeholders. Run this read-only check against the source CSVs; do not overwrite or silently relabel old evaluated JSONL.
 
 ## 2. Make CSV provenance lossless
 
@@ -96,4 +96,4 @@ Tests: one-topic cap; impossible minimum/cap combination; locally unavailable qu
 
 Implement sections 1–2 first because they directly affect the next evaluation. Follow with document completeness and generation behavior. Keep old CSV/JSONL readable through explicit migration defaults and preserve historical files. New metadata must be defaulted when loading old artifacts; old artifacts should be marked legacy/unknown where information cannot be recovered.
 
-Run focused import/IO/document/generator tests, then the full army suite and `git diff --check`. Add one synthetic generation → CSV/JSONL → import → fake evaluation regression that checks behaviors, parent mapping, claims, and complete provenance. No live model call or rewrite of hova outputs is necessary to complete the implementation.
+Run focused import/IO/document/generator tests, then the full suite and `git diff --check`. Add one synthetic generation → CSV/JSONL → import → fake evaluation regression that checks behaviors, parent mapping, claims, and complete provenance. No live model call or rewrite of corpus A outputs is necessary to complete the implementation.

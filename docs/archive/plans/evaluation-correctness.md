@@ -70,6 +70,6 @@ Pass expected behavior, question form, all-task violations, and evidence-availab
 
 Increment an explicit evaluation-contract version and include it in fresh checkpoints/manifests. Regenerating HTML from historical records should not silently rejudge or rewrite their old outcome labels. Rejudging corrected imports must use fresh compatible checkpoints and new output directories.
 
-Run focused evaluator/report/insight tests, then the full army suite. Add a small synthetic end-to-end import → judge → report test with a mixed task set. Offline completion means the metric contract is correct for supplied judge evidence, not that an LLM judge is calibrated; calibration requires a separately reviewed set and live judging.
+Run focused evaluator/report/insight tests, then the full suite. Add a small synthetic end-to-end import → judge → report test with a mixed task set. Offline completion means the metric contract is correct for supplied judge evidence, not that an LLM judge is calibrated; calibration requires a separately reviewed set and live judging.
 
 Handoff: implement sections 1–3 first, including tests and documentation, then coordinate section 4 with bounded-evidence work. No live calls or deployment are needed.

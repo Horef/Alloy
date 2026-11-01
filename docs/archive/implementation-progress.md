@@ -18,10 +18,10 @@ User authorization: implement the reviewed prompt, evaluation, data-integrity, a
 
 ## Validation
 
-- Intended environment: `conda run -n army python -m pytest -q` — **165 passed**.
+- Intended environment: `conda run -n <env> python -m pytest -q` — **165 passed**.
 - `python -m compileall -q src` — passed.
 - `git diff --check` — passed.
-- Both historical `hova/silver_questions_results_*.csv` files imported read-only: 336 rows each; 236 answer / 50 clarify / 50 abstain; 186 canonical / 100 natural / 50 ambiguous; 150 mapped parents; zero skipped rows. The older export retains 33 recognized infrastructure errors and the newer export has zero.
+- Both historical `corpus_a/silver_questions_results_*.csv` files imported read-only: 336 rows each; 236 answer / 50 clarify / 50 abstain; 186 canonical / 100 natural / 50 ambiguous; 150 mapped parents; zero skipped rows. The older export retains 33 recognized infrastructure errors and the newer export has zero.
 
 ## Deliberate limitations and live follow-up
 

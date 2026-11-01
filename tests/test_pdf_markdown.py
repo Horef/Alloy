@@ -18,17 +18,17 @@ from chatbot_eval.pdf_markdown import (
 # Visual-order lines as pdfplumber returns them from a Word-made Hebrew PDF (synthetic text).
 VISUAL_TO_LOGICAL = [
     (
-        'Personnel( א"כא לש 3.2.1 להונל םאתהב ,הנשב השפוח ימי 18-ל יאכז רידס תורישב לייח',
-        'חייל בשירות סדיר זכאי ל-18 ימי חופשה בשנה, בהתאם לנוהל 3.2.1 של אכ"א (Personnel',
+        'Personnel( ל"כנמ לש 3.2.1 להונל םאתהב ,הנשב השפוח ימי 18-ל יאכז הקלחמב דבוע',
+        'עובד במחלקה זכאי ל-18 ימי חופשה בשנה, בהתאם לנוהל 3.2.1 של מנכ"ל (Personnel',
     ),
     (".שארמ םימי 7 תוחפל 1234 ספוט תועצמאב תשגומ השקבה .)Directorate", "Directorate). הבקשה מוגשת באמצעות טופס 1234 לפחות 7 ימים מראש."),
     ("15/11/2026-ה דע םלושי רזחהה .מ\"ק 10 לע הלוע", "עולה על 10 ק\"מ. ההחזר ישולם עד ה-15/11/2026"),
     (".רודמה שאר ידי לע ,דבלב 50% לש רזחה", "החזר של 50% בלבד, על ידי ראש המדור."),
-    ("ישדוח קנעמ 1,250.50 דדוב לייח", "חייל בודד 1,250.50 מענק חודשי"),
+    ("ישדוח קנעמ 1,250.50 דדוב דבוע", "עובד בודד 1,250.50 מענק חודשי"),
     (".תכרעמב 401 ספוט תשגה .1", "1. הגשת טופס 401 במערכת."),
-    ("www.idf.il רתאל וא", "או לאתר www.idf.il"),
+    ("www.example.com רתאל וא", "או לאתר www.example.com"),
     # A left-to-right line keeps its order; only the embedded Hebrew run is reversed.
-    ("The term רושיק ןיצק is used.", "The term קצין קישור is used."),
+    ("The term טקיורפ להנמ is used.", "The term מנהל פרויקט is used."),
 ]
 
 
@@ -55,7 +55,7 @@ def test_segments_restore_hebrew_and_split_columns_at_wide_gaps():
     assert all(segment.rtl for segment in segments)
     # A glyph drawn twice to fake bold is kept once; two equal neighboring letters are both kept.
     assert _segments(doubled)[0].text == "בא"
-    assert _segments(_chars("לייח", x0=100))[0].text == "חייל"
+    assert _segments(_chars("דבוע", x0=100))[0].text == "עובד"
 
 
 def _line(text, top, *, x0=300.0, x1=520.0, size=11.0, bold=False):

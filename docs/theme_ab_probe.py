@@ -6,8 +6,8 @@ Theme mode re-extracts node signals once (the theme_signature changes the per-do
 which is a one-time cost; afterwards both graphs are cheap to rebuild.
 
 Usage:
-    python docs/theme_ab_probe.py --config hova/hova_config.toml --documents hova/hova_knowledge_base \
-        --cache hova/.chatbot_eval_cache --look-for שכר
+    python docs/theme_ab_probe.py --config corpus_a/corpus_config.toml --documents corpus_a/corpus_knowledge_base \
+        --cache corpus_a/.chatbot_eval_cache --look-for שכר
 """
 from __future__ import annotations
 

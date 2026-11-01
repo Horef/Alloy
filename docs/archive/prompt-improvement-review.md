@@ -1,6 +1,6 @@
 # Evaluation-driven prompt improvement: review and implementation plan
 
-Reviewed 2026-09-06 and implemented offline 2026-09-07. Scope: `src/chatbot_eval` and local `hova` artifacts. The implementation is complete at the contract/test level; it is not a claim of improved live-model performance.
+Reviewed 2026-09-06 and implemented offline 2026-09-07. Scope: `src/chatbot_eval` and local `corpus A` artifacts. The implementation is complete at the contract/test level; it is not a claim of improved live-model performance.
 
 ## Conclusion
 
@@ -12,7 +12,7 @@ This is larger than a prompt-template edit: it spans import fidelity, evidence s
 
 ### 1. The importer erases the behavior we want to improve
 
-Both `hova/silver_questions_results_20260826_100425.csv` and `hova/silver_questions_results_20260831_154905.csv` contain **236 answer, 50 clarify, and 50 abstain** tasks. Each also contains 50 `ambiguous` question forms. `results_io.py:read_premade_results` ignores these columns and assigns `ANSWER` to every answerable row. It also defaults the question form to canonical.
+Both `corpus_a/silver_questions_results_20260826_100425.csv` and `corpus_a/silver_questions_results_20260831_154905.csv` contain **236 answer, 50 clarify, and 50 abstain** tasks. Each also contains 50 `ambiguous` question forms. `results_io.py:read_premade_results` ignores these columns and assigns `ANSWER` to every answerable row. It also defaults the question form to canonical.
 
 Consequently both saved evaluations contain **286 answer, zero clarify, and 50 abstain** tasks. Their clarification success rate is null. For example, `ROW00141` asks which documents are needed for a ת״ש request; the reference asks the user to distinguish between two request types. The imported task is nevertheless `answer`, and the response is classified as hallucination rather than missing clarification.
 
@@ -37,7 +37,7 @@ The older run also contains **33 responses matching the current `placeholder_err
 
 All **672 saved results have empty `retrieved_context`**. Neither CSV exports a runtime retrieved-context column. Gold `source_excerpts` are not a replacement for the context actually seen by the chatbot. Missing telemetry does not prove retrieval returned nothing, and unsupported-by-reference detail is not automatically proof that the model invented it.
 
-The latest `oren-prompt-upd-2` package was generated from `evaluation-upd` on September 2. No subsequent evaluation of that latest prompt was found in `hova/outputs`.
+The latest `prompt-run-upd-2` package was generated from `evaluation-upd` on September 2. No subsequent evaluation of that latest prompt was found in `corpus_a/outputs`.
 
 ### 3. The revision generator cannot inspect the interaction
 
@@ -80,7 +80,7 @@ Files: `results_io.py`, `cli.py`, `tests/test_results_io.py`, CLI tests, README.
 4. Add tests covering all three behaviors, natural/ambiguous forms, absent columns, explicit overrides, invalid values, conflicting values, and strict mode. Test that an imported clarification reaches the evaluator's clarification branch.
 5. Add a small synthetic CSV fixture, not a copy of the local operational dataset.
 
-Acceptance: the two original hova CSVs import with 236/50/50 behavior counts and 50 ambiguous forms using their explicit chatbot-answer column. The old CSV yields 33 recognized placeholders. Do not overwrite old reports. Do not reuse stale judge checkpoints for corrected question definitions.
+Acceptance: the two original corpus A CSVs import with 236/50/50 behavior counts and 50 ambiguous forms using their explicit chatbot-answer column. The old CSV yields 33 recognized placeholders. Do not overwrite old reports. Do not reuse stale judge checkpoints for corrected question definitions.
 
 ### Step 2 — Make revision evidence concrete and genuinely bounded
 
@@ -154,10 +154,10 @@ If guided prompts still fail reliably, the next architectural option is a separa
 
 ## Validation and handoff
 
-Run focused tests for each step, then `conda run -n army python -m pytest -q` and `git diff --check` once integration is complete. Use fake structured LLMs for offline generation/repair tests. Do not claim these tests demonstrate Flash compliance.
+Run focused tests for each step, then `conda run -n <env> python -m pytest -q` and `git diff --check` once integration is complete. Use fake structured LLMs for offline generation/repair tests. Do not claim these tests demonstrate Flash compliance.
 
 Suggested implementer instruction:
 
-> Implement Steps 1–4 and the offline insight changes in Step 5 from this plan, in order. Preserve public artifact compatibility and historical hova files. Start with importer tests that reproduce the lost clarification metadata. Add bounded structured evidence and profiles with deterministic core assembly, including cache/manifests and documentation. Run the army test suite. Do not make live model calls or deploy. Report implementation results separately from the outstanding target-model experiment.
+> Implement Steps 1–4 and the offline insight changes in Step 5 from this plan, in order. Preserve public artifact compatibility and historical corpus A files. Start with importer tests that reproduce the lost clarification metadata. Add bounded structured evidence and profiles with deterministic core assembly, including cache/manifests and documentation. Run the test suite. Do not make live model calls or deploy. Report implementation results separately from the outstanding target-model experiment.
 
 The highest priority is faithful evaluation metadata, followed by richer evidence and a guided decision procedure. Increasing the severity of the wording alone would leave both the evaluation defects and the lack of behavioral validation unresolved.

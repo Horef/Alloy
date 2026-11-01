@@ -29,14 +29,14 @@ def test_apigee_client_uses_gateway_sdk_configuration(monkeypatch):
 
     GeminiStructuredLLM(
         "", transport="apigee", apigee_api_key="secret",
-        apigee_base_url="https://preprod.apigee.digital.idf.il/ai_gateway/v1/hr/",
+        apigee_base_url="https://gateway.example.com/v1/team/",
     )
 
     assert captured["api_key"] == "apigee-placeholder"
     assert captured["vertexai"] is True
     assert captured["project"] == captured["location"] == ""
     assert captured["http_options"].api_version == "v1"
-    assert captured["http_options"].base_url.endswith("/ai_gateway/v1/hr")
+    assert captured["http_options"].base_url.endswith("/v1/team")
     assert captured["http_options"].headers == {"x-apikey": "secret"}
 
 

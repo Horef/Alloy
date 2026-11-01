@@ -1,6 +1,6 @@
 """Offline review probes: print observed behavior, not desired regression assertions.
 
-Run from the repository: conda run --no-capture-output -n army python docs/review_probes.py
+Run from the repository: conda run --no-capture-output -n <env> python docs/review_probes.py
 Only synthetic data and a TemporaryDirectory are used. No network calls.
 """
 from __future__ import annotations

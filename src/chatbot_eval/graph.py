@@ -14,7 +14,7 @@ extracted signals, so they are cheap, reproducible, and cache-friendly.
 
 Hebrew note: entity matching is done on a *canonical* form that tolerates the spelling
 variations common in Hebrew corpora -- attached one-letter prefixes (ו/ה/ב/ל/כ/מ/ש), the
-gershayim/geresh used in acronyms (צה"ל / צה״ל), niqqud, and Hebrew/Latin case/width -- while the
+gershayim/geresh used in acronyms (מע"מ / מע״מ), niqqud, and Hebrew/Latin case/width -- while the
 original surface form is preserved for display and provenance.
 """
 
@@ -34,7 +34,7 @@ from .documents import Chunk
 EdgeType = Literal["shared_entity", "keyphrase_overlap", "same_document"]
 
 # Hebrew attached prefixes that are frequently glued to a following word. Stripping a single
-# leading prefix lets "ולצה\"ל" match "צה\"ל". We strip conservatively (one prefix, and only when
+# leading prefix lets "ולמע\"מ" match "מע\"מ". We strip conservatively (one prefix, and only when
 # a reasonable stem remains) to avoid over-merging distinct words.
 _HEBREW_PREFIXES = ("ו", "ה", "ב", "ל", "כ", "מ", "ש")
 _HEBREW_LETTER = re.compile(r"[\u0590-\u05FF]")
@@ -74,7 +74,7 @@ def _strip_one_prefix(token: str) -> str | None:
     """Return ``token`` with a single leading Hebrew prefix removed, or None if not safely strippable.
 
     Strips one prefix letter from a token of at least four letters, and a second stacked prefix
-    when at least four letters remain after the first (``ולצהל`` -> ``צהל``). The function itself
+    when at least four letters remain after the first (``ולמעמ`` -> ``מעמ``). The function itself
     does not check whether the token is a named thing; :func:`entity_match_keys` calls it only for
     the first token of acronym-like or multi-token entities, so ordinary base words such as שכר or
     מעטפת, whose leading letter is part of the word, are left untouched.
@@ -82,7 +82,7 @@ def _strip_one_prefix(token: str) -> str | None:
     if len(token) < 4 or token[0] not in _HEBREW_PREFIXES:
         return None
     remainder = token[1:]
-    # Peel a second stacked prefix (e.g. ו+ל) so "ולצהל" -> "צהל".
+    # Peel a second stacked prefix (e.g. ו+ל) so "ולמעמ" -> "מעמ".
     if len(remainder) >= 4 and remainder[0] in _HEBREW_PREFIXES:
         remainder = remainder[1:]
     return remainder if len(remainder) >= 2 else None

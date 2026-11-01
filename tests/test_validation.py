@@ -12,12 +12,12 @@ def test_legacy_answer_gets_one_stable_reference_claim():
 
 
 def test_answer_without_claims_is_split_into_atomic_claims():
-    answer = "משרתים ברמת פעילות א' זכאים ל-4 לילות.\n- משרתים ברמת פעילות א'+ זכאים ל-5 לילות.\n- ההטבה מתחדשת כל שנה."
+    answer = "עובדים ברמת פעילות א' זכאים ל-4 לילות.\n- עובדים ברמת פעילות א'+ זכאים ל-5 לילות.\n- ההטבה מתחדשת כל שנה."
     question = SilverQuestion(id="Q1", topic="", question="מה?", expected_answer=answer)
     validate_question_set([question])
     assert question.reference_claims == [
-        "משרתים ברמת פעילות א' זכאים ל-4 לילות",
-        "משרתים ברמת פעילות א'+ זכאים ל-5 לילות",
+        "עובדים ברמת פעילות א' זכאים ל-4 לילות",
+        "עובדים ברמת פעילות א'+ זכאים ל-5 לילות",
         "ההטבה מתחדשת כל שנה",
     ]
 
