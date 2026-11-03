@@ -4,6 +4,18 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-03 - Upgrade to project-foundations 5.5.1 (docmap code graph)
+
+Changed: replaced `tools/docmap.py` 5.4.0 with 5.5.1 from the skill (code graph: `calls NAME`, `deps [PATH]`, `map --budget N`; MAP.md intro names them). `AGENTS.md` "Finding your way" step 4 now lists the three commands, as in the skill's template. No code changes. Decisions: none.
+
+| Verification command | Result |
+|---|---|
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors, 0 warnings (only `docs/MAP.md` intro regenerated) |
+| `python -m pytest -q` | 359 passed |
+| `python tools/docmap.py map --budget 400` | ranked symbols print; `calls`, `deps` run |
+
+Next: use `calls` and `deps` before refactors.
+
 ## 2026-11-01 - Strict doc lifecycle, provider-neutral model transports, organisation names removed
 Changed: `lifecycle_strict = true` and `tools/docmap.py` 5.4.0 from the skill. New `llm_providers.py`: `gemini.transport` also accepts `openai` (any OpenAI-compatible chat-completions and embeddings endpoint, key in a configurable header, optional JSON-object mode) and `bedrock` (AWS Converse API, forced tool call carries the schema, boto3 as the optional `[bedrock]` extra, PDF/image attachments, Titan and Cohere embeddings); `build_llm` picks the client and `contracts.model_endpoint` puts the endpoint in every cache identity. The Apigee transport lost its built-in URL and the `/ai_gateway/` check. Removed organisation, corpus and personal names from tracked files: corpora became "corpus A/B/C", Hebrew test fixtures and acronym examples are neutral, `.gitignore` uses generic patterns (this machine's folders moved to `.git/info/exclude`), `docs/RUNS.md` is git-ignored. Kept on the owner's instruction: the generation prompts and the docs that describe them (soldier persona and examples). Decisions: D14.
 

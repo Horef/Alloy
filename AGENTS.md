@@ -23,6 +23,8 @@ settings, outputs): [README.md](README.md). Scaffolding: the project-foundations
    **Before editing `src/chatbot_eval/` or `tests/`, read the "Rules here" section of its README.**
 3. The module docstring; `python tools/docmap.py show <path>` lists its symbols and importers.
 4. Before changing a function or class: `python tools/docmap.py where <Name>`; run the tests it lists.
+   `calls <Name>` shows its callers and callees, `deps <folder>` module imports and cycles,
+   `map --budget 2000` the repo's most-used symbols.
 5. Design and rationale: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (invariants, index) and the
    component's file in `docs/design/`.
 

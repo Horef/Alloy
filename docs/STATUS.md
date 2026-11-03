@@ -1,11 +1,11 @@
 # Status
-Updated 2026-11-01. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
+Updated 2026-11-03. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
 
 ## Works (verified)
 | Capability | How verified |
 |---|---|
 | All CLI workflows (`convert-pdf`, `plan`, `generate`, `review-export`/`review-merge`, `reground`, `revary`, `add-broad`, `evaluate`, `evaluate-file`, `generate-prompt`, `report`) | Offline suite with fake LLMs: `python -m pytest -q` → **342 passed** in 2.2 s, 2026-11-01 (`python` from `AGENTS.local.md`, Python 3.13) |
-| Project map and doc checks (`tools/docmap.py`, skill 5.3.0) | `python tools/docmap.py check` → 0 errors, 0 warnings, 2026-11-01; every doc in `docs/` has a Status line (verified dates are last-edit dates, not a fresh read) |
+| Project map and doc checks (`tools/docmap.py`, skill 5.5.1; includes the `calls`, `deps` and `map` code-graph commands) | `python tools/docmap.py check` → 0 errors, 0 warnings, 2026-11-03; every doc in `docs/` has a Status line (verified dates are last-edit dates, not a fresh read) |
 | Shareable checkout: machine facts only in the git-ignored `AGENTS.local.md` | `git check-ignore -v AGENTS.local.md` → `*.local.md`; `docmap.py check` finds no home paths in AGENTS.md, shims, READMEs or code headers, 2026-10-23 |
 | Import boundaries (only `llm.py` imports the Gemini SDK, only `llm_providers.py` imports `boto3`, nothing imports `cli.py`) | `docmap.py check` (forbid rules), 2026-11-01 |
 | Model transports `openai` and `bedrock` (D14) | `python -m pytest -q` → 359 passed, 2026-11-01: a local HTTP server stands in for an OpenAI-compatible endpoint and a fake client for Bedrock. **Not run against a live endpoint or a real boto3 client** |
