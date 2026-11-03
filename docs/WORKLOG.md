@@ -4,6 +4,18 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-03 - Plans sized by the user-facing set (D15)
+
+Changed: new `planning.user_facing_target`. Content sizing gave corpus C (1,698 documents, 3,575 chunks) a 151-topic, ~12,000-question plan because every chunk gets a question; reviewers only see the natural-wording questions, so the owner wants to state that number. The planner now scales every topic's canonical quota by one factor (at least one each) to the largest total whose user-visible set fits the target. Corpus C was re-planned with `max_cluster_size = 80` and `max_graph_topics = 45` (theme vocabulary reused with `--themes-from`, so no re-tagging). Also: the 38 / 51 ungrounded team rows of corpora A and B, archived on 2026-11-01, were put back as `missing_detail` abstention questions at the owner's request (outputs only, no code). Decisions: D15.
+
+| Verification command | Result |
+|---|---|
+| `python -m pytest -q` | 360 passed |
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors, 0 warnings |
+| `plan` on corpus C, `user_facing_target = 700` | 52 topics, 458 canonical + 104 boundary, user_facing 700, ~2,088 model calls estimated; graph extraction reused 950 of 1,698 cached documents |
+
+Next: owner runs `generate --plan` for corpus C, then `review-export`.
+
 ## 2026-11-03 - Upgrade to project-foundations 5.5.1 (docmap code graph)
 
 Changed: replaced `tools/docmap.py` 5.4.0 with 5.5.1 from the skill (code graph: `calls NAME`, `deps [PATH]`, `map --budget N`; MAP.md intro names them). `AGENTS.md` "Finding your way" step 4 now lists the three commands, as in the skill's template. No code changes. Decisions: none.

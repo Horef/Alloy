@@ -112,6 +112,7 @@ margin_of_error = 0.20              # 95% CI half-width per topic; sets a per-to
 max_topic_coverage = 0.6            # the per-topic minimum never exceeds this share of a topic's units
 variation_share = 0.5               # natural + ambiguous variants per canonical question
 min_boundary_per_topic = 2          # minimum boundary (unanswerable) questions per topic
+user_facing_target = 0              # >0: scale quotas so the user-visible set has about this many questions
 
 [cache]
 # Reuse locally extracted chunks and Gemini-discovered topic maps when document content and

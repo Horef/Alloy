@@ -10,6 +10,9 @@ sentences, list items, table rows with at least a few words) per chunk, then der
   ``margin_of_error`` -- but never more than its content can support;
 - user variations as a share of canonical questions, and boundary questions as a share of the
   total with a per-topic minimum;
+- with ``user_facing_target`` set, all canonical quotas are scaled together (keeping their ratios,
+  at least one per topic) so the set the users see -- the whole set, or in user_facing mode the
+  natural_user + ambiguous + broad questions -- has about that many questions;
 - grouping parameters: topic size cap and evidence-window size so one model call has roughly
   ``questions_per_call`` questions of material.
 
@@ -68,6 +71,8 @@ class PlanningParameters:
     mode: str = "standard"
     # Corpus + population broad questions when enabled (one per topic is added); -1 = disabled.
     broad_estimate: int = -1
+    # Size of the user-visible set to aim for; canonical quotas are scaled to it. 0 = content-sized.
+    user_facing_target: int = 0
 
 
 class TopicPlan(BaseModel):
@@ -161,12 +166,15 @@ def build_plan(
             name=topic.name, chunks=len(topic.node_ids), information_units=sum(topic_units),
             canonical=canonical, boundary=0, reason=reason,
         ))
+    if parameters.user_facing_target > 0 and topic_plans:
+        canonical_target = _canonical_for_target(parameters, len(topic_plans))
+        scaled = _largest_remainder({plan.name: float(plan.canonical) for plan in topic_plans}, canonical_target, 1)
+        for plan in topic_plans:
+            plan.canonical = scaled[plan.name]
+            plan.reason += f"; scaled to user_facing_target {parameters.user_facing_target}"
     canonical_total = sum(plan.canonical for plan in topic_plans)
-    variations = round(canonical_total * parameters.variation_share)
-    ambiguous = round(variations * parameters.ambiguous_share)
+    variations, ambiguous, boundary = _derived_counts(canonical_total, len(topic_plans), parameters)
     boundary_minimum = parameters.min_boundary_per_topic * len(topic_plans)
-    share = parameters.boundary_share
-    boundary = max(boundary_minimum, round(share * (canonical_total + variations) / (1 - share))) if share < 1 else 0
     boundary_quotas = _largest_remainder(
         {plan.name: float(plan.information_units) for plan in topic_plans}, boundary,
         parameters.min_boundary_per_topic if boundary >= boundary_minimum else 0,
@@ -174,10 +182,7 @@ def build_plan(
     for plan in topic_plans:
         plan.boundary = boundary_quotas.get(plan.name, 0)
     user_facing = parameters.mode == "user_facing"
-    natural = canonical_total + boundary if user_facing else variations - ambiguous
-    # Broad questions are an upper bound: population questions exist only for populations the documents address.
-    broad = parameters.broad_estimate + len(topic_plans) if parameters.broad_estimate >= 0 else 0
-    total = canonical_total + boundary + natural + ambiguous + broad
+    natural, broad, total, user_facing_total = _set_sizes(canonical_total, len(topic_plans), parameters)
     unit_values = sorted(units.values())
     return GenerationPlan(
         corpus={
@@ -190,7 +195,7 @@ def build_plan(
         totals={
             "canonical": canonical_total, "variations": variations, "natural_user": natural,
             "ambiguous": ambiguous, "boundary": boundary, "broad_max": broad, "total": total,
-            "user_facing": natural + ambiguous + broad if user_facing else total,
+            "user_facing": user_facing_total,
             "estimated_model_calls": _estimated_calls(canonical_total, natural + ambiguous, boundary, parameters),
         },
         topics=topic_plans,
@@ -208,8 +213,42 @@ def build_plan(
         ] + ([
             "user_facing mode: every canonical and boundary question also gets one natural_user phrasing; "
             "the canonical forms become anchors, so the user-facing set is natural_user + ambiguous.",
-        ] if user_facing else []),
+        ] if user_facing else []) + ([
+            f"user_facing_target {parameters.user_facing_target}: canonical quotas were scaled together "
+            f"(ratios kept, at least one per topic) so the user-visible set has about that many questions.",
+        ] if parameters.user_facing_target > 0 else []),
     )
+
+
+def _derived_counts(canonical: int, topics: int, parameters: PlanningParameters) -> tuple[int, int, int]:
+    """Variations, ambiguous and boundary totals that follow from a canonical total."""
+    variations = round(canonical * parameters.variation_share)
+    ambiguous = round(variations * parameters.ambiguous_share)
+    share = parameters.boundary_share
+    minimum = parameters.min_boundary_per_topic * topics
+    boundary = max(minimum, round(share * (canonical + variations) / (1 - share))) if share < 1 else 0
+    return variations, ambiguous, boundary
+
+
+def _set_sizes(canonical: int, topics: int, parameters: PlanningParameters) -> tuple[int, int, int, int]:
+    """natural_user, broad (upper bound), total and user-visible counts for a canonical total."""
+    variations, ambiguous, boundary = _derived_counts(canonical, topics, parameters)
+    user_facing = parameters.mode == "user_facing"
+    natural = canonical + boundary if user_facing else variations - ambiguous
+    # Broad questions are an upper bound: population questions exist only for populations the documents address.
+    broad = parameters.broad_estimate + topics if parameters.broad_estimate >= 0 else 0
+    total = canonical + boundary + natural + ambiguous + broad
+    return natural, broad, total, natural + ambiguous + broad if user_facing else total
+
+
+def _canonical_for_target(parameters: PlanningParameters, topics: int) -> int:
+    """Largest canonical total (at least one per topic) whose user-visible set stays within the target."""
+    best = topics
+    for canonical in range(topics, max(topics, parameters.user_facing_target) + 1):
+        if _set_sizes(canonical, topics, parameters)[3] > parameters.user_facing_target:
+            break
+        best = canonical
+    return best
 
 
 def _estimated_calls(canonical: int, variations: int, boundary: int, parameters: PlanningParameters) -> int:

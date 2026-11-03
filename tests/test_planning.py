@@ -50,6 +50,19 @@ def test_user_facing_plan_phrases_every_canonical_and_boundary_question():
     assert user["total"] == user["canonical"] + user["boundary"] + user["user_facing"]
 
 
+def test_user_facing_target_scales_canonical_quotas_keeping_ratios():
+    chunks = [_chunk("a.md#1", 60), _chunk("a.md#2", 60), _chunk("b.md#1", 60), _chunk("c.md#1", 2)]
+    topics = [GraphTopic("big", "", 1, ["a.md#1", "a.md#2"]), GraphTopic("mid", "", 1, ["b.md#1"]),
+              GraphTopic("tiny", "", 1, ["c.md#1"])]
+    base = PlanningParameters(margin_of_error=0, mode="user_facing", coverage_target=1.0)
+    full = build_plan(chunks, topics, base, graph={})
+    plan = build_plan(chunks, topics, PlanningParameters(**{**base.__dict__, "user_facing_target": 30}), graph={})
+    by_name = {topic.name: topic.canonical for topic in plan.topics}
+    assert full.totals["user_facing"] > 30 >= plan.totals["user_facing"] > 30 - 3
+    assert abs(by_name["big"] - 2 * by_name["mid"]) <= 1 and by_name["tiny"] >= 1
+    assert "user_facing_target" in plan.topics[0].reason
+
+
 def test_precision_floor_is_capped_by_what_the_content_supports():
     chunks = [_chunk("a.md#1", 50), _chunk("a.md#2", 50), _chunk("a.md#3", 50), _chunk("b.md#1", 40)]
     topics = [

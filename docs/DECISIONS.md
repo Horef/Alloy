@@ -20,6 +20,7 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 | D12 | Machine facts live in a git-ignored AGENTS.local.md (2026-10-23; status: accepted) |
 | D13 | Generation prompts follow the team-review lessons; optional audience (2026-11-01; status: accepted) |
 | D14 | Provider-neutral model transports; corpus and organisation names removed from tracked files (2026-11-01; status: accepted) |
+| D15 | Plans can be sized by the user-facing set (2026-11-03; status: accepted) |
 <!-- docmap:end -->
 
 ## D1. Question generation on a corpus knowledge graph (2026-09-20; status: accepted)
@@ -109,3 +110,10 @@ D1-D10 were reconstructed on 2026-10-13 from the commit messages cited in each e
 - **Alternatives:** renaming `[gemini]` to `[model]` - breaks every existing config for a cosmetic gain; LiteLLM as the only bridge - another dependency and service to run; rewriting the prompts for a neutral persona - loses wording tuned on team review (owner declined).
 - **Consequences:** `openai` has no attachments (`conversion.backend = gemini` needs a Gemini transport) and Bedrock has no seed, so its repeatability is model-dependent. Both clients were tested offline only (local HTTP server, fake Bedrock client); a model without forced tool choice or a gateway without `json_schema` fails at call time. History in git still contains the old names.
 - **Evidence / source:** `tests/test_llm_providers.py`; `docs/design/model-layer.md`; WORKLOG 2026-11-01.
+
+## D15. Plans can be sized by the user-facing set (2026-11-03; status: accepted)
+- **Context:** Content-based planning gave a 3,575-chunk corpus about 12,000 questions (151 topics). Reviewers only see the natural-wording questions, and the review site and review time set the budget, so the owner wants to state that number and have the formal questions follow.
+- **Decision:** New `planning.user_facing_target` (default 0 = off). When set, all canonical quotas are scaled by one factor (largest remainder, at least one per topic) to the largest canonical total whose user-visible set stays within the target; boundary and variation budgets follow as before.
+- **Alternatives:** lowering `coverage_target` - cannot go below one question per chunk; hand-editing the plan - error-prone for 100+ topics and loses the derived budgets; a global `max_questions` cap at generation time - would trim topics unevenly.
+- **Consequences:** With a target below the content size, not every chunk is represented; fewer, broader topics (larger `max_cluster_size`) keep per-topic estimates usable.
+- **Evidence / source:** `tests/test_planning.py::test_user_facing_target_scales_canonical_quotas_keeping_ratios`; `docs/design/planning.md`.

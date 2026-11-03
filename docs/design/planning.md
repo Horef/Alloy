@@ -28,6 +28,14 @@ ambiguous). Boundary questions are sized so they are `boundary_share` of the fin
 largest-remainder (Hamilton) method. In `user_facing` mode every canonical and boundary question also
 gets one natural phrasing.
 
+**User-facing target.** Content-based quotas grow with the corpus: every chunk gets a question, so
+a 3,575-chunk corpus was planned at about 12,000 questions. With `planning.user_facing_target` > 0
+the planner picks the largest canonical total whose user-visible set (natural + ambiguous + broad in
+`user_facing` mode, the whole set otherwise) stays within the target, by stepping the canonical
+total up from one per topic, and redistributes it over topics in proportion to their content quotas
+(largest remainder, at least one per topic). Boundary and variation budgets then follow from the
+scaled canonical total as usual. The "every chunk is represented" rule no longer holds in that case.
+
 **Binding.** The plan stores a fingerprint of the topic partition (names plus node IDs) and the graph
 settings that produced it. `generate --plan` re-applies those settings, rebuilds the graph, and
 refuses the plan if the topics no longer match, so a plan can never silently apply quotas to

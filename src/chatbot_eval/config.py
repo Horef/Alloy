@@ -95,6 +95,7 @@ class Settings:
     planning_max_topic_coverage: float = 0.6
     planning_variation_share: float = 0.5
     planning_min_boundary_per_topic: int = 2
+    planning_user_facing_target: int = 0
     generation_mode: str = "standard"
     canonical_scoring: str = "gap"
     broad_questions: bool = False
@@ -130,6 +131,7 @@ class Settings:
             ambiguous_share=self.ambiguous_variation_share,
             boundary_share=self.unanswerable_ratio,
             min_boundary_per_topic=self.planning_min_boundary_per_topic,
+            user_facing_target=self.planning_user_facing_target,
             questions_per_call=self.questions_per_call,
             mode=self.generation_mode,
             broad_estimate=(
@@ -169,6 +171,8 @@ class Settings:
             errors.append("planning.margin_of_error must be in [0, 1) (0 disables the per-topic floor)")
         if self.planning_variation_share < 0 or self.planning_min_boundary_per_topic < 0:
             errors.append("planning.variation_share and planning.min_boundary_per_topic must be non-negative")
+        if self.planning_user_facing_target < 0:
+            errors.append("planning.user_facing_target must be non-negative (0 disables it)")
         if self.prompt_instruction_profile not in {"compact", "guided"}:
             errors.append("generation.prompt_instruction_profile must be compact or guided")
         if self.prompt_answer_policy not in {"balanced", "conservative"}:
@@ -407,6 +411,7 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         planning_max_topic_coverage=float(_get(data, "planning", "max_topic_coverage", 0.6)),
         planning_variation_share=float(_get(data, "planning", "variation_share", 0.5)),
         planning_min_boundary_per_topic=int(_get(data, "planning", "min_boundary_per_topic", 2)),
+        planning_user_facing_target=int(_get(data, "planning", "user_facing_target", 0)),
         generation_mode=str(_get(data, "generation", "mode", "standard")).strip().lower(),
         canonical_scoring=str(_get(data, "evaluation", "canonical_scoring", "gap")).strip().lower(),
         broad_questions=_as_bool(_get(data, "generation", "broad_questions", False), "generation.broad_questions"),

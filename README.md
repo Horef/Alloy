@@ -226,6 +226,7 @@ log_level = "INFO"
 | `planning.max_topic_coverage` | `0.6` | The per-topic minimum never asks a topic for more than this share of its information units. |
 | `planning.variation_share` | `0.5` | Natural + ambiguous variants per canonical question; `generation.ambiguous_variation_share` sets the ambiguous part and `generation.unanswerable_ratio` the boundary share of the whole set. |
 | `planning.min_boundary_per_topic` | `2` | Minimum boundary questions per topic. |
+| `planning.user_facing_target` | `0` | Size of the user-visible set to aim for (`user_facing` mode: natural + ambiguous + broad; otherwise the whole set). Canonical quotas are scaled together to reach it, at least one per topic; `0` sizes by content. |
 | `generation.prompt_max_document_chars` | `100000` | Maximum document-excerpt characters supplied to system-prompt generation; topic coverage is balanced before extra excerpts are added. |
 | `generation.prompt_max_evaluation_chars` | `60000` | Maximum prior-evaluation evidence characters supplied to prompt revision. |
 | `generation.prompt_max_auxiliary_chars` | `30000` | Independent maximum for the current prompt and generated-insights context. |
@@ -411,7 +412,9 @@ generation). Each topic's canonical quota is the larger of
 
 Variations are `variation_share` of the canonical questions and boundary questions are
 `unanswerable_ratio` of the set, at least `min_boundary_per_topic` per topic. The plan also suggests
-topic granularity and window size for the corpus size (`plan --auto-graph` applies them). On corpus A
+topic granularity and window size for the corpus size (`plan --auto-graph` applies them). Set
+`planning.user_facing_target` to fix the size of the set reviewers see instead: every topic's
+canonical quota is scaled by the same factor (at least one each), and the rest follows from it. On corpus A
 (85 chunks, ~1,400 units) it proposes ~420 questions; on corpus B (240 chunks, ~4,300 units) ~830.
 
 `generation_plan.json` lists totals, per-topic `canonical` and `boundary` quotas with the rule
