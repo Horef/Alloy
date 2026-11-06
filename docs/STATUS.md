@@ -1,5 +1,5 @@
 # Status
-Updated 2026-11-03. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
+Updated 2026-11-06. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
 
 ## Works (verified)
 | Capability | How verified |
@@ -12,7 +12,7 @@ Updated 2026-11-03. Snapshot only - overwrite each session; history is in `docs/
 | Plan sizing by `planning.user_facing_target` (D15) | Offline test, 360 passed, 2026-11-03; live `plan` on corpus C (3,575 chunks): target 700 → 52 topics, 458 canonical, user_facing 700 (content sizing had proposed ~12,000) |
 | Run index | `python tools/docmap.py runs` → 16 local runs in the git-ignored `docs/RUNS.md`, 2026-10-23 |
 | CI (`.github/workflows/tests.yml`: tests and `docmap.py check` on Python 3.11 and 3.13) | GitHub Actions run for `f7faf4c` green, reported by the owner, 2026-10-23 |
-| Team-review round trip (`review-merge` → `reground` of team rows) on corpora A and B | 2026-11-01: corpus A 651 / corpus B 1059 merged; 38 / 51 team rows the KB cannot ground were kept as `missing_detail` abstention questions (owner's choice, 2026-11-01; team answer in reviewer notes) |
+| Team-review round trip (`review-merge` → `reground` of team rows) on corpora A and B | 2026-11-01: corpus A 651 / corpus B 1059 merged; 38 / 51 team rows the KB cannot ground were kept as `missing_detail` abstention questions (owner's choice, 2026-11-01; team answer in reviewer notes). 2026-11-06 audit against the KBs: 40 of the 89 are answerable and were relabelled to answer questions (`questions-final-20261106`), 3 dropped, 46 stay abstentions |
 | Theme-mode generation on the pilot corpus A | Live run recorded in `docs/theme-layer-ab-results.md` (2026-09-23) |
 
 ## Known limitations (README "Current limitations"; details in `docs/design/limitations.md`)

@@ -4,6 +4,16 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-06 - Chatbot answers merged, hallucination audit, team abstention rows relabelled
+Changed (outputs only, no code): merged the chatbot's answers for corpora A and B with the question metadata (`human-only` sets of `questions-final-20261101`; 330 / 515 rows matched on question and reference text) into `golden_question_results_nov_2026.csv` and ran `evaluate-file`. Corpus B showed 10.9% hallucination (49 of 449). Audited all 49 (and corpus A's 11) against the KBs: 31 of 49 were the judge penalising a correct answer on a team question that had been relabelled "abstain"; only 5 were true fabrications. Audited all 89 team rows (51 B, 38 A): 40 are not in the KB (abstention is right and the team answer is a KB gap), 40 are answerable from the KB, 3 were unusable. Why `reground` failed on the answerable ones: not retrieval (evidence limit 12 → 30 or question-only ranking regrounded 0-3 of 89) but the all-or-nothing check on free-text team answers, which carry extra details the KB lacks (41 rows), wording and number mismatches (21 / 10), and sometimes an unrelated old source (cross-document errors). With a KB-corrected reference the same `reground_one` grounded 40 of 40 (two needed a different source hint because the model re-typed the answer). Relabelled those 40 to answer questions, dropped 3 ill-formed ones, kept 46 as abstentions. Corpus B hallucination 10.9% → 4.9% (22; 12 audited as real errors), abstention success 39.5% → 61.1%; corpus A 3.8% → 2.5%. Decisions: none (owner asked for the relabel).
+
+| Verification command | Result |
+|---|---|
+| `evaluate-file` on both v2 files with `--resume` (unchanged rows reused from a trimmed copy of the old checkpoint), `--compare-with` the first run | 328 (A) and 514 (B) rows evaluated; the 66 + 44 `chatbot_error` rows (answer generation failed) are unchanged and excluded from rates |
+| `reground_one` on the 40 corrected references | 40 of 40 grounded |
+
+Not verified: the audit verdicts are LLM judgements read against the KB, spot-checked by quote only; 5 answers may come from a newer KB than the local copy. Next: re-run the chatbot on the 110 error rows; give the KB owners `team_rows_audit.csv` (46 KB gaps and 3 internal contradictions); consider a reground mode that rewrites the reference from the KB instead of refusing on partly unsupported team answers.
+
 ## 2026-11-03 - Plans sized by the user-facing set (D15)
 
 Changed: new `planning.user_facing_target`. Content sizing gave corpus C (1,698 documents, 3,575 chunks) a 151-topic, ~12,000-question plan because every chunk gets a question; reviewers only see the natural-wording questions, so the owner wants to state that number. The planner now scales every topic's canonical quota by one factor (at least one each) to the largest total whose user-visible set fits the target. Corpus C was re-planned with `max_cluster_size = 80` and `max_graph_topics = 45` (theme vocabulary reused with `--themes-from`, so no re-tagging). Also: the 38 / 51 ungrounded team rows of corpora A and B, archived on 2026-11-01, were put back as `missing_detail` abstention questions at the owner's request (outputs only, no code). Decisions: D15.
