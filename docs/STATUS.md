@@ -27,6 +27,7 @@ Updated 2026-11-06. Snapshot only - overwrite each session; history is in `docs/
 1. Generate the corpus C set from its 700-user-facing plan (owner runs `generate --plan`); then `review-export` and check whether reviewers still remove document references.
 2. Re-verify the design docs against the code at the next milestone (`python tools/docmap.py docs`); `lifecycle_strict` is on, so a missing or stale Status line now fails `check`.
 3. Owner: answer the remaining open questions in `docs/BRIEF.md`.
+3a. Owner: fix `reground` so a partly unsupported team answer is rewritten from the KB instead of refused (limitations item 8); re-run the chatbot on the 110 `chatbot_error` rows of the 2026-11-06 evaluations; give the KB owners `team_rows_audit.csv`.
 4. Try the `openai` and `bedrock` transports against a live endpoint (D14) before relying on them.
 5. TBD (owner): next feature priority; whether the generation prompts (soldier persona and examples) should get a neutral variant for other teams.
 

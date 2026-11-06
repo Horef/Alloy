@@ -1,5 +1,5 @@
 # 19. Known limitations
-Status: current (verified 2026-10-23)
+Status: current (verified 2026-11-06)
 
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
@@ -28,3 +28,12 @@ mitigate them.
    its pages are verified against the text layer, but pages without one cannot be verified.
 7. **Generated system prompts are starting points** that a manager must review; they are not a
    security control.
+8. **`reground` is all-or-nothing on free-text team answers.** `reground_one` returns no grounding
+   when any point of a team-written reference is not in the evidence (extra details, wording or
+   number mismatches, a link or figure the KB lacks) or when the model re-types the answer
+   differently (`model_altered_expected_answer`, seen on long answers). On the 2026-11-01 team
+   review, 40 of 89 refused rows were in fact answerable from the KB; retrieval was not the cause
+   (evidence limit 30 or question-only ranking regrounded 0-3 of 89). The rows that failed were then
+   turned into abstention questions, which made the chatbot look as if it hallucinated (corpus B:
+   10.9% before the 2026-11-06 relabel, 4.9% after). Until `reground` can rewrite a reference from
+   the KB, check each refused row against the documents before relabelling it as an abstention.
