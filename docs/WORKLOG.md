@@ -4,6 +4,17 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-06 - Upgrade to project-foundations 5.6.0 (docmap 5.6.0)
+Changed: replaced `tools/docmap.py` 5.5.1 with 5.6.0 from the skill; `AGENTS.md` gained the "Design for what will vary next" convention (new in 5.6, template Conventions section). No code changes. Decisions: none.
+
+| Verification command | Result |
+|---|---|
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors, 0 warnings (the "skill has 5.6.0" warning is gone) |
+| `python -m pytest -q` | 360 passed |
+| `python tools/docmap.py stats` | session-start read 8.5k tokens in total; WORKLOG is the largest part (2.5k), so rotate it when `check` warns |
+
+Next: none.
+
 ## 2026-11-06 - Chatbot answers merged, hallucination audit, team abstention rows relabelled
 Changed (outputs only, no code): merged the chatbot's answers for corpora A and B with the question metadata (`human-only` sets of `questions-final-20261101`; 330 / 515 rows matched on question and reference text) into `golden_question_results_nov_2026.csv` and ran `evaluate-file`. Corpus B showed 10.9% hallucination (49 of 449). Audited all 49 (and corpus A's 11) against the KBs: 31 of 49 were the judge penalising a correct answer on a team question that had been relabelled "abstain"; only 5 were true fabrications. Audited all 89 team rows (51 B, 38 A): 40 are not in the KB (abstention is right and the team answer is a KB gap), 40 are answerable from the KB, 3 were unusable. Why `reground` failed on the answerable ones: not retrieval (evidence limit 12 → 30 or question-only ranking regrounded 0-3 of 89) but the all-or-nothing check on free-text team answers, which carry extra details the KB lacks (41 rows), wording and number mismatches (21 / 10), and sometimes an unrelated old source (cross-document errors). With a KB-corrected reference the same `reground_one` grounded 40 of 40 (two needed a different source hint because the model re-typed the answer). Relabelled those 40 to answer questions, dropped 3 ill-formed ones, kept 46 as abstentions. Corpus B hallucination 10.9% → 4.9% (22; 12 audited as real errors), abstention success 39.5% → 61.1%; corpus A 3.8% → 2.5%. Decisions: none (owner asked for the relabel).
 

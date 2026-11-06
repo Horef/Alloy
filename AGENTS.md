@@ -61,6 +61,10 @@ never use `git add -f` for them. Never paste corpus text into commit messages, d
 tests. Tracked files name `AGENTS.local.md` keys, never their values: no absolute paths, user or
 host names (`docmap.py check` flags home paths and the local file's paths).
 
+## Conventions
+
+- **Design for what will vary next.** Before building something that will keep being used (a screen, a config schema, a file format, a function's signature, a report layout), ask what it will have to hold next: new parameters, conditions, item kinds, tests. Make it handle them from the data (iterate over fields, name values from their keys) rather than from a hand-written list of today's cases; where a special case stays, anything it does not list must still show or fail loudly, never vanish.
+
 ## When you change X, also update Y
 
 Agents have repeatedly changed code without updating the files that describe it. Check your diff
