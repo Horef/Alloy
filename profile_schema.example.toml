@@ -92,7 +92,7 @@ type = "date"
 use = "excluded"
 
 [[fields]]
-key = "endHovaService"
+key = "endMandatoryService"
 label = "סיום שירות חובה"
 group = "נתוני שירות"
 type = "date"
@@ -106,7 +106,7 @@ source = "birthDate"
 derivation = "years_since"
 sample_values = [18, 21, 26]
 
-# Once releaseDate and endHovaService reach the prompt, add for example:
+# Once releaseDate and endMandatoryService reach the prompt, add for example:
 # [[derived]]
 # key = "months_since_release"
 # label = "חודשים מהשחרור"

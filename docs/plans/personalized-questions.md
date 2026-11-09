@@ -135,7 +135,7 @@ logic stays out of `cli.py` wiring except for options.
 
 ## Verification
 
-Offline suite with fake LLMs for every stage; a live pilot on one topic of hova with 10-20 personas,
+Offline suite with fake LLMs for every stage; a live pilot on one topic of corpus A with 10-20 personas,
 double-reviewed, before personal questions count in any headline metric.
 
 ## Risks

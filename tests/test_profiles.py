@@ -41,7 +41,7 @@ def test_example_schema_loads_and_keeps_identifiers_out_of_conditions():
     assert not identifiers & set(schema.condition_keys())
     assert {"gender", "religion", "tashFamilyStatus", "serviceType", "age"} <= set(schema.condition_keys())
     # The platform does not send these yet, so nothing may condition on them.
-    assert not {"releaseDate", "endHovaService"} & set(schema.condition_keys())
+    assert not {"releaseDate", "endMandatoryService"} & set(schema.condition_keys())
 
 
 @pytest.mark.parametrize("field, message", [
