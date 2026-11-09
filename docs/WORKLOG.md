@@ -4,6 +4,16 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-09 - Personal-questions branch rebased onto main
+Changed: rebased the personalized-questions work (plan, profile schema, personas, new-document recipe) onto main. Dropped the branch's docmap upgrade (its Status lines, `docs/FACTS.md` and `lifecycle_strict` were already on main via 5.3 to 5.6) and its D13; renumbered the branch's decisions from D14, D15 to D16, D17 because main already uses D13 to D15. `lifecycle_exempt = ["docs/plans/*"]` in `pyproject.toml`: plans keep their own `Status: proposed | in progress | done` line (docs/plans/README.md). Design section 22 is unchanged (free on main). The two entries below date from before the rebase and cite the new numbers.
+
+| Verification command | Result |
+|---|---|
+| `PYTHONPATH=src python -m pytest -q` (the shared environment's editable install points at another checkout) | 408 passed |
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors; 2 warnings (this worktree has no `AGENTS.local.md`; skill has 5.11.0) |
+
+Next: the owner reviews and merges; then plan step 3 (rule extraction).
+
 ## 2026-11-06 - Upgrade to project-foundations 5.6.0 (docmap 5.6.0)
 Changed: replaced `tools/docmap.py` 5.5.1 with 5.6.0 from the skill; `AGENTS.md` gained the "Design for what will vary next" convention (new in 5.6, template Conventions section). No code changes. Decisions: none.
 

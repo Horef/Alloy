@@ -1,5 +1,5 @@
 # Status
-Updated 2026-11-06. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
+Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/WORKLOG.md` and `git log`.
 
 ## Works (verified)
 | Capability | How verified |
@@ -14,8 +14,11 @@ Updated 2026-11-06. Snapshot only - overwrite each session; history is in `docs/
 | CI (`.github/workflows/tests.yml`: tests and `docmap.py check` on Python 3.11 and 3.13) | GitHub Actions run for `f7faf4c` green, reported by the owner, 2026-10-23 |
 | Team-review round trip (`review-merge` → `reground` of team rows) on corpora A and B | 2026-11-01: corpus A 651 / corpus B 1059 merged; 38 / 51 team rows the KB cannot ground were kept as `missing_detail` abstention questions (owner's choice, 2026-11-01; team answer in reviewer notes). 2026-11-06 audit against the KBs: 40 of the 89 are answerable and were relabelled to answer questions (`questions-final-20261106`), 3 dropped, 46 stay abstentions |
 | Theme-mode generation on the pilot corpus A | Live run recorded in `docs/theme-layer-ab-results.md` (2026-09-23) |
+| Profile schema for personalized questions, following the platform's keys and user line (`profiles.py`, `profile_schema.example.toml`, `profile-check`; plan step 1, D16, D17) | `tests/test_profiles.py`, offline, 2026-10-27; whole suite 408 passed after rebasing onto main, 2026-11-09 |
+| Synthetic personas with pairwise coverage (`personas.py`, `personas`; plan step 2) | `tests/test_personas.py`; `chatbot-eval personas` on the example schema → 30 personas, 139/139 value pairs, 2026-10-27 |
 
 ## Known limitations (README "Current limitations"; details in `docs/design/limitations.md`)
+- Personalized questions: schema and personas exist (steps 1-2 of `docs/plans/personalized-questions.md`); generation still rejects personal types. Enum value lists and the birth-date format are provisional (`open_values`). Persona delivery (D17, provisional): the platform's dataset-evaluation upload sends no user line; the proposed platform patch is not in this repository.
 - Silver references and variant wording still need human review.
 - LLM judge not yet calibrated against a human-reviewed sample.
 - Corpus PDFs passed to `generate` directly are not OCR'd; scanned pages need `convert-pdf` (Tesseract or Gemini backend) first.
@@ -30,6 +33,7 @@ Updated 2026-11-06. Snapshot only - overwrite each session; history is in `docs/
 3a. Owner: fix `reground` so a partly unsupported team answer is rewritten from the KB instead of refused (limitations item 8); re-run the chatbot on the 110 `chatbot_error` rows of the 2026-11-06 evaluations; give the KB owners `team_rows_audit.csv`.
 4. Try the `openai` and `bedrock` transports against a live endpoint (D14) before relying on them.
 5. TBD (owner): next feature priority; whether the generation prompts (soldier persona and examples) should get a neutral variant for other teams.
+6. Personalized questions: plan step 3 (rule extraction, `conditions.py`). Owner / platform team: the `פרטי משתמש` upload column (D17) and the real value strings (`profile-check --profile` on one record, locally).
 
 ## Blockers
-- None recorded.
+- Personalized questions, step 5 (evaluation): the platform's dataset-evaluation upload must accept a per-row user line (platform team, D17).

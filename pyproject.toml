@@ -37,6 +37,7 @@ testpaths = ["tests"]
 link_exempt = ["docs/archive/*"]   # dated records; their relative links are historical
 agents_max_lines = 120
 lifecycle_strict = true            # a missing or stale Status line in a doc fails the check
+lifecycle_exempt = ["docs/plans/*"]   # plans keep their own `Status: proposed | in progress | done` line (docs/plans/README.md)
 
 # docs/FACTS.md: key defaults read from the shipped config; docs cite it instead of copying the value.
 [tool.docmap.facts]

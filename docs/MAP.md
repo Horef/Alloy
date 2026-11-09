@@ -15,7 +15,7 @@ symbols of the repo).
     - `adapters.py` — Chatbot adapters: the only way evaluation reaches a live chatbot. · imported by 4
     - `artifacts.py` — Run artifacts: atomic writes, resumable JSONL journals, and run manifests. · imported by 12
     - `cache.py` — Content-addressed local cache for corpus analysis and other expensive stage outputs. · imported by 4
-    - `cli.py` — Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. · imported by 6
+    - `cli.py` — Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. · imported by 8
     - `config.py` — Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment. · imported by 7
     - `contracts.py` — Small nonsecret identities for model-derived artifacts and evaluation records. · imported by 13
     - `documents.py` — Corpus ingestion: reads supported documents and splits them into structure-aware chunks. · imported by 16
@@ -32,7 +32,9 @@ symbols of the repo).
     - `logging_utils.py` — Logging setup: console plus optional file handler, with SDK transport chatter quieted. · imported by 1
     - `models.py` — Pydantic data contracts shared by every component. · imported by 37
     - `pdf_markdown.py` — PDF to Markdown conversion for LLM processing, with Hebrew (right-to-left) support. · imported by 4
+    - `personas.py` — Synthetic personas: deterministic, obviously fake profiles covering the schema's condition values. · imported by 2
     - `planning.py` — Heuristic sizing of a question set from what a knowledge base actually contains. · imported by 5
+    - `profiles.py` — Profile schema: the personal-data fields a chatbot sees about its user, described as data. · imported by 4
     - `progress.py` — Progress bars (`track`) that show elapsed time and can be switched off with `--no-progress`. · imported by 7
     - `prompt_generator.py` — Drafts a reviewable Hebrew chatbot system prompt package from the corpus and prior results. · imported by 2
     - `prompt_policy.py` — Versioned, model-independent behavioral guidance assembled outside the LLM. · imported by 5
@@ -62,7 +64,9 @@ symbols of the repo).
   - `test_llm.py` — Tests for llm: Gemini client configuration, retries, the seeded call cache, embeddings, media.
   - `test_llm_providers.py` — Tests for llm_providers: the OpenAI-compatible and Bedrock clients, retries, and the transport factory.
   - `test_pdf_markdown.py` — Tests for pdf_markdown: bidi line order, columns, structure, OCR reporting, Gemini verification.
+  - `test_personas.py` — Tests of synthetic personas: pairwise coverage, determinism, derived targets, fake identifiers.
   - `test_planning.py` — Tests for planning: information units, plan quotas and their binding to the graph, `plan` command.
+  - `test_profiles.py` — Tests of the profile schema: loading and validation, profile checks without values, derived fields.
   - `test_prompt_generator.py` — Tests for prompt_generator: package validation and repair, bounded evidence, revision traceability.
   - `test_report.py` — Tests for report: metric populations, variant robustness, anchors, and strict/soft run comparison.
   - `test_results_io.py` — Tests for results_io: column aliases and overrides, error rows, metadata, per-row fingerprints.
@@ -81,10 +85,10 @@ symbols of the repo).
 - `chatbot_eval.contracts` — imported by 13
 - `chatbot_eval.graph` — imported by 12
 - `chatbot_eval.artifacts` — imported by 12
+- `chatbot_eval.cli` — imported by 8
 - `chatbot_eval.response_errors` — imported by 7
 - `chatbot_eval.progress` — imported by 7
 - `chatbot_eval.io` — imported by 7
-- `chatbot_eval.config` — imported by 7
 
 ## Enforced import boundaries
 
