@@ -298,6 +298,8 @@ def rule_personas(
     Order: one that satisfies every condition; one that violates the first condition; one missing the
     first condition's field (the chatbot should ask); the exact date or number boundary on each side
     for conditions that have one; then violations and missing fields of the remaining conditions.
+    A rule that is not `exclusive` gets no violating personas (the evidence never says what holds for
+    users outside the conditions), only satisfying, boundary-satisfying and missing-field ones.
     Other fields come from a base persona picked by seed and rule id, so the set varies between
     rules but not between runs. Which side of the rule a persona is on is classified here by the same
     evaluator the question stage uses, never assumed from how the persona was built.
@@ -332,17 +334,17 @@ def rule_personas(
     specs: list[tuple[str, str, dict[str, Any]]] = [("satisfies", "", all_sat)]
     variables = list(groups)
     first, rest = variables[0], variables[1:]
-    if first in viol:
+    if first in viol and rule.exclusive:
         specs.append(("violates", first, {**all_sat, **viol[first]}))
     specs.append(("missing", first, {**all_sat, **missing(first)}))
     for variable in variables:
         if variable in edges:
             if "sat" in edges[variable]:
                 specs.append(("boundary_satisfies", variable, {**all_sat, **edges[variable]["sat"]}))
-            if "viol" in edges[variable]:
+            if "viol" in edges[variable] and rule.exclusive:
                 specs.append(("boundary_violates", variable, {**all_sat, **edges[variable]["viol"]}))
     for variable in rest:
-        if variable in viol:
+        if variable in viol and rule.exclusive:
             specs.append(("violates", variable, {**all_sat, **viol[variable]}))
         specs.append(("missing", variable, {**all_sat, **missing(variable)}))
 

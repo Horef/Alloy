@@ -258,7 +258,7 @@ log_level = "INFO"
 | `conversion.ocr_languages` | `heb+eng` | Tesseract language packs used for OCR. |
 | `personalization.profile_schema` | empty | `generate-personal`: profile schema TOML/JSON (see `profile_schema.example.toml`). Relative paths are resolved next to the selected config file. `--profile-schema` overrides it. |
 | `personalization.as_of` | empty | Date (`YYYY-MM-DD`) the personas' derived values (age, tenure) hold at; empty means today. Pin it: expected answers depend on it. `--as-of` overrides it. |
-| `personalization.max_rules` | `0` | Keep only the first N extracted rules in document order (cost cap); `0` keeps all. |
+| `personalization.max_rules` | `0` | Keep at most N extracted rules, taken round-robin across files with the run seed (cost cap); `0` keeps all. |
 | `personalization.personas_per_rule` | `4` | At most this many personas per rule: one satisfying, one violating, one with the decisive field missing, then boundary values. |
 | `personalization.personal_basic_questions` | `0` | Also write this many `personal_basic` questions answered from the persona alone (one model call per distinct profile field). |
 | `personalization.seed` | `0` | Orders personas and `personal_basic` picks; the same seed, schema, rules and date reproduce the same personas. |
@@ -1341,23 +1341,31 @@ Stages, in order (model calls in brackets):
 
 1. **Rules** (one call per chunk that survives the prefilter). Each chunk is shown the schema's
    condition fields; the model returns rules of the form "when these profile predicates hold, this
-   follows" with one verbatim quote. Code rejects a rule with an unknown or identifier field, a
+   follows" with one verbatim quote and an `exclusive` flag (true only when the text says the
+   consequence holds *only* for users meeting the conditions, or says what applies otherwise; a list
+   of who is entitled is not exclusive). Code rejects a rule with an unknown or identifier field, a
    field not marked `condition`, an operator or value outside the field's domain (an open enum
-   field may hold an unlisted value; it is counted), no predicates, a blank consequence or a quote
-   that is not verbatim in the chunk. A chunk that names no profile field label or value is not sent
+   field may hold an unlisted value; it is counted), no predicates, a blank consequence, a quote
+   that is not verbatim in the chunk, or a quote that does not name every condition
+   (`condition_not_in_quote`: the field's label or a listed value, the threshold number, or the
+   year, compared by word stem so Hebrew prefixes and plurals do not matter). The same rule found in
+   several chunks (same conditions, near-identical consequence) is kept once, with the other places
+   listed in `other_sources` (`rules_merged_duplicates`). `--max-rules` then keeps rules round-robin
+   across files. A chunk that names no profile field label or value is not sent
    at all (`--no-prefilter` sends every chunk). The chunk's rules are cached by chunk text, schema
    fingerprint, prompt, model and transport.
 2. **Personas** (no calls). For each rule, code builds personas from the schema: one that satisfies
-   every predicate, one that violates a predicate, one with a decisive field absent from the profile,
+   every predicate, one with a decisive field absent from the profile, and, only for an exclusive
+   rule, one that violates a predicate (a non-exclusive rule says nothing about users outside it),
    and persona values at the exact boundary of a numeric, date or derived predicate (the last day a
    derived age or tenure holds, and the day after). Persona fields the rule does not mention come from
    the base covering personas.
 3. **Questions** (one call per rule, plus one per distinct field for `personal_basic`). The model drafts
-   one question (which must not restate the condition), the answer when the rule applies, the answer
-   when it does not, and a clarifying question. **Code decides which answer a persona gets** by
+   one question (which must not restate the condition), the answer when the rule applies and, for an
+   exclusive rule, the answer when it does not. **Code decides which answer a persona gets** by
    evaluating the rule against the persona's profile: applies, does not apply, or the decisive field is
-   missing, in which case the expected behavior is `clarify` and the expected answer is the
-   clarification. `personal_integration` questions carry the rule's quote and chunk as the source,
+   missing, in which case the expected behavior is `clarify` and the expected answer is built in code
+   from the labels of exactly the missing fields ("כדי לענות לך אני צריך לדעת: …"). `personal_integration` questions carry the rule's quote and chunk as the source,
    `persona_id`, `profile_keys` (the decisive profile fields) and `user_info`.
    `personal_basic` questions ("what is my birth date?") are built from the persona alone and cite no document.
 
@@ -1367,7 +1375,7 @@ Stages, in order (model calls in brackets):
 | `--output DIR` | `outputs/personal` | Destination for the files below. |
 | `--profile-schema PATH` | `personalization.profile_schema` | Profile schema TOML or JSON. |
 | `--as-of DATE` | `personalization.as_of`, then today | Date the personas' derived values hold at. Pin it: answers depend on it. |
-| `--max-rules N` | `personalization.max_rules` | Keep only the first N rules (cost cap, `0` = all). |
+| `--max-rules N` | `personalization.max_rules` | Keep at most N rules, round-robin across files, deterministic with the seed (cost cap, `0` = all). |
 | `--personas-per-rule N` | `personalization.personas_per_rule` | Personas per rule. |
 | `--personal-basic N` | `personalization.personal_basic_questions` | Also write N `personal_basic` questions. |
 | `--no-prefilter` | off | Send every chunk to rule extraction. |

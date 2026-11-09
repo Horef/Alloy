@@ -288,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     personal.add_argument("--output", type=Path, default=Path("outputs/personal"), help="Destination for the silver CSV/JSONL, profile_rules.jsonl, personas.jsonl and diagnostics")
     personal.add_argument("--profile-schema", type=Path, help="Profile schema TOML or JSON; default is config personalization.profile_schema")
     personal.add_argument("--as-of", help="Date (YYYY-MM-DD) the personas' derived values hold at; default is config personalization.as_of, then today")
-    personal.add_argument("--max-rules", type=int, help="Keep only the first N rules (cost cap, 0 = all); default is config personalization.max_rules")
+    personal.add_argument("--max-rules", type=int, help="Keep at most N rules, spread across files (cost cap, 0 = all); default is config personalization.max_rules")
     personal.add_argument("--personas-per-rule", type=int, help="Personas per rule; default is config personalization.personas_per_rule")
     personal.add_argument("--personal-basic", type=int, help="Also write N personal_basic questions answered from the persona alone; default is config personalization.personal_basic_questions")
     personal.add_argument("--no-prefilter", action="store_true", help="Send every chunk to rule extraction instead of only chunks naming a profile field or value")
@@ -354,7 +354,7 @@ def _generate_personal(args, settings, llm, call_cache, progress_enabled: bool) 
         chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
         extraction = extract_rules(
             chunks, schema, llm, settings.generation_model, cache=cache, transport=settings.gemini_transport,
-            prefilter=prefilter, max_rules=max_rules, max_concurrency=concurrency,
+            prefilter=prefilter, max_rules=max_rules, max_concurrency=concurrency, seed=seed,
         )
         base, _ = synthesize_personas(schema, as_of, seed=seed)
         result = build_personal_questions(

@@ -6,7 +6,7 @@ from chatbot_eval.conditions import ProfileRule, RulePredicate, evaluate_rule
 from chatbot_eval.documents import Chunk
 from chatbot_eval.io import read_questions, write_questions
 from chatbot_eval.models import ExpectedBehavior, QuestionForm, QuestionType
-from chatbot_eval.personal_questions import BasicDraft, PersonalDraft, build_personal_questions
+from chatbot_eval.personal_questions import BasicDraft, PersonalDraft, build_personal_questions, build_prompt, draft_error
 from chatbot_eval.personas import synthesize_personas
 from chatbot_eval.profiles import ProfileSchema
 from chatbot_eval.review import write_review_file
@@ -24,12 +24,12 @@ SCHEMA = ProfileSchema.model_validate({
 })
 RULE = ProfileRule(
     id="R-1", source_id=CHUNK.id, file="a.md", location="document", consequence="זכאי למענק",
-    quote="חייל בגיל 21 ומעלה זכאי למענק", when=[RulePredicate(key="age", op="gte", values=["21"])],
+    quote="חייל בגיל 21 ומעלה זכאי למענק", when=[RulePredicate(key="age", op="gte", values=["21"])], exclusive=True,
 )
 DRAFT = PersonalDraft(
     question="האם מגיע לי מענק?", answer_if_applies="כן, מגיע לך מענק.", claims_if_applies=["מגיע מענק"],
     answer_if_not="לא, המענק אינו חל עליך.", claims_if_not=["המענק אינו חל"],
-    general_rule_claim="מענק מגיע לחייל בגיל 21 ומעלה", clarification="מה תאריך הלידה שלך?",
+    general_rule_claim="מענק מגיע לחייל בגיל 21 ומעלה",
 )
 
 
@@ -42,9 +42,9 @@ class FakeLLM:
         return self.draft if schema is PersonalDraft else BasicDraft(question=self.basic)
 
 
-def _build(llm, **kwargs):
-    base, _ = synthesize_personas(SCHEMA, AS_OF, seed=1)
-    return build_personal_questions([RULE], [CHUNK], SCHEMA, llm, "m", AS_OF, base, seed=1, **kwargs)
+def _build(llm, rule=RULE, schema=SCHEMA, **kwargs):
+    base, _ = synthesize_personas(schema, AS_OF, seed=1)
+    return build_personal_questions([rule], [CHUNK], schema, llm, "m", AS_OF, base, seed=1, **kwargs)
 
 
 def test_each_persona_gets_the_side_its_profile_decides_and_a_missing_field_gets_clarify():
@@ -61,7 +61,7 @@ def test_each_persona_gets_the_side_its_profile_decides_and_a_missing_field_gets
         if verdict is None:
             assert question.expected_behavior == ExpectedBehavior.CLARIFY
             assert question.question_form == QuestionForm.AMBIGUOUS and question.reference_claims == []
-            assert question.expected_answer == DRAFT.clarification and "תאריך לידה" not in question.user_info
+            assert question.expected_answer == "כדי לענות לך אני צריך לדעת: תאריך לידה." and "תאריך לידה" not in question.user_info
         else:
             assert question.expected_behavior == ExpectedBehavior.ANSWER
             assert question.expected_answer == (DRAFT.answer_if_applies if verdict else DRAFT.answer_if_not)
@@ -69,6 +69,50 @@ def test_each_persona_gets_the_side_its_profile_decides_and_a_missing_field_gets
     assert {"applies", "does_not_apply", "missing_field"} <= set(result.diagnostics["questions_by_side"])
     assert len({q.id for q in result.questions}) == len(result.questions)
     validate_question_set(result.questions)
+
+
+def test_a_rule_that_is_not_exclusive_never_gets_a_does_not_apply_answer():
+    # The pilot's gender rule: "all men and women in role X" read as gender = male; a woman may still be covered.
+    schema = ProfileSchema.model_validate({"fields": [
+        {"key": "sex", "label": "מין", "type": "enum", "values": ["זכר", "נקבה"]},
+        {"key": "kind", "label": "סוג שירות", "type": "enum", "values": ["חובה", "קבע"]},
+    ]})
+    rule = RULE.model_copy(update={
+        "exclusive": False, "when": [RulePredicate(key="sex", op="eq", values=["זכר"]), RulePredicate(key="kind", op="eq", values=["חובה"])],
+    })
+    draft = DRAFT.model_copy(update={"answer_if_not": "", "claims_if_not": []})
+    llm = FakeLLM(draft)
+    result = _build(llm, rule=rule, schema=schema, personas_per_rule=8)
+    assert "does_not_apply" not in result.diagnostics["questions_by_side"] and result.questions
+    assert {q.expected_behavior for q in result.questions} <= {ExpectedBehavior.ANSWER, ExpectedBehavior.CLARIFY}
+    assert all("נקבה" not in q.user_info for q in result.questions)
+    assert "answer_if_not" in build_prompt(schema, rule, CHUNK) and "leave empty" in build_prompt(schema, rule, CHUNK)
+    assert "does NOT meet" in build_prompt(schema, rule.model_copy(update={"exclusive": True}), CHUNK)
+    # a non-exclusive draft may leave the "not" side blank; an exclusive one may not
+    assert draft_error(draft, schema, rule) is None
+    assert draft_error(draft, schema, rule.model_copy(update={"exclusive": True})) == "blank_answer"
+
+
+def test_the_clarification_asks_for_exactly_the_missing_fields():
+    schema = ProfileSchema.model_validate({"fields": [
+        {"key": "sex", "label": "מין", "type": "enum", "values": ["זכר", "נקבה"]},
+        {"key": "kind", "label": "סוג שירות", "type": "enum", "values": ["חובה", "קבע"]},
+        {"key": "lone", "label": "חייל בודד", "type": "bool"},
+    ]})
+    rule = RULE.model_copy(update={"when": [
+        RulePredicate(key="sex", op="eq", values=["זכר"]), RulePredicate(key="kind", op="eq", values=["חובה"]),
+        RulePredicate(key="lone", op="eq", values=["true"]),
+    ]})
+    result = _build(FakeLLM(), rule=rule, schema=schema, personas_per_rule=8)
+    asked = {q.expected_answer for q in result.questions if q.expected_behavior == ExpectedBehavior.CLARIFY}
+    assert asked == {
+        "כדי לענות לך אני צריך לדעת: מין.", "כדי לענות לך אני צריך לדעת: סוג שירות.",
+        "כדי לענות לך אני צריך לדעת: חייל בודד.",
+    }
+    for question in result.questions:
+        if question.expected_behavior == ExpectedBehavior.CLARIFY:
+            label = question.expected_answer.split(": ")[1].rstrip(".")
+            assert label not in question.user_info  # it asks for a field the profile really lacks
 
 
 def test_a_question_that_restates_a_condition_or_lacks_claims_is_rejected():

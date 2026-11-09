@@ -60,7 +60,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `report.py` | Evaluation metrics, run comparison, and the Hebrew HTML report. | `cli`, `insights`, `prompt_generator`, `review_probes` (+2) |
 | `response_errors.py` | Shared helpers for answer errors: the known placeholder answer and bounded retry delays. | `adapters`, `evaluator`, `llm`, `llm_providers` (+3) |
 | `results_io.py` | Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. | `cli`, `review_probes`, `test_results_io` |
-| `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `generator`, `test_generator`, `test_retrieval` |
+| `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `conditions`, `generator`, `test_generator` (+1) |
 | `review.py` | Human-readable review sidecar and lossless round-trip merge. | `cli`, `test_personal_questions`, `test_review` |
 | `topics.py` | Topic inference for saved questions without topics (`evaluate-file --infer-topics`). | `cli`, `test_topics` |
 | `validation.py` | Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). | `evaluator`, `io`, `results_io`, `review` (+3) |

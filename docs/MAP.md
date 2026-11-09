@@ -43,7 +43,7 @@ symbols of the repo).
     - `report.py` — Evaluation metrics, run comparison, and the Hebrew HTML report. · imported by 6
     - `response_errors.py` — Shared helpers for answer errors: the known placeholder answer and bounded retry delays. · imported by 7
     - `results_io.py` — Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. · imported by 3
-    - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 4
+    - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 5
     - `review.py` — Human-readable review sidecar and lossless round-trip merge. · imported by 3
     - `topics.py` — Topic inference for saved questions without topics (`evaluate-file --infer-topics`). · imported by 2
     - `validation.py` — Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). · imported by 7

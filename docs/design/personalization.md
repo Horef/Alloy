@@ -78,14 +78,37 @@ persona). Boundary values taken from document rules come from `rule_personas` (s
 
 **Rule extraction.** `extract_rules` shows each chunk the schema's condition fields (key, label,
 type, listed values, derived fields) and asks for rules `{when: [predicate], consequence, otherwise,
-quote}`; a predicate is `{key, op, values}` with ops `eq, ne, in, not_in, gt, gte, lt, lte`. One
+exclusive, quote}`; a predicate is `{key, op, values}` with ops `eq, ne, in, not_in, gt, gte, lt, lte`. One
 call per chunk (`RuleBatch`), at most six rules per chunk. Everything the model returns is checked
 in code (`validate_candidate`): the key must exist and be a condition (not an identifier, not
 `excluded`), the operator must fit the type, values must lie in the field's domain (an `open_values`
 enum may hold an unlisted value, which is kept and counted as `rules_with_unlisted_values`), the
-consequence must be non-blank and the quote must occur verbatim in the chunk. Rejections are
-counted by reason, never dropped silently. A rule's id is a hash of its predicates, consequence
-and source, so re-runs keep ids. Duplicates inside a run are removed.
+consequence must be non-blank, the quote must occur verbatim in the chunk and must name every
+condition (`condition_not_in_quote`, `predicate_stated`). Rejections are counted by reason, never
+dropped silently. A rule's id is a hash of its predicates, consequence and source, so re-runs keep
+ids.
+
+`exclusive` separates a *sufficient* condition ("a lone soldier is entitled to a supplement", which
+says nothing about others) from an *exclusive* one ("only lone soldiers", or "otherwise X"). The
+pilot showed the model inventing a "does not apply" answer for the first kind; now only exclusive
+rules get violating personas and a not-side answer. The flag defaults to false, the safe side.
+
+The quote check is a floor, not a proof, and is cheap on purpose: an enum predicate needs the field's
+distinctive label words or a listed value, a boolean the label, a number or derived predicate the
+number (for an ordered operator also its neighbour, since "מעל 24" is `gte 25`; a threshold of 0 or
+1 may instead be stated by the label, as in "is a parent"), a date the year. Words are compared by
+stem (Hebrew prefixes and plural endings ignored). Known false rejections: a synonym the schema does
+not list (the text says "גברים", the value is `זכר`) and a table row naming the value only by a
+section heading. On the 44 candidates cached from the pilot (made with the older prompt, which did
+not ask for a quote naming every condition) it rejects 20 and keeps 23 plus one merged duplicate;
+the new prompt should reject fewer.
+
+**Duplicates and the cap.** A rule found in several chunks (same canonical `when`, equal or
+token-similar consequence, threshold `SAME_CONSEQUENCE`) is kept once, the first in file order, with
+the other chunks in `other_sources`; `exclusive` is true only if every copy says so
+(`rules_merged_duplicates`). `max_rules` then picks rules round-robin by file, in a seeded order, so
+a cap no longer spends itself on the first document. Rules are extracted before the cap, so the cap
+saves question calls, not rule calls.
 
 The **prefilter** skips a chunk before any call when it contains no condition field label, enum
 value or derived label (`profile_terms`, normalized substring match). It is a cost cut with a known
@@ -97,19 +120,23 @@ turn it off. A failed call is counted (`chunks_failed`) and not cached.
 decides which side of a rule a persona is on.
 
 **Rule personas.** `rule_personas` starts from a base persona and edits only the fields the rule
-mentions: a persona that satisfies every predicate, one that violates a predicate, one with a
-decisive field removed (derived predicates remove the source date), and for each numeric, date or
-derived predicate the exact boundary: the first and last value that satisfy it and the value just
-outside (for derived values, the first and last day found by scanning around `as_of`). Output is
+mentions: a persona that satisfies every predicate, one with a decisive field removed (derived
+predicates remove the source date), for each numeric, date or derived predicate the exact boundary
+(the first and last value that satisfy it; for derived values, the first and last day found by
+scanning around `as_of`), and, for an exclusive rule only, personas that violate a predicate,
+including the value just outside each boundary. Output is
 deduplicated by persona id, ordered and capped by `personas_per_rule`; a rule no persona can satisfy
 is skipped as `rule_unsatisfiable`.
 
 **Questions.** One call per rule (`PersonalDraft`): the question, the answer if the rule applies,
-the answer if not, claims for each, one general-rule claim and a clarification. A draft is rejected
-when an answer or claims are missing or the question states the condition's value
+for an exclusive rule the answer if not, claims for each, and one general-rule claim. A draft is
+rejected when an answer or claims are missing or the question states the condition's value
 (`question_restates_condition`, since the persona's profile should carry it). For each persona the
-verdict picks the side: applies, does not apply, or `clarify` (form `ambiguous`, no claims,
-the clarification as expected answer). Claims are the branch claims plus the general-rule claim, so
+verdict picks the side: applies, does not apply (exclusive rules only; a non-exclusive rule's
+outside persona is skipped and counted as `non_exclusive_rule_persona_outside`), or `clarify` (form
+`ambiguous`, no claims). The clarification is built in code by `clarification_for` from the labels of
+the decisive fields the persona lacks, so it asks for exactly those and never for a field the persona
+holds. Claims are the branch claims plus the general-rule claim, so
 a judge can tell a correct conclusion from a lucky one. The quote and chunk are the question's
 evidence. `personal_basic` questions need one call per distinct profile field for the question text;
 the answer ("לפי הפרופיל שלך, label: value") is built from the persona and cites no document.

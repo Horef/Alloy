@@ -4,6 +4,22 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-09 - Personal pilot fixes: exclusive rules, quote check, dedupe, clarification
+Changed (branch `fix/personal-pilot`), after a live pilot of `generate-personal` on one corpus (10 rules, 39 questions) showed: an invented "does not apply" answer for list-style rules, quotes that do not support the predicate, "men and women in role X" read as gender=male, a clarification asking for fields the persona held, and 3 of 10 kept rules being cross-chunk duplicates.
+1. `exclusive` on `RuleCandidate`/`ProfileRule` (prompt explains it with an example; default false). Non-exclusive rules get no violating personas and no not-side answer (`non_exclusive_rule_persona_outside` counts the skipped ones).
+2. `condition_not_in_quote`: `predicate_stated` requires the quote to name every condition (label words or listed value, threshold number, year; compared by word stem). Replay on the pilot's 44 cached candidates (older prompt): 20 rejected, 23 kept, 1 merged. Known false rejections: synonyms not in the schema (text "גברים" vs value `זכר`).
+3. Clarification built in code from the missing fields' labels (`clarification_for`); the model no longer drafts one.
+4. Duplicates across chunks merged (canonical `when` plus similar consequence), first kept, others in `other_sources`; `max_rules` is round-robin by file, seeded. `duplicate_rule` rejection replaced by the `rules_merged_duplicates` diagnostic.
+5. Gender case covered by 1 and 2 with a test.
+Rule and question prompts changed, so cached rules and questions are not reused. Offline only: no live run after the fix.
+
+| Verification command | Result |
+|---|---|
+| `PYTHONPATH=src python -m pytest -q` | 442 passed |
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors; 2 warnings (no `AGENTS.local.md` in this worktree; skill has 5.11.0) |
+
+Next: re-run the pilot live with the fixed code, review, then the full sets.
+
 ## 2026-11-09 - Personalized questions: rule extraction and `generate-personal` (plan steps 3-4)
 Changed: new `conditions.py` (rule model and validation, prefilter, evaluation of a rule against a profile, cached per-chunk extraction), `cache.load_profile_rules` (`profile_rules` kind), `personas.rule_personas` (satisfying, violating, missing and boundary personas), new `personal_questions.py` (code picks each persona's verdict; clarify when the decisive field is missing), `generate-personal` command, `[personalization]` settings, `SilverQuestion.persona_id/profile_keys/user_info` (stable ids unchanged for other questions), `persona_readable` review column, README Workflow 8, design 22.4, caching 9.1, plan steps 3-4. Offline only: not run against a live model or real corpus. Model calls: 1 per chunk the prefilter keeps, 1 per rule, plus 1 per distinct field for `personal_basic`.
 

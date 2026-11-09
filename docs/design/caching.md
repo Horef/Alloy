@@ -1,5 +1,5 @@
 # 9. Caching, identity, and invalidation (`cache.py`, `contracts.py`)
-Status: current (verified 2026-10-23)
+Status: current (verified 2026-11-09)
 
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -12,7 +12,7 @@ Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md]
 | `theme_vocabulary`                              | corpus           | All chunk IDs and text, vocabulary fingerprint, model, route, ceiling. Empty vocabularies (the failure fallback) are not cached.                                                                                  |
 | `graph`                                         | corpus           | Chunks, every chunk's signals, edge and clustering parameters, topic mode, model, route, code fingerprint of `graph.py` + `graph_build.py`.                                                                       |
 | `question_topics`, `insights`, `prompt_package` | per workflow     | Their inputs, model, route, and the implementing module's code fingerprint.                                                                                                                                       |
-| `profile_rules`                                 | **per chunk**    | The chunk's ID and text, profile-schema fingerprint, rule-prompt hash (which includes the schema's condition fields), model, model route, transport. Raw candidates are cached; validation reruns on every read. Failed calls are not cached. |
+| `profile_rules`                                 | **per chunk**    | The chunk's ID and text, profile-schema fingerprint, rule-prompt hash (which includes the schema's condition fields), model, model route, transport. Raw candidates are cached; validation reruns on every read. The prompt hash covers the `exclusive` and quote instructions, so changing them invalidates cached rules; the quote check and duplicate merge run on read and need no key. Failed calls are not cached. |
 | `llm_calls`                                     | per call         | Model, schema, prompt, required fields; file name carries route, seed, call contract.                                                                                                                             |
 | `embeddings`                                    | per text         | Text hash; file name carries model, dimensions, route.                                                                                                                                                            |
 
