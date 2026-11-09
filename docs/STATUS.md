@@ -4,6 +4,8 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 ## Works (verified)
 | Capability | How verified |
 |---|---|
+| Judge calibration (D18): hallucination needs a quoted contradiction; `--documents` evidence; `requires_verification` flag | `python -m pytest -q` → 366 passed (offline); live `evaluate-file` on two golden sets, 2026-11-09: hallucinations 7 → 3 and 22 → 9, 27 of 29 hand-audited rows agree (WORKLOG 2026-11-09). The quote is model output, not machine-checked |
+|---|---|
 | All CLI workflows (`convert-pdf`, `plan`, `generate`, `review-export`/`review-merge`, `reground`, `revary`, `add-broad`, `evaluate`, `evaluate-file`, `generate-prompt`, `report`) | Offline suite with fake LLMs: `python -m pytest -q` → **342 passed** in 2.2 s, 2026-11-01 (`python` from `AGENTS.local.md`, Python 3.13) |
 | Project map and doc checks (`tools/docmap.py`, skill 5.6.0; includes the `calls`, `deps` and `map` code-graph commands) | `python tools/docmap.py check` → 0 errors, 0 warnings, 2026-11-06; every doc in `docs/` has a Status line (verified dates are last-edit dates, not a fresh read) |
 | Shareable checkout: machine facts only in the git-ignored `AGENTS.local.md` | `git check-ignore -v AGENTS.local.md` → `*.local.md`; `docmap.py check` finds no home paths in AGENTS.md, shims, READMEs or code headers, 2026-10-23 |
@@ -28,6 +30,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 - Exclusion lists are files, not a review database.
 
 ## Next actions
+0. Owner: review the rows still labelled hallucination and the `דורש אימות` rows in the two v3 reports; decide whether a second-pass check of the quoted contradiction is worth its cost (D18 consequences).
 1. Generate the corpus C set from its 700-user-facing plan (owner runs `generate --plan`); then `review-export` and check whether reviewers still remove document references.
 2. Re-verify the design docs against the code at the next milestone (`python tools/docmap.py docs`); `lifecycle_strict` is on, so a missing or stale Status line now fails `check`.
 3. Owner: answer the remaining open questions in `docs/BRIEF.md`.

@@ -4,6 +4,20 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-09 - Judge calibration (D18) and live re-run on corpora A and B
+Changed: `misleading_hallucination` now needs a contradicted claim with a quoted contradicting text (the judge's `incorrect_type` label and the nothing-correct fallback no longer decide it; nothing correct and nothing contradicted is `unrelated_answer`); uncited false claims are demoted to unsupported. New `--documents` gives the judge full cited chunks plus top-k knowledge-base passages (`judge_max_evidence_chars`, `judge_kb_passages`). New `requires_verification` flag (דורש אימות) per row, in the CSV, JSONL, summary and HTML (card, details, filter); it never changes an outcome. The judge asks for `JudgeResponse` so the two list fields are schema-required (a first live run left the flag empty on every row because defaulted fields are dropped by structured output). Decision D18.
+
+| Verification | Result |
+|---|---|
+| `python -m pytest -q` | 366 passed (offline, fake LLMs) |
+| `python tools/docmap.py check` | 0 errors; warnings: docmap 5.6.0 vs skill 5.11.0, no `AGENTS.local.md` in the worktree |
+| Live `evaluate-file --documents ... --soft-compare` on the two golden sets (run ids `61e642d5-4cca-4fa9-bfd8-16b77d5b0683`, `b699e3e4-82fe-45b7-aadd-6f4b32da98f3`; commit recorded in each manifest is the data checkout's, not this branch) | no judge errors; hallucinations 7 -> 3 (328 rows) and 22 -> 9 (514 rows); correct answers 160 -> 168 and 205 -> 230 |
+| Hand-audit agreement (29 audited v2 hallucinations) | 27 of 29 agree; details in each corpus's `calibration_check.md` |
+
+Findings: two audited rows disagree. One kept hallucination although the judge's quoted "contradiction" supports the claim (same pattern in one hova row), so the quote is not machine-checked (limitations item 1). One real row moved to `should_have_abstained` and is flagged for verification, because the KB neither supports nor contradicts the claim (unsupported never gives hallucination by the owner's rule). `requires_verification` flagged 0 of 284 rows on corpus A (its answers were KB-grounded) and 26 of 448 on corpus B.
+
+Next: owner reviews the flagged and remaining hallucination rows; consider a second-pass check that a quoted contradiction really contradicts.
+
 ## 2026-11-09 - Personal pilot fixes: exclusive rules, quote check, dedupe, clarification
 Changed (branch `fix/personal-pilot`), after a live pilot of `generate-personal` on one corpus (10 rules, 39 questions) showed: an invented "does not apply" answer for list-style rules, quotes that do not support the predicate, "men and women in role X" read as gender=male, a clarification asking for fields the persona held, and 3 of 10 kept rules being cross-chunk duplicates.
 1. `exclusive` on `RuleCandidate`/`ProfileRule` (prompt explains it with an example; default false). Non-exclusive rules get no violating personas and no not-side answer (`non_exclusive_rule_persona_outside` counts the skipped ones).
