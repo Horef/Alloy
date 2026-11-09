@@ -18,6 +18,7 @@ The offline pytest suite: one `test_<module>.py` per module in `src/chatbot_eval
 | `test_artifacts.py` | Tests for artifacts: checkpoint resume and contract checks, journal tail repair, manifest redaction. |  |
 | `test_cache.py` | Tests for cache.CorpusAnalysisCache: reuse, invalidation by content and fingerprints, and pruning. |  |
 | `test_cli.py` | End-to-end tests of cli commands with fake models: options, manifests, resume, merge and plans. |  |
+| `test_conditions.py` | Tests of profile rules: candidate validation, code-side evaluation, cached extraction, rule personas. |  |
 | `test_config.py` | Tests for config.load_settings: defaults, transport keys, and rejection of invalid values. |  |
 | `test_contracts.py` | Tests for contracts.code_fingerprint: comments, docstrings and layout do not change it. |  |
 | `test_docs_consistency.py` | Guards that keep the documentation in step with the code. |  |
@@ -32,6 +33,7 @@ The offline pytest suite: one `test_<module>.py` per module in `src/chatbot_eval
 | `test_llm.py` | Tests for llm: Gemini client configuration, retries, the seeded call cache, embeddings, media. |  |
 | `test_llm_providers.py` | Tests for llm_providers: the OpenAI-compatible and Bedrock clients, retries, and the transport factory. |  |
 | `test_pdf_markdown.py` | Tests for pdf_markdown: bidi line order, columns, structure, OCR reporting, Gemini verification. |  |
+| `test_personal_questions.py` | Tests of personal question building: verdict sides decided in code, clarify, rejections, round trips. |  |
 | `test_personas.py` | Tests of synthetic personas: pairwise coverage, determinism, derived targets, fake identifiers. |  |
 | `test_planning.py` | Tests for planning: information units, plan quotas and their binding to the graph, `plan` command. |  |
 | `test_profiles.py` | Tests of the profile schema: loading and validation, profile checks without values, derived fields. |  |

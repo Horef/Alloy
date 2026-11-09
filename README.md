@@ -15,7 +15,7 @@ helps managers bootstrap chatbot instructions. It supports these workflows:
 5. `evaluate-file`: judge questions and chatbot answers saved previously in Excel, CSV, or JSONL.
 6. `generate-prompt`: derive a reviewable Hebrew system prompt and safety checklist from documents.
 7. `report`: regenerate a report from completed results, optionally compared with a previous run.
-8. `profile-check` / `personas`: validate the profile schema and write synthetic personas for personalized questions (in progress).
+8. `profile-check` / `personas` / `generate-personal`: validate the profile schema, write synthetic personas, and generate personalized questions from document rules (in progress: evaluation of them is not built yet).
 
 Gemini provides structured question generation, answer judging, optional topic inference, and
 optional cross-result insights. The module does not require the existing chatbot fleet; integration
@@ -256,6 +256,13 @@ log_level = "INFO"
 | `conversion.min_text_precision` | `0.8` | Share of a Gemini page's words that must appear in the text layer (guards against invented text). |
 | `conversion.ocr` | `auto` | `auto` OCRs pages without a usable text layer with Tesseract when it is installed; `off` never runs OCR. |
 | `conversion.ocr_languages` | `heb+eng` | Tesseract language packs used for OCR. |
+| `personalization.profile_schema` | empty | `generate-personal`: profile schema TOML/JSON (see `profile_schema.example.toml`). Relative paths are resolved next to the selected config file. `--profile-schema` overrides it. |
+| `personalization.as_of` | empty | Date (`YYYY-MM-DD`) the personas' derived values (age, tenure) hold at; empty means today. Pin it: expected answers depend on it. `--as-of` overrides it. |
+| `personalization.max_rules` | `0` | Keep only the first N extracted rules in document order (cost cap); `0` keeps all. |
+| `personalization.personas_per_rule` | `4` | At most this many personas per rule: one satisfying, one violating, one with the decisive field missing, then boundary values. |
+| `personalization.personal_basic_questions` | `0` | Also write this many `personal_basic` questions answered from the persona alone (one model call per distinct profile field). |
+| `personalization.seed` | `0` | Orders personas and `personal_basic` picks; the same seed, schema, rules and date reproduce the same personas. |
+| `personalization.rule_prefilter` | `true` | Skip chunks that mention no profile field label or value before any model call; set `false` to send every chunk. |
 | `runtime.log_file` | empty | Optional operational log path. Empty disables file logging. |
 | `runtime.log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`. |
 
@@ -565,12 +572,13 @@ schema-incompatible entries are logged and recomputed.
 | `document_wide` | Integrates information across a document. | At least two chunks from one file. |
 | `cross_document` | Integrates information from multiple documents. | Sources from at least two files. |
 | `unanswerable` | Realistic nearby question unsupported by the corpus. | `answerable=false`, no quotations. |
-| `personal_basic` | Reserved for direct personal-data questions. | Rejected by document-only generation. |
-| `personal_integration` | Reserved for personal-data plus policy integration. | Rejected by document-only generation. |
+| `personal_basic` | A direct question about the user's own profile data, answered from the persona (`generate-personal --personal-basic`). | Rejected by document-only generation. |
+| `personal_integration` | A question whose answer depends on the user's profile and a document rule (`generate-personal`). | Rejected by document-only generation. |
 
-Personal types are not generated yet. They will be built from a profile schema and synthetic personas,
-never real profiles (Workflow 8, `docs/plans/personalized-questions.md`). The current module does not
-invent personal data or infer it from ordinary documents.
+The document-only `generate` command never produces personal types. `generate-personal` builds them
+from a profile schema and synthetic personas, never real profiles (Workflow 8,
+`docs/plans/personalized-questions.md`); the document-only path does not invent personal data or
+infer it from ordinary documents.
 
 ### Question forms and expected behavior
 
@@ -1259,9 +1267,9 @@ chatbot-eval --config config.toml report \
   --output ./outputs/run-002-comparison
 ```
 
-## Workflow 8: profile schema and synthetic personas (personalized questions, in progress)
+## Workflow 8: profile schema, synthetic personas and personalized questions (in progress)
 
-Personalized questions (`personal_basic`, `personal_integration`) will be generated for synthetic
+Personalized questions (`personal_basic`, `personal_integration`) are generated for synthetic
 personas whose answers depend on the profile the chatbot receives about its user. The chatbot
 platform appends the enabled profile fields to the system prompt as one line of `label: value`
 pairs (and prefixes them to the search query), so the schema describes each field by the platform's
@@ -1321,6 +1329,62 @@ file and make no model calls.
 `derived` values, `user_info` (the line the platform would put in the prompt) and the schema
 fingerprint. `personas_summary.json` records the seed, strength, dimensions, persona count, value
 pairs covered and combinations left uncovered.
+
+### `generate-personal`: rules from the documents, asked as personas
+
+```bash
+chatbot-eval --config config.toml generate-personal --documents knowledge_base \
+  --profile-schema profile_schema.toml --as-of 2026-10-27 --output outputs/personal
+```
+
+Stages, in order (model calls in brackets):
+
+1. **Rules** (one call per chunk that survives the prefilter). Each chunk is shown the schema's
+   condition fields; the model returns rules of the form "when these profile predicates hold, this
+   follows" with one verbatim quote. Code rejects a rule with an unknown or identifier field, a
+   field not marked `condition`, an operator or value outside the field's domain (an open enum
+   field may hold an unlisted value; it is counted), no predicates, a blank consequence or a quote
+   that is not verbatim in the chunk. A chunk that names no profile field label or value is not sent
+   at all (`--no-prefilter` sends every chunk). The chunk's rules are cached by chunk text, schema
+   fingerprint, prompt, model and transport.
+2. **Personas** (no calls). For each rule, code builds personas from the schema: one that satisfies
+   every predicate, one that violates a predicate, one with a decisive field absent from the profile,
+   and persona values at the exact boundary of a numeric, date or derived predicate (the last day a
+   derived age or tenure holds, and the day after). Persona fields the rule does not mention come from
+   the base covering personas.
+3. **Questions** (one call per rule, plus one per distinct field for `personal_basic`). The model drafts
+   one question (which must not restate the condition), the answer when the rule applies, the answer
+   when it does not, and a clarifying question. **Code decides which answer a persona gets** by
+   evaluating the rule against the persona's profile: applies, does not apply, or the decisive field is
+   missing, in which case the expected behavior is `clarify` and the expected answer is the
+   clarification. `personal_integration` questions carry the rule's quote and chunk as the source,
+   `persona_id`, `profile_keys` (the decisive profile fields) and `user_info`.
+   `personal_basic` questions ("what is my birth date?") are built from the persona alone and cite no document.
+
+| `generate-personal` option | Required/default | Meaning |
+|---|---|---|
+| `--documents DIR` | required | Document root rules are extracted from; the output and cache must be outside it. |
+| `--output DIR` | `outputs/personal` | Destination for the files below. |
+| `--profile-schema PATH` | `personalization.profile_schema` | Profile schema TOML or JSON. |
+| `--as-of DATE` | `personalization.as_of`, then today | Date the personas' derived values hold at. Pin it: answers depend on it. |
+| `--max-rules N` | `personalization.max_rules` | Keep only the first N rules (cost cap, `0` = all). |
+| `--personas-per-rule N` | `personalization.personas_per_rule` | Personas per rule. |
+| `--personal-basic N` | `personalization.personal_basic_questions` | Also write N `personal_basic` questions. |
+| `--no-prefilter` | off | Send every chunk to rule extraction. |
+| `--max-concurrency N` | config value | Concurrent model calls. |
+| `--cache-dir`, `--refresh-cache`, `--no-cache`, `--keep-stale-cache` | | As for `generate`. |
+
+Outputs in `--output`: `silver_questions.csv` and `.jsonl` (the new columns `persona_id`, `profile_keys`
+and `user_info` are empty for other question types), `profile_rules.jsonl` (every accepted rule with
+its source chunk, location and quote), `personas.jsonl` (only the personas used), `personal_diagnostics.json`
+and `run_manifest.json`. The diagnostics count chunks skipped by the prefilter, sent, cached and failed;
+rules rejected by reason; model calls per stage; and questions by type and by verdict side. The
+review export (`review-export`) adds a read-only `persona_readable` column with the persona's profile
+and decisive fields. The judge does not yet receive the persona; the personalized evaluation is a
+later step.
+
+Everything is silver: the rule extraction and the expected answers need domain review, and
+personas treat profile fields as independent (no demographic constraints between fields).
 
 ## Judging logic and outcomes
 
@@ -1470,7 +1534,9 @@ only a hash of the live chatbot URL.
 | `generator.py` | Quotas, evidence windows, generation, validation, deduplication, variants, broad questions, reground. |
 | `review.py` | Review export and lossless review merge. |
 | `profiles.py` | Profile schema for personalized questions: fields, validation, derived fields, the platform's user-info line. |
-| `personas.py` | Deterministic synthetic personas with pairwise coverage of the schema's condition values. |
+| `personas.py` | Deterministic synthetic personas with pairwise coverage of the schema's condition values, and rule-driven personas (satisfying, violating, missing, boundary). |
+| `conditions.py` | Profile-conditioned applicability rules: model prompt, validation, prefilter, evaluation against a profile, cached extraction. |
+| `personal_questions.py` | `personal_integration` and `personal_basic` questions from rules and personas; code picks each persona's verdict. |
 | `validation.py` | Input-boundary normalization and question-set invariants. |
 | `history.py` | Compatible loading of previous evaluations, insights, and current prompts. |
 | `prompt_generator.py` | Document-grounded system-prompt package generation and export. |
@@ -1550,7 +1616,7 @@ confidence intervals, and reporting options.
 - Generation resume replays successful structured responses; it does not attempt to continue from a partially returned model response.
 - Concurrent evaluation is intended only for stateless endpoints and available Gemini/chatbot quota; session-sensitive chatbots should keep the default of one worker.
 - Exclusion is file-based rather than persisted in a review database.
-- Personal types are still rejected by generation. Personalized questions will use synthetic personas built from a profile schema (`docs/plans/personalized-questions.md`); only the schema, `profile-check` and `personas` exist so far.
+- Personal types are rejected by `generate`; `generate-personal` writes them. Personalized evaluation is not built yet: the adapters send no persona and the judge does not see it (`docs/plans/personalized-questions.md`, steps 5-6). Rule extraction misses rules in chunks that never name a profile field or value (for example "בן 21" without "גיל"); `--no-prefilter` sends every chunk at the cost of more calls.
 - LLM judges can have style, verbosity, and model-family biases and require human audits.
 - Generated system prompts are starting points and are neither deployed automatically nor security
   controls by themselves.

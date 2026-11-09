@@ -16,9 +16,10 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 | Theme-mode generation on the pilot corpus A | Live run recorded in `docs/theme-layer-ab-results.md` (2026-09-23) |
 | Profile schema for personalized questions, following the platform's keys and user line (`profiles.py`, `profile_schema.example.toml`, `profile-check`; plan step 1, D16, D17) | `tests/test_profiles.py`, offline, 2026-10-27; whole suite 408 passed after rebasing onto main, 2026-11-09 |
 | Synthetic personas with pairwise coverage (`personas.py`, `personas`; plan step 2) | `tests/test_personas.py`; `chatbot-eval personas` on the example schema → 30 personas, 139/139 value pairs, 2026-10-27 |
+| Personalized question generation (`conditions.py`, `personal_questions.py`, `generate-personal`; plan steps 3-4): rules from chunks, rule-driven personas, verdict decided in code | Offline fake-LLM tests (`tests/test_conditions.py`, `tests/test_personal_questions.py`, incl. a CLI run with cache re-run), 436 passed, 2026-11-09. Not run against a live model or a real corpus. |
 
 ## Known limitations (README "Current limitations"; details in `docs/design/limitations.md`)
-- Personalized questions: schema and personas exist (steps 1-2 of `docs/plans/personalized-questions.md`); generation still rejects personal types. Enum value lists and the birth-date format are provisional (`open_values`). Persona delivery (D17, provisional): the platform's dataset-evaluation upload sends no user line; the proposed platform patch is not in this repository.
+- Personalized questions: `generate-personal` writes `personal_integration` (and optionally `personal_basic`) silver questions, but only offline-tested; steps 5-6 (adapter persona delivery, judge input, metrics) are not built, so they cannot be evaluated yet. `generate` still rejects personal types. The rule prefilter can miss chunks that never name a profile field. Enum value lists and the birth-date format are provisional (`open_values`). Persona delivery (D17, provisional): the platform's dataset-evaluation upload sends no user line; the proposed platform patch is not in this repository.
 - Silver references and variant wording still need human review.
 - LLM judge not yet calibrated against a human-reviewed sample.
 - Corpus PDFs passed to `generate` directly are not OCR'd; scanned pages need `convert-pdf` (Tesseract or Gemini backend) first.
@@ -33,7 +34,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 3a. Owner: fix `reground` so a partly unsupported team answer is rewritten from the KB instead of refused (limitations item 8); re-run the chatbot on the 110 `chatbot_error` rows of the 2026-11-06 evaluations; give the KB owners `team_rows_audit.csv`.
 4. Try the `openai` and `bedrock` transports against a live endpoint (D14) before relying on them.
 5. TBD (owner): next feature priority; whether the generation prompts (soldier persona and examples) should get a neutral variant for other teams.
-6. Personalized questions: plan step 3 (rule extraction, `conditions.py`). Owner / platform team: the `פרטי משתמש` upload column (D17) and the real value strings (`profile-check --profile` on one record, locally).
+6. Personalized questions: run `generate-personal` on a real schema and corpus slice (small `--max-rules`) and review the rules and questions; then plan step 5 (adapter strategies, judge input). Owner / platform team: the `פרטי משתמש` upload column (D17) and the real value strings (`profile-check --profile` on one record, locally).
 
 ## Blockers
 - Personalized questions, step 5 (evaluation): the platform's dataset-evaluation upload must accept a per-row user line (platform team, D17).

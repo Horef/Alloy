@@ -4,6 +4,16 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-09 - Personalized questions: rule extraction and `generate-personal` (plan steps 3-4)
+Changed: new `conditions.py` (rule model and validation, prefilter, evaluation of a rule against a profile, cached per-chunk extraction), `cache.load_profile_rules` (`profile_rules` kind), `personas.rule_personas` (satisfying, violating, missing and boundary personas), new `personal_questions.py` (code picks each persona's verdict; clarify when the decisive field is missing), `generate-personal` command, `[personalization]` settings, `SilverQuestion.persona_id/profile_keys/user_info` (stable ids unchanged for other questions), `persona_readable` review column, README Workflow 8, design 22.4, caching 9.1, plan steps 3-4. Offline only: not run against a live model or real corpus. Model calls: 1 per chunk the prefilter keeps, 1 per rule, plus 1 per distinct field for `personal_basic`.
+
+| Verification command | Result |
+|---|---|
+| `PYTHONPATH=src python -m pytest -q` | 436 passed |
+| `python tools/docmap.py update && python tools/docmap.py check` | 0 errors; 2 warnings (no `AGENTS.local.md` in this worktree; skill has 5.11.0) |
+
+Next: run on a small real slice and review; plan step 5 (persona delivery to the chatbot, judge input).
+
 ## 2026-11-09 - Personal-questions branch rebased onto main
 Changed: rebased the personalized-questions work (plan, profile schema, personas, new-document recipe) onto main. Dropped the branch's docmap upgrade (its Status lines, `docs/FACTS.md` and `lifecycle_strict` were already on main via 5.3 to 5.6) and its D13; renumbered the branch's decisions from D14, D15 to D16, D17 because main already uses D13 to D15. `lifecycle_exempt = ["docs/plans/*"]` in `pyproject.toml`: plans keep their own `Status: proposed | in progress | done` line (docs/plans/README.md). Design section 22 is unchanged (free on main). The two entries below date from before the rebase and cite the new numbers.
 

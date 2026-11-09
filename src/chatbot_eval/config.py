@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import math
+import datetime as dt
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,6 +119,13 @@ class Settings:
     bedrock_region: str = ""
     bedrock_profile: str = ""
     bedrock_max_tokens: int = 4096
+    personalization_profile_schema: str = ""
+    personalization_as_of: str = ""
+    personalization_max_rules: int = 0
+    personalization_personas_per_rule: int = 4
+    personalization_personal_basic_questions: int = 0
+    personalization_seed: int = 0
+    personalization_rule_prefilter: bool = True
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -187,6 +195,15 @@ class Settings:
             errors.append("gemini.openai_structured_output must be json_schema or json_object")
         if self.bedrock_max_tokens < 1:
             errors.append("gemini.bedrock_max_tokens must be positive")
+        if self.personalization_as_of:
+            try:
+                dt.date.fromisoformat(self.personalization_as_of)
+            except ValueError:
+                errors.append("personalization.as_of must be empty or a YYYY-MM-DD date")
+        if self.personalization_max_rules < 0 or self.personalization_personal_basic_questions < 0:
+            errors.append("personalization.max_rules and personalization.personal_basic_questions must be non-negative")
+        if self.personalization_personas_per_rule < 1:
+            errors.append("personalization.personas_per_rule must be positive")
         if not self.openai_auth_header.strip():
             errors.append("gemini.openai_auth_header must not be empty")
         if not self.generation_model.strip() or not self.judge_model.strip():
@@ -434,6 +451,15 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         bedrock_region=str(_get(data, "gemini", "bedrock_region", "")).strip(),
         bedrock_profile=str(_get(data, "gemini", "bedrock_profile", "")).strip(),
         bedrock_max_tokens=int(_get(data, "gemini", "bedrock_max_tokens", 4096)),
+        personalization_profile_schema=str(_get(data, "personalization", "profile_schema", "")).strip(),
+        personalization_as_of=str(_get(data, "personalization", "as_of", "")).strip(),
+        personalization_max_rules=int(_get(data, "personalization", "max_rules", 0)),
+        personalization_personas_per_rule=int(_get(data, "personalization", "personas_per_rule", 4)),
+        personalization_personal_basic_questions=int(_get(data, "personalization", "personal_basic_questions", 0)),
+        personalization_seed=int(_get(data, "personalization", "seed", 0)),
+        personalization_rule_prefilter=_as_bool(
+            _get(data, "personalization", "rule_prefilter", True), "personalization.rule_prefilter",
+        ),
     ).validate()
 
 

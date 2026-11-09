@@ -154,6 +154,18 @@ min_text_precision = 0.8
 ocr = "auto"
 ocr_languages = "heb+eng"
 
+[personalization]
+# generate-personal: profile-conditioned rules from the documents become questions asked as synthetic personas.
+# Profile schema TOML/JSON (see profile_schema.example.toml); relative paths are resolved next to this file.
+profile_schema = ""
+# Date (YYYY-MM-DD) the personas' derived values (age, tenure) hold at. Empty means today; pin it, answers depend on it.
+as_of = ""
+max_rules = 0                       # >0: keep only the first N extracted rules (cost cap); 0 = all
+personas_per_rule = 4               # at most this many personas per rule (satisfying, violating, missing, boundary)
+personal_basic_questions = 0        # >0: also write N personal_basic questions answered from the persona alone
+seed = 0                            # orders personas and personal_basic picks; the same seed reproduces a run
+rule_prefilter = true               # skip chunks naming no profile field or value before any model call
+
 [runtime]
 # Set to false in production/non-interactive jobs.
 progress_enabled = true

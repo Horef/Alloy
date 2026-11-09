@@ -2,7 +2,7 @@
 
 `build_parser()` defines the commands (`generate`, `plan`, `generate-prompt`, `evaluate`,
 `evaluate-file`, `review-export`, `review-merge`, `revary`, `reground`, `add-broad`,
-`convert-pdf`, `report`, `profile-check`, `personas`) and their options. `main(argv)` loads settings, builds the model stack
+`convert-pdf`, `report`, `profile-check`, `personas`, `generate-personal`) and their options. `main(argv)` loads settings, builds the model stack
 (`build_llm` picks the Gemini, OpenAI-compatible or Bedrock client; plus the seeded call cache and the generation journal), the corpus cache and the
 chatbot adapter, runs the command, and records it in a run manifest. Commands that need no model do
 not construct a client. Every command and option must appear in the README (a test checks).
@@ -25,6 +25,7 @@ from .artifacts import (
 )
 from .cache import CorpusAnalysisCache
 from .config import load_settings
+from .conditions import extract_rules, write_rules
 from .evaluator import Evaluator, judge_contract_fingerprint
 from .generator import GenerationOptions, SilverSetGenerator, _assign_stable_ids, merge_question_sets, reground_fingerprint
 from .graph import GraphBundle, derive_theme_clusters, derive_topic_clusters
@@ -43,8 +44,9 @@ from .llm_providers import build_llm
 from .logging_utils import configure_logging
 from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
 from .pdf_markdown import convert_path
+from .personal_questions import build_personal_questions
 from .personas import pair_coverage, synthesize_personas, write_personas
-from .profiles import derive, load_profile_schema, missing_keys, profile_errors, unknown_keys, unlisted_value_keys
+from .profiles import derive, load_profile_schema, missing_keys, profile_errors, schema_fingerprint, unknown_keys, unlisted_value_keys
 from .planning import GenerationPlan, build_plan, plan_quotas, suggest_graph_parameters
 from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerprint, write_prompt_package
 from .progress import track
@@ -277,6 +279,21 @@ def build_parser() -> argparse.ArgumentParser:
     personas.add_argument("--seed", type=int, default=0, help="Seed of the covering-array search")
     personas.add_argument("--strength", type=int, choices=[1, 2], default=2, help="1: every value appears; 2: every pair of values of two fields appears")
     personas.add_argument("--max-personas", type=int, default=200, help="Upper bound; combinations left uncovered are reported")
+
+    personal = commands.add_parser(
+        "generate-personal",
+        help="Generate personal_integration questions: extract profile-conditioned rules from the documents and ask them as synthetic personas",
+    )
+    personal.add_argument("--documents", type=Path, required=True, help="Document root to extract rules from")
+    personal.add_argument("--output", type=Path, default=Path("outputs/personal"), help="Destination for the silver CSV/JSONL, profile_rules.jsonl, personas.jsonl and diagnostics")
+    personal.add_argument("--profile-schema", type=Path, help="Profile schema TOML or JSON; default is config personalization.profile_schema")
+    personal.add_argument("--as-of", help="Date (YYYY-MM-DD) the personas' derived values hold at; default is config personalization.as_of, then today")
+    personal.add_argument("--max-rules", type=int, help="Keep only the first N rules (cost cap, 0 = all); default is config personalization.max_rules")
+    personal.add_argument("--personas-per-rule", type=int, help="Personas per rule; default is config personalization.personas_per_rule")
+    personal.add_argument("--personal-basic", type=int, help="Also write N personal_basic questions answered from the persona alone; default is config personalization.personal_basic_questions")
+    personal.add_argument("--no-prefilter", action="store_true", help="Send every chunk to rule extraction instead of only chunks naming a profile field or value")
+    personal.add_argument("--max-concurrency", type=int, help="Concurrent rule-extraction and question calls; default is config value")
+    _add_cache_arguments(personal)
     return parser
 
 
@@ -300,6 +317,73 @@ def _personas(args) -> int:
           f"({covered}/{total} value pairs covered) as of {as_of}.\nPersonas: {path}\nSummary: {summary}")
     if diagnostics["uncovered_combinations"]:
         print(f"Note: {diagnostics['uncovered_combinations']} combinations left uncovered; raise --max-personas.")
+    return 0
+
+
+def _generate_personal(args, settings, llm, call_cache, progress_enabled: bool) -> int:
+    """Rules from the documents, rule-driven personas and personal questions; one manifest records the stages."""
+    import datetime as dt
+
+    schema_path = args.profile_schema
+    if schema_path is None:
+        if not settings.personalization_profile_schema:
+            raise ValueError("generate-personal needs --profile-schema or personalization.profile_schema")
+        schema_path = Path(settings.personalization_profile_schema)
+        if not schema_path.is_absolute():
+            schema_path = args.config.resolve().parent / schema_path
+    as_of_text = args.as_of or settings.personalization_as_of
+    as_of = dt.date.fromisoformat(as_of_text) if as_of_text else dt.date.today()
+    choose = lambda cli_value, configured: configured if cli_value is None else cli_value
+    max_rules = choose(args.max_rules, settings.personalization_max_rules)
+    per_rule = choose(args.personas_per_rule, settings.personalization_personas_per_rule)
+    basic = choose(args.personal_basic, settings.personalization_personal_basic_questions)
+    concurrency = choose(args.max_concurrency, settings.max_concurrency)
+    prefilter = settings.personalization_rule_prefilter and not args.no_prefilter
+    if max_rules < 0 or basic < 0 or per_rule < 1 or concurrency < 1:
+        raise ValueError("--max-rules and --personal-basic must be non-negative; --personas-per-rule and --max-concurrency positive")
+    schema = load_profile_schema(schema_path)
+    cache = _analysis_cache(args, settings)
+    seed = settings.personalization_seed
+    with RunManifest(
+        args.output, command=args.command, settings=settings, inputs=[args.documents, schema_path],
+        parameters={
+            "as_of": as_of.isoformat(), "schema_fingerprint": schema_fingerprint(schema), "max_rules": max_rules,
+            "personas_per_rule": per_rule, "personal_basic": basic, "rule_prefilter": prefilter, "seed": seed,
+        },
+    ) as manifest:
+        chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+        extraction = extract_rules(
+            chunks, schema, llm, settings.generation_model, cache=cache, transport=settings.gemini_transport,
+            prefilter=prefilter, max_rules=max_rules, max_concurrency=concurrency,
+        )
+        base, _ = synthesize_personas(schema, as_of, seed=seed)
+        result = build_personal_questions(
+            extraction.rules, chunks, schema, llm, settings.generation_model, as_of, base,
+            seed=seed, personas_per_rule=per_rule, personal_basic=basic, max_concurrency=concurrency,
+        )
+        csv_path, jsonl_path = write_questions(result.questions, args.output)
+        rules_path = write_rules(extraction.rules, args.output / "profile_rules.jsonl")
+        personas_path = write_personas(result.personas, args.output / "personas.jsonl")
+        diagnostics = {"rules": extraction.diagnostics, "questions": result.diagnostics}
+        diagnostics_path = args.output / "personal_diagnostics.json"
+        atomic_write_text(diagnostics_path, json.dumps(diagnostics, ensure_ascii=False, indent=2) + "\n")
+        manifest.complete(
+            question_count=len(result.questions), rule_count=len(extraction.rules), persona_count=len(result.personas),
+            personal_diagnostics=diagnostics, cache=cache.summary(),
+            llm_call_cache=call_cache.summary() if call_cache is not None else {"enabled": False},
+            outputs=input_inventory([csv_path, jsonl_path, rules_path, personas_path, diagnostics_path]),
+        )
+    stats = extraction.diagnostics
+    print(
+        f"Extracted {len(extraction.rules)} rules from {stats['chunks_total']} chunks "
+        f"({stats['chunks_skipped_by_prefilter']} skipped by the prefilter, {stats['llm_calls']} model calls) "
+        f"and wrote {len(result.questions)} questions for {len(result.personas)} personas as of {as_of}.\n"
+        f"Silver CSV: {csv_path}\nProvenance JSONL: {jsonl_path}\nRules: {rules_path}\nPersonas: {personas_path}\n"
+        f"Diagnostics: {diagnostics_path}"
+    )
+    if not extraction.rules:
+        print("No rules were extracted; check the schema's condition fields against the documents (see diagnostics).")
+    logger.info("command_completed command=generate-personal questions=%d output=%s", len(result.questions), args.output)
     return 0
 
 
@@ -821,6 +905,9 @@ def main(argv: list[str] | None = None) -> int:
         llm = call_cache
     if args.command == "convert-pdf":
         return _convert_pdf(args, settings, llm, progress_enabled, call_cache)
+
+    if args.command == "generate-personal":
+        return _generate_personal(args, settings, llm, call_cache, progress_enabled)
 
     if args.command == "generate-prompt":
         profile = args.instruction_profile or settings.prompt_instruction_profile

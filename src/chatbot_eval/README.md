@@ -31,27 +31,29 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `__init__.py` | Standalone tools for chatbot question generation and evaluation. | `artifacts` |
 | `adapters.py` | Chatbot adapters: the only way evaluation reaches a live chatbot. | `cli`, `evaluator`, `review_probes`, `test_adapters` |
 | `artifacts.py` | Run artifacts: atomic writes, resumable JSONL journals, and run manifests. | `cache`, `cli`, `history`, `insights` (+8) |
-| `cache.py` | Content-addressed local cache for corpus analysis and other expensive stage outputs. | `cli`, `test_cache`, `test_cli`, `theme_ab_probe` |
-| `cli.py` | Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. | `review_probes`, `test_cli`, `test_docs_consistency`, `test_pdf_markdown` (+4) |
+| `cache.py` | Content-addressed local cache for corpus analysis and other expensive stage outputs. | `cli`, `test_cache`, `test_cli`, `test_conditions` (+1) |
+| `cli.py` | Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. | `review_probes`, `test_cli`, `test_docs_consistency`, `test_pdf_markdown` (+5) |
+| `conditions.py` | Profile-conditioned applicability rules: extracted from document chunks, validated and evaluated in code. | `cli`, `personal_questions`, `personas`, `test_conditions` (+1) |
 | `config.py` | Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment. | `artifacts`, `cli`, `test_artifacts`, `test_cli` (+3) |
 | `contracts.py` | Small nonsecret identities for model-derived artifacts and evaluation records. | `cache`, `cli`, `evaluator`, `generator` (+9) |
-| `documents.py` | Corpus ingestion: reads supported documents and splits them into structure-aware chunks. | `cache`, `generator`, `graph`, `graph_build` (+12) |
+| `documents.py` | Corpus ingestion: reads supported documents and splits them into structure-aware chunks. | `cache`, `conditions`, `generator`, `graph` (+16) |
 | `evaluator.py` | Claim-level LLM judging of chatbot answers and the deterministic outcome classification. | `cli`, `review_probes`, `test_evaluator` |
-| `generator.py` | Silver question generation from the corpus graph: quotas, evidence windows, validation, variants. | `cli`, `review_probes`, `test_generator`, `test_planning` |
+| `generator.py` | Silver question generation from the corpus graph: quotas, evidence windows, validation, variants. | `cli`, `conditions`, `personal_questions`, `review_probes` (+2) |
 | `graph.py` | Corpus knowledge graph for grounded question generation. | `cache`, `cli`, `generator`, `graph_build` (+8) |
 | `graph_build.py` | Build a corpus knowledge graph from chunks: LLM signal extraction + deterministic assembly. | `cli`, `test_generator`, `test_graph_build` |
 | `history.py` | Loaders for earlier run outputs, used for run comparison and prompt revision. | `cli`, `review_probes`, `test_history` |
 | `insights.py` | Optional LLM analysis of failure patterns across an evaluation's results. | `cli`, `test_insights` |
-| `io.py` | Reading and writing question sets and evaluation records as paired CSV and JSONL files. | `cli`, `results_io`, `review`, `review_probes` (+3) |
+| `io.py` | Reading and writing question sets and evaluation records as paired CSV and JSONL files. | `cli`, `results_io`, `review`, `review_probes` (+4) |
 | `labels.py` | Hebrew display labels and report colors for question forms, expected behaviors and outcomes. | `io`, `report`, `review` |
-| `llm.py` | The model layer: structured Gemini calls, the seeded call cache, and embeddings. | `cli`, `contracts`, `evaluator`, `generator` (+11) |
+| `llm.py` | The model layer: structured Gemini calls, the seeded call cache, and embeddings. | `cli`, `conditions`, `contracts`, `evaluator` (+13) |
 | `llm_providers.py` | Model providers beyond the Google GenAI SDK, and the factory that builds the client for a transport. | `cli`, `test_llm_providers` |
 | `logging_utils.py` | Logging setup: console plus optional file handler, with SDK transport chatter quieted. | `cli` |
-| `models.py` | Pydantic data contracts shared by every component. | `adapters`, `artifacts`, `cache`, `cli` (+33) |
+| `models.py` | Pydantic data contracts shared by every component. | `adapters`, `artifacts`, `cache`, `cli` (+35) |
 | `pdf_markdown.py` | PDF to Markdown conversion for LLM processing, with Hebrew (right-to-left) support. | `cli`, `documents`, `test_llm`, `test_pdf_markdown` |
-| `personas.py` | Synthetic personas: deterministic, obviously fake profiles covering the schema's condition values. | `cli`, `test_personas` |
+| `personal_questions.py` | Personal questions: (rule, persona) pairs turned into `personal_integration` and `personal_basic` questions. | `cli`, `test_personal_questions` |
+| `personas.py` | Synthetic personas: deterministic, obviously fake profiles covering the schema's condition values. | `cli`, `personal_questions`, `test_conditions`, `test_personal_questions` (+1) |
 | `planning.py` | Heuristic sizing of a question set from what a knowledge base actually contains. | `cli`, `config`, `generator`, `test_cli` (+1) |
-| `profiles.py` | Profile schema: the personal-data fields a chatbot sees about its user, described as data. | `cli`, `personas`, `test_personas`, `test_profiles` |
+| `profiles.py` | Profile schema: the personal-data fields a chatbot sees about its user, described as data. | `cli`, `conditions`, `personal_questions`, `personas` (+4) |
 | `progress.py` | Progress bars (`track`) that show elapsed time and can be switched off with `--no-progress`. | `cli`, `documents`, `evaluator`, `generator` (+3) |
 | `prompt_generator.py` | Drafts a reviewable Hebrew chatbot system prompt package from the corpus and prior results. | `cli`, `test_prompt_generator` |
 | `prompt_policy.py` | Versioned, model-independent behavioral guidance assembled outside the LLM. | `cache`, `cli`, `prompt_generator`, `test_cache` (+1) |
@@ -59,7 +61,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `response_errors.py` | Shared helpers for answer errors: the known placeholder answer and bounded retry delays. | `adapters`, `evaluator`, `llm`, `llm_providers` (+3) |
 | `results_io.py` | Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. | `cli`, `review_probes`, `test_results_io` |
 | `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `generator`, `test_generator`, `test_retrieval` |
-| `review.py` | Human-readable review sidecar and lossless round-trip merge. | `cli`, `test_review` |
+| `review.py` | Human-readable review sidecar and lossless round-trip merge. | `cli`, `test_personal_questions`, `test_review` |
 | `topics.py` | Topic inference for saved questions without topics (`evaluate-file --infer-topics`). | `cli`, `test_topics` |
-| `validation.py` | Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). | `evaluator`, `io`, `results_io`, `review` (+2) |
+| `validation.py` | Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). | `evaluator`, `io`, `results_io`, `review` (+3) |
 <!-- docmap:end -->

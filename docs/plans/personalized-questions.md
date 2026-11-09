@@ -1,4 +1,4 @@
-Status: in progress (2026-10-27) - approved by the owner (D16); steps 1 (profile schema) and 2 (personas) done; platform facts in D17
+Status: in progress (2026-11-09) - approved by the owner (D16); steps 1-4 done (schema, personas, rules, generate-personal); platform facts in D17
 
 # Personalized questions: profile-aware generation and evaluation
 
@@ -126,8 +126,10 @@ logic stays out of `cli.py` wiring except for options.
 2. Done 2026-10-27: `personas.py` and the `personas` command: pairwise covering array over the
    condition values, derived targets (age) through exact source dates, fake identifiers, tests.
    Rule-driven boundary values and cross-field constraints arrive with step 3.
-3. `conditions.py` with a fake LLM in tests; cache key includes the schema hash.
-4. Generator stage, `SilverQuestion` fields, review-export columns (`persona_readable`), README.
+3. Done 2026-11-09: `conditions.py` (rule model, validation, prefilter, evaluation, cached extraction) and
+   `rule_personas` with boundary values; schema fingerprint is in the cache key. Fake-LLM tests.
+4. Done 2026-11-09: `personal_questions.py`, `generate-personal`, `SilverQuestion` fields,
+   `persona_readable` review column, `[personalization]` settings, README.
 5. Adapter strategies and judge input; `evaluate` options; README tables (guarded).
 6. Report metrics and `docs/design/evaluation.md`, `reporting.md`.
 

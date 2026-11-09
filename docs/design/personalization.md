@@ -1,6 +1,6 @@
-# 22. Personalization (`profiles.py`, `personas.py`)
+# 22. Personalization (`profiles.py`, `personas.py`, `conditions.py`, `personal_questions.py`)
 
-Status: current (verified 2026-10-27)
+Status: current (verified 2026-11-09)
 
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 The full plan, with research and the stages still to build, is
@@ -22,7 +22,7 @@ Read from the platform server's preProd code on 2026-10-27 (D17); recheck when t
   are neither fetched nor labelled, so they never reach the prompt; the example schema marks them
   `excluded`.
 - The dataset-evaluation endpoint (XLSX upload with question and expected-answer columns) calls the
-  chatbot with no user line at all. Delivering a persona needs a platform change (section 22.4).
+  chatbot with no user line at all. Delivering a persona needs a platform change (section 22.5).
 
 ## 22.2 Profile schema (`profiles.py`)
 
@@ -71,11 +71,58 @@ Persona IDs hash the condition values. Identifier fields get values nobody can m
 (`בדיקה-…`, `SYNTH-…`); excluded fields are left out. Each persona is checked with `profile_errors`
 and `derive` before it is returned, and stores its `user_info` line and the schema fingerprint.
 
-Not modelled yet: constraints between fields (an 18-year-old widowed career soldier is a valid
-persona) and boundary values taken from document rules; the rule-extraction stage will add those as
-`sample_values` and constraints.
+Not modelled: constraints between fields (an 18-year-old widowed career soldier is a valid
+persona). Boundary values taken from document rules come from `rule_personas` (section 22.4).
 
-## 22.4 Why
+## 22.4 Applicability rules and personal questions (`conditions.py`, `personal_questions.py`)
+
+**Rule extraction.** `extract_rules` shows each chunk the schema's condition fields (key, label,
+type, listed values, derived fields) and asks for rules `{when: [predicate], consequence, otherwise,
+quote}`; a predicate is `{key, op, values}` with ops `eq, ne, in, not_in, gt, gte, lt, lte`. One
+call per chunk (`RuleBatch`), at most six rules per chunk. Everything the model returns is checked
+in code (`validate_candidate`): the key must exist and be a condition (not an identifier, not
+`excluded`), the operator must fit the type, values must lie in the field's domain (an `open_values`
+enum may hold an unlisted value, which is kept and counted as `rules_with_unlisted_values`), the
+consequence must be non-blank and the quote must occur verbatim in the chunk. Rejections are
+counted by reason, never dropped silently. A rule's id is a hash of its predicates, consequence
+and source, so re-runs keep ids. Duplicates inside a run are removed.
+
+The **prefilter** skips a chunk before any call when it contains no condition field label, enum
+value or derived label (`profile_terms`, normalized substring match). It is a cost cut with a known
+miss (a chunk saying "בן 21" without "גיל"); `--no-prefilter` and `personalization.rule_prefilter`
+turn it off. A failed call is counted (`chunks_failed`) and not cached.
+
+**Evaluation in code.** `evaluate_rule(schema, rule, profile, as_of)` returns True, False or None
+(a decisive field is missing). Derived fields are computed with `profiles.derive`. The model never
+decides which side of a rule a persona is on.
+
+**Rule personas.** `rule_personas` starts from a base persona and edits only the fields the rule
+mentions: a persona that satisfies every predicate, one that violates a predicate, one with a
+decisive field removed (derived predicates remove the source date), and for each numeric, date or
+derived predicate the exact boundary: the first and last value that satisfy it and the value just
+outside (for derived values, the first and last day found by scanning around `as_of`). Output is
+deduplicated by persona id, ordered and capped by `personas_per_rule`; a rule no persona can satisfy
+is skipped as `rule_unsatisfiable`.
+
+**Questions.** One call per rule (`PersonalDraft`): the question, the answer if the rule applies,
+the answer if not, claims for each, one general-rule claim and a clarification. A draft is rejected
+when an answer or claims are missing or the question states the condition's value
+(`question_restates_condition`, since the persona's profile should carry it). For each persona the
+verdict picks the side: applies, does not apply, or `clarify` (form `ambiguous`, no claims,
+the clarification as expected answer). Claims are the branch claims plus the general-rule claim, so
+a judge can tell a correct conclusion from a lucky one. The quote and chunk are the question's
+evidence. `personal_basic` questions need one call per distinct profile field for the question text;
+the answer ("לפי הפרופיל שלך, label: value") is built from the persona and cites no document.
+
+`SilverQuestion` gains `persona_id`, `profile_keys` (source fields the rule depends on) and
+`user_info`; they join the stable-id identity only when `persona_id` is set, so existing ids do not
+change. `review-export` adds a read-only `persona_readable` column.
+
+Limits: one draft per rule, so a persona-specific conclusion is the branch text; fields are
+independent in personas; as-of is not part of the rule cache key (rules do not depend on it) but
+is part of the questions' content.
+
+## 22.5 Why
 
 - Pinning the vocabulary to the schema is what makes the field list dynamic and keeps model output
   checkable: a rule naming a key or value outside the schema can be rejected in code.
