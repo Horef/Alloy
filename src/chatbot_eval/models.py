@@ -267,6 +267,11 @@ class SilverQuestion(BaseModel):
     # Reviewer-written pointer to where the answer is: document/page names, links, or pasted passages.
     # reground uses it to find the evidence; it is never treated as evidence itself.
     source_hint: str = ""
+    # Personal questions: the synthetic persona the question is asked as, the profile fields its
+    # answer depends on, and the profile line as the chatbot platform renders it. Empty otherwise.
+    persona_id: str = ""
+    profile_keys: list[str] = Field(default_factory=list)
+    user_info: str = ""
     review_status: str = "pending"
     reviewer_notes: str = ""
 

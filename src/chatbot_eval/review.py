@@ -64,6 +64,7 @@ REVIEW_COLUMNS = [
     "closed_book_answerable",
     "sources_readable",
     "supporting_quotes_readable",
+    "persona_readable",
     "review_status",
     "reviewer_notes",
     "source_hint",
@@ -107,6 +108,7 @@ HEBREW_COLUMN_LABELS = {
     "closed_book_answerable": "ניתנת למענה ללא מסמכים (לקריאה בלבד)",
     "sources_readable": "מקורות (לקריאה בלבד)",
     "supporting_quotes_readable": "ציטוטים תומכים (לקריאה בלבד)",
+    "persona_readable": "פרופיל המשתמש (לקריאה בלבד)",
     "review_status": "סטטוס סקירה",
     "reviewer_notes": "הערות סוקר",
     "source_hint": "מקור מוצע",
@@ -136,6 +138,14 @@ def _flatten_quotes(question: SilverQuestion) -> str:
     return "\n".join(lines)
 
 
+def _flatten_persona(question: SilverQuestion) -> str:
+    """The profile the question is asked under, as the chatbot platform renders it (empty if not personal)."""
+    if not question.user_info:
+        return ""
+    keys = f"\nשדות מכריעים: {', '.join(question.profile_keys)}" if question.profile_keys else ""
+    return f"{question.user_info}{keys}"
+
+
 def _review_row(question: SilverQuestion, parent_text: str = "") -> dict:
     return {
         "id": question.id,
@@ -158,6 +168,7 @@ def _review_row(question: SilverQuestion, parent_text: str = "") -> dict:
         "closed_book_answerable": "true" if question.closed_book_answerable else "false",
         "sources_readable": _flatten_sources(question),
         "supporting_quotes_readable": _flatten_quotes(question),
+        "persona_readable": _flatten_persona(question),
         "review_status": question.review_status,
         "reviewer_notes": question.reviewer_notes,
         "source_hint": question.source_hint,
@@ -258,6 +269,9 @@ def _render_markdown(
                 f"**שאלה כללית ({question.broad_level}):** תשובה טובה מזכירה לפחות {question.min_key_points} "
                 f"מתוך {len(question.reference_claims)} התחומים: " + "; ".join(question.reference_claims)
             )
+            lines.append("")
+        if question.user_info:
+            lines.append(f"**פרופיל המשתמש:** {question.user_info}")
             lines.append("")
         if question.acceptable_clarification:
             lines.append(f"**שאלת הבהרה מקובלת:** {question.acceptable_clarification}")

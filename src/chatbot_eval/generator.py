@@ -843,6 +843,7 @@ def _assign_stable_ids(questions: list[SilverQuestion], reserved: set[str] | fro
                 "question_form": question.question_form.value,
                 "source_ids": sorted(source.source_id for source in question.sources),
                 "reference_claims": [_normalized(claim) for claim in question.reference_claims],
+                **({"persona_id": question.persona_id} if question.persona_id else {}),
             },
             ensure_ascii=False,
             sort_keys=True,

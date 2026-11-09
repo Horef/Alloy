@@ -69,7 +69,7 @@ def normalize_question_payload(payload: dict[str, Any]) -> dict[str, Any]:
     data["min_key_points"] = int(data.get("min_key_points") or 0)
     data["expected_behavior"] = behavior or ("answer" if data["answerable"] else "abstain")
     data["question_form"] = data.get("question_form") or ("ambiguous" if data["expected_behavior"] == "clarify" else "canonical")
-    for name in ("reference_claims", "supporting_quotes", "sources"):
+    for name in ("reference_claims", "supporting_quotes", "sources", "profile_keys"):
         value = data.get(name)
         if isinstance(value, str):
             try:
