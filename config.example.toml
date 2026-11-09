@@ -137,6 +137,14 @@ judge_max_context_chars = 60000
 # per question when --documents is given (0 turns the retrieval off).
 judge_max_evidence_chars = 30000
 judge_kb_passages = 6
+# Claim-targeted evidence: extra knowledge-base passages retrieved with the sentences of the answer
+# that carry numbers, dates or quoted names (0 turns it off), so contradictions of added details reach the judge.
+judge_claim_passages = 4
+# Second-pass check of every contradicted claim (one extra judge call per row that has any): the claim, its
+# quote and the passage the quote comes from are re-read; only claims still contradicted keep the row a
+# hallucination. judge_verify_evidence_chars bounds the passage given to that call.
+judge_verify_false_claims = true
+judge_verify_evidence_chars = 4000
 insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
 # Optional overall limit, in seconds, on retrying one Gemini or chatbot call: no retry starts later

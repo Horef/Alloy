@@ -305,6 +305,26 @@ class FalseClaim(BaseModel):
     explanation: str = ""
 
 
+class ClaimVerdict(BaseModel):
+    """The second-pass verifier's reading of one claimed contradiction (`claim_index` is 1-based)."""
+    claim_index: int = Field(ge=1)
+    verdict: Literal["contradicts", "supports", "unrelated"]
+    reason: str
+
+
+class ClaimVerificationResponse(BaseModel):
+    verdicts: list[ClaimVerdict]
+
+
+class ClaimVerification(BaseModel):
+    """What the second pass decided for one contradicted claim; `quote_not_found` means the quote was
+    not in the evidence, so no call was made for the claim."""
+    claim: str
+    contradicting_evidence: str = ""
+    verdict: Literal["contradicts", "supports", "unrelated", "quote_not_found"]
+    reason: str = ""
+
+
 class JudgeScores(BaseModel):
     claim_assessments: list[ClaimAssessment]
     required_points_total: int = Field(ge=0)
@@ -331,6 +351,11 @@ class JudgeScores(BaseModel):
     # contradicts: a flag for human verification, not an outcome.
     requires_verification: list[str] = Field(default_factory=list)
     demoted_false_claims: int = Field(default=0, ge=0)
+    # Second pass over the contradicted claims (D19): one entry per claim the judge listed, and
+    # whether a verification call was made for the row. Only `contradicts` stays in
+    # `false_claim_details`.
+    false_claim_verifications: list[ClaimVerification] = Field(default_factory=list)
+    verification_calls: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_counts(self) -> "JudgeScores":

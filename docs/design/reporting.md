@@ -28,7 +28,12 @@ are excluded from retrieval metrics rather than counted as failures.
 `requires_verification_*` (the `דורש אימות` card and filter; summary fields count, rate, denominator,
 total values and question IDs) is a review aid: the values are shown in each row's details, and the
 flag never changes an outcome or any other metric. A row's details also list its false claims with
-the contradicting evidence the judge quoted.
+the contradicting evidence the judge quoted and the second-pass verdict on each (D19). The
+second pass is reported as a card ("טענות שגויות שנסתרו בבדיקה שנייה") and summary fields
+`false_claim_verification_calls`, `false_claims_checked`, `false_claims_confirmed`,
+`false_claims_overturned`, `false_claims_overturned_by_verdict` (`supports`, `unrelated`,
+`quote_not_found`) and `false_claims_overturned_question_ids`; they are counts of claims, not a rate
+over rows, and the hallucination metrics already use the post-verification outcome.
 
 ## 14.2 Diagnosing the pipeline
 

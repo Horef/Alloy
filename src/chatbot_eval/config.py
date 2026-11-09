@@ -128,6 +128,9 @@ class Settings:
     personalization_personal_basic_questions: int = 0
     personalization_seed: int = 0
     personalization_rule_prefilter: bool = True
+    judge_verify_false_claims: bool = True
+    judge_verify_evidence_chars: int = 4000
+    judge_claim_passages: int = 4
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -284,6 +287,10 @@ class Settings:
             errors.append("evaluation.judge_max_evidence_chars must be at least 100")
         if self.judge_kb_passages < 0:
             errors.append("evaluation.judge_kb_passages must not be negative")
+        if self.judge_claim_passages < 0:
+            errors.append("evaluation.judge_claim_passages must not be negative")
+        if self.judge_verify_evidence_chars < 200:
+            errors.append("evaluation.judge_verify_evidence_chars must be at least 200")
         if self.insights_max_prompt_chars < 1000:
             errors.append("evaluation.insights_max_prompt_chars must be at least 1000")
         if self.gemini_request_timeout_seconds <= 0:
@@ -468,6 +475,11 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         personalization_rule_prefilter=_as_bool(
             _get(data, "personalization", "rule_prefilter", True), "personalization.rule_prefilter",
         ),
+        judge_verify_false_claims=_as_bool(
+            _get(data, "evaluation", "judge_verify_false_claims", True), "evaluation.judge_verify_false_claims",
+        ),
+        judge_verify_evidence_chars=int(_get(data, "evaluation", "judge_verify_evidence_chars", 4000)),
+        judge_claim_passages=int(_get(data, "evaluation", "judge_claim_passages", 4)),
     ).validate()
 
 

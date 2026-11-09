@@ -331,6 +331,32 @@ def test_requires_verification_flag_is_counted_filtered_and_exported(tmp_path):
     assert "סכום 773" in jsonl_path.read_text(encoding="utf-8")
 
 
+def test_second_pass_counts_are_summarized_exported_and_shown(tmp_path):
+    from chatbot_eval.io import write_evaluations
+    from chatbot_eval.models import ClaimVerification
+
+    judged = _judged()
+    judged.verification_calls = 1
+    judged.false_claim_verifications = [
+        ClaimVerification(claim="טענה א", verdict="contradicts", reason="סותר"),
+        ClaimVerification(claim="טענה ב", verdict="supports", reason="נתמך במקור"),
+        ClaimVerification(claim="טענה ג", verdict="quote_not_found"),
+    ]
+    record = EvaluationRecord(
+        question=SilverQuestion(id="1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="1", answer="a"), scores=judged, outcome=Outcome.CORRECT_ANSWER,
+    )
+    summary = build_summary([record])
+    assert (summary["false_claim_verification_calls"], summary["false_claims_checked"]) == (1, 3)
+    assert (summary["false_claims_confirmed"], summary["false_claims_overturned"]) == (1, 2)
+    assert summary["false_claims_overturned_by_verdict"] == {"supports": 1, "unrelated": 0, "quote_not_found": 1}
+    assert summary["false_claims_overturned_question_ids"] == ["1"]
+    _, report_path = write_report([record], tmp_path)
+    assert "נתמך במקור" in report_path.read_text(encoding="utf-8")
+    csv_path, _ = write_evaluations([record], tmp_path)
+    assert "בדיקה שנייה של טענות שגויות" in csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
+
+
 def test_all_task_false_claims_remain_visible():
     judged = JudgeScores(claim_assessments=[], required_points_total=0, answer_points_addressed=0, answer_points_correct=0,
         answer_false_claims=1, answer_unsupported_claims=2, answer_extraneous_claims=0,

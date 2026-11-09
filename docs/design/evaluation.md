@@ -42,6 +42,31 @@ the cited chunks. Each block is bounded by `evaluation.judge_max_evidence_chars`
 omitted is recorded in `result.metadata["judge_evidence"]`. Without `--documents` behavior is the
 previous excerpt-only evidence.
 
+**Claim-targeted evidence (D19).** The question-based passages are found from the question and the
+first 1500 characters of the answer, so a detail late in a long answer is poorly represented in the
+query. `evaluation.judge_claim_passages` more passages are therefore retrieved with each of the
+answer's *specific sentences* alone (those with a digit or a quoted name, at most eight, three
+tokens or more), round-robin by rank, skipping cited chunks and passages already found; their ids
+are in `judge_evidence.claim_passage_ids`. Lexical retrieval only, no model call, inside the same
+`judge_max_evidence_chars` cap.
+
+**Second pass on contradictions (D19).** The first judge over-reported contradictions (comparing a
+value for one entitlement with another's). After `apply_fixed_claims`, `Evaluator._verify_false_claims`
+checks every claim in `false_claim_details`: `locate_quote` looks for the quote, token by token (the
+retrieval tokenizer: case, niqqud, punctuation and spacing ignored; "..." parts must all occur in
+order), in the reference answer, cited chunks, supporting quotes and retrieved passages. Not found:
+the claim is demoted to unsupported with verdict `quote_not_found` and no call is made. The rest go
+in **one** `VERIFY_PROMPT` call per row with the question, the claims, their quotes and, per quote,
+the block it was found in, windowed to `evaluation.judge_verify_evidence_chars` around the quote.
+Per claim the verifier returns `contradicts` (stays false), `supports` (no longer false and *not*
+unsupported: the claim is true) or `unrelated` (demoted to unsupported) with a Hebrew reason; a
+response that does not return exactly one verdict per index is a `judge_error`. Decisions are stored
+in `scores.false_claim_verifications` and the call count in `scores.verification_calls`.
+`evaluation.judge_verify_false_claims = false` skips the pass. The pass runs before `classify`, so
+the outcome rules are unchanged: they only see the surviving false claims. A limit: the verifier is
+the same model family reading the same evidence, so it removes slips of comparison, not gaps in the
+knowledge base.
+
 The judge returns **counts and per-claim assessments, not a grade**:
 
 - for each fixed claim: addressed? correct?;

@@ -153,6 +153,9 @@ judge_max_answer_chars = 20000
 judge_max_context_chars = 60000
 judge_max_evidence_chars = 30000
 judge_kb_passages = 6
+judge_claim_passages = 4
+judge_verify_false_claims = true
+judge_verify_evidence_chars = 4000
 insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
 max_concurrency = 1
@@ -248,6 +251,9 @@ log_level = "INFO"
 | `evaluation.judge_max_context_chars` | `60000` | Maximum retrieved-context characters placed in one judge prompt, with the same bounded truncation metadata. |
 | `evaluation.judge_max_evidence_chars` | `30000` | Maximum characters of source evidence, and separately of knowledge-base passages, placed in one judge prompt (same bounded truncation). Full source chunks are used when `--documents` is given; otherwise the stored 500-character excerpts. |
 | `evaluation.judge_kb_passages` | `6` | With `--documents`, how many knowledge-base passages (full chunks, other than the cited sources) are retrieved for the question and answer and given to the judge to verify added details. `0` turns the retrieval off. |
+| `evaluation.judge_claim_passages` | `4` | With `--documents`, how many further knowledge-base passages are retrieved (lexically, no model call) with the answer's own sentences that carry a number, date, amount or quoted name, so a contradiction of an added detail reaches the judge. Counted inside the same `evaluation.judge_max_evidence_chars` cap; `0` turns it off. |
+| `evaluation.judge_verify_false_claims` | `true` | Second-pass check of contradicted claims (D19): one extra judge call per answer that has any, re-reading each claim against the passage its quote comes from. `false` keeps the first judge's claims as they are. |
+| `evaluation.judge_verify_evidence_chars` | `4000` | Maximum characters of the passage around the quote given to that second-pass call. |
 | `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
 | `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for model requests on every transport (the name is historical). |
 | `evaluation.retry_deadline_seconds` | `0` | Optional limit on retrying one Gemini or chatbot call: no retry starts later than this many seconds after the first attempt, so a call takes at most this plus one request timeout. `0` disables the limit. Part of the live evaluation contract. |
@@ -1408,6 +1414,19 @@ The source evidence is the stored 500-character source excerpts plus verified qu
 `--documents` it is the full text of each cited chunk, plus `evaluation.judge_kb_passages`
 knowledge-base passages retrieved for the question and answer (capped by
 `evaluation.judge_max_evidence_chars`), so a true detail the reference omits can be verified.
+A further `evaluation.judge_claim_passages` passages are retrieved with the answer's own sentences
+that carry numbers, dates, amounts or quoted names, so contradictions of added details are visible.
+
+**Second pass on contradictions (D19).** A claim stays "false" only if it survives a second check.
+For every answer with at least one contradicted claim, one extra structured call re-reads each claim,
+its quoted contradiction and the passage the quote comes from (at most
+`evaluation.judge_verify_evidence_chars`). Code first checks that the quote occurs in the evidence
+(ignoring case, niqqud, punctuation and spacing; parts joined by "..." must all occur); a quote that
+does not is demoted to unsupported without a call. The verdict per claim: `contradicts` (stays false),
+`supports` (the claim is true: no longer false, not counted as unsupported) or `unrelated` (about a
+different entitlement, period or group: demoted to unsupported). Each decision is stored in
+`false_claim_verifications` (CSV column "בדיקה שנייה של טענות שגויות", JSONL, HTML details) and the
+summary counts the calls, confirmed and overturned claims. `evaluation.judge_verify_false_claims = false` skips it.
 
 Every factual-answer question stores stable, independently checkable `reference_claims`. The judge
 reports one assessment per fixed claim ID; application code validates those IDs and derives the
@@ -1420,7 +1439,7 @@ The judge reports:
 
 - required, addressed, and correctly answered details;
 - false, unsupported, and unnecessary claims; a false claim counts only when it quotes the contradicting
-  reference/evidence text (otherwise it is counted as unsupported);
+  reference/evidence text (otherwise it is counted as unsupported) and survives the second pass;
 - `requires_verification` (Hebrew label דורש אימות): the specific values (numbers, dates, amounts,
   conditions) the evidence neither supports nor contradicts. A flag for a human reviewer; it never
   changes the outcome;
@@ -1464,10 +1483,10 @@ Both evaluation workflows write:
 
 | File | Contents |
 |---|---|
-| `evaluation_details.csv` | Hebrew row-level results and claim/retrieval counts, including `דורש אימות` (count), `ערכים לאימות` (the values) and `פירוט טענות שגויות` (false claims with the quoted contradicting evidence). |
+| `evaluation_details.csv` | Hebrew row-level results and claim/retrieval counts, including `דורש אימות` (count), `ערכים לאימות` (the values) and `פירוט טענות שגויות` (false claims with the quoted contradicting evidence) and `בדיקה שנייה של טענות שגויות` (the second-pass verdict and reason per claim). |
 | `evaluation_details.jsonl` | Lossless `EvaluationRecord` objects. With `--documents`, each result's `metadata.judge_evidence` lists how many source chunks were read in full and which knowledge-base passages the judge saw. |
-| `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, `requires_verification_*` counts and rate, and pipeline diagnostics. |
-| `evaluation_report.html` | Interactive Hebrew RTL report; a `דורש אימות` card and a filter for flagged rows. |
+| `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, `requires_verification_*` counts and rate, the second-pass counts (`false_claim_verification_calls`, `false_claims_checked`, `false_claims_confirmed`, `false_claims_overturned`), and pipeline diagnostics. |
+| `evaluation_report.html` | Interactive Hebrew RTL report; a `דורש אימות` card and a filter for flagged rows; a card with the claims the second pass overturned. |
 | `evaluation_insights.json` | Written only when optional insights succeed. |
 | `evaluation_insights_status.json` | Always written; records whether insights were disabled, generated, or failed and the evaluation-record fingerprint. |
 | `evaluation_checkpoint.jsonl` | Durable per-question records used by `--resume`. |

@@ -14,8 +14,8 @@ mitigate them.
    double-review a sample by hand and measure agreement (Cohen's kappa rather than percent agreement,
    as [R31] recommends). Without `--documents` the judge sees only 500-character source excerpts and
    will treat true detail beyond them as unsupported; `requires_verification` lists such values for
-   a reviewer, but the quoted contradiction is itself model output and is not checked against the
-   evidence in code.
+   a reviewer. A quoted contradiction is checked in code to occur in the evidence and re-read by a
+   second model call (D19), but that call is the same model family on the same evidence.
 2. **Boundary questions are only as unanswerable as the evidence checked.** Without
    `verify_unanswerable`, absence is established against one window; with it, against a retrieval
    sample from the whole corpus. Neither is exhaustive, which is one more reason boundary questions

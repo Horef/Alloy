@@ -550,6 +550,9 @@ def _judge_evidence_contract(settings, knowledge_base: PassageLookup | None) -> 
     return {
         "max_evidence_chars": settings.judge_max_evidence_chars,
         "kb_passages": settings.judge_kb_passages if knowledge_base else 0,
+        "claim_passages": settings.judge_claim_passages if knowledge_base else 0,
+        "verify_false_claims": settings.judge_verify_false_claims,
+        "verify_evidence_chars": settings.judge_verify_evidence_chars,
         "knowledge_base_sha256": knowledge_base.fingerprint() if knowledge_base else "",
     }
 
@@ -1468,6 +1471,9 @@ def main(argv: list[str] | None = None) -> int:
                     max_concurrency=concurrency, knowledge_base=judge_kb,
                     max_evidence_chars=settings.judge_max_evidence_chars,
                     kb_passages=settings.judge_kb_passages,
+                    claim_passages=settings.judge_claim_passages,
+                    verify_false_claims=settings.judge_verify_false_claims,
+                    verify_evidence_chars=settings.judge_verify_evidence_chars,
                 ), premade=True, contract=contract,
             )
             insights, insights_path = _optional_insights(
@@ -1567,6 +1573,9 @@ def main(argv: list[str] | None = None) -> int:
                 max_concurrency=concurrency, knowledge_base=judge_kb,
                 max_evidence_chars=settings.judge_max_evidence_chars,
                 kb_passages=settings.judge_kb_passages,
+                claim_passages=settings.judge_claim_passages,
+                verify_false_claims=settings.judge_verify_false_claims,
+                verify_evidence_chars=settings.judge_verify_evidence_chars,
             ), premade=False, contract=contract,
         )
         insights, insights_path = _optional_insights(

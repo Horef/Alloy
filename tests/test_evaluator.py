@@ -383,3 +383,109 @@ def test_judge_schema_requires_the_flag_and_false_claim_lists_but_records_stay_l
     item = question(False)
     record = Evaluator(object(), Judge(), "judge").judge_results([(item, ChatbotResult(question_id="Q1", answer="תשובה"))])[0]
     assert seen == [JudgeResponse] and type(record.scores) is JudgeScores and record.scores.requires_verification == ["x"]
+
+
+def _verification_setup(quotes, verdicts, *, verify=True, answer="תשובה"):
+    """An unanswerable-task row whose first judge reports one false claim per quote; the second pass
+    answers from ``verdicts`` (claim index -> verdict). Returns (record, prompts of verify calls)."""
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import ClaimVerdict, ClaimVerificationResponse, FalseClaim, SourceRef
+
+    text = "בסעיף זה נקבע כי מענק השחרור הוא 773 שקלים לחייל מסיים שירות. תנאי נוסף: ההגשה בתוך 30 יום."
+    chunk = Chunk("d.md#chunk-1", "d.md", "ל1", text)
+    item = question(False)
+    item.sources = [SourceRef(source_id="d.md#chunk-1", file="d.md", location="ל1", excerpt=text)]
+    verify_prompts = []
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            if schema is ClaimVerificationResponse:
+                verify_prompts.append(prompt)
+                return ClaimVerificationResponse(verdicts=[
+                    ClaimVerdict(claim_index=index, verdict=verdict, reason="סיבה") for index, verdict in verdicts.items()
+                ])
+            judged = scores(required=0, addressed=0, correct=0, abstention=False, false_claims=len(quotes), incorrect_type="hallucination")
+            judged.false_claim_details = [FalseClaim(claim=f"טענה {i}", contradicting_evidence=q) for i, q in enumerate(quotes, 1)]
+            return judged
+
+    record = Evaluator(
+        object(), Judge(), "judge", knowledge_base=_Kb([chunk]), verify_false_claims=verify,
+    ).judge_results([(item, ChatbotResult(question_id="Q1", answer=answer))])[0]
+    return record, verify_prompts
+
+
+def test_second_pass_supports_verdict_overturns_the_false_claim_without_counting_it_unsupported():
+    record, prompts = _verification_setup(["מענק השחרור הוא 773 שקלים"], {1: "supports"})
+    assert len(prompts) == 1 and "773" in prompts[0] and "טענה 1" in prompts[0]
+    assert record.outcome == Outcome.SHOULD_HAVE_ABSTAINED
+    assert (record.scores.answer_false_claims, record.scores.answer_unsupported_claims) == (0, 0)
+    assert record.scores.false_claim_details == [] and record.scores.incorrect_type == "unrelated"
+    assert [item.verdict for item in record.scores.false_claim_verifications] == ["supports"]
+    assert record.scores.verification_calls == 1
+
+
+def test_second_pass_unrelated_verdict_demotes_to_unsupported_and_contradicts_keeps_the_claim():
+    record, _ = _verification_setup(["מענק השחרור הוא 773 שקלים", "ההגשה בתוך 30 יום"], {1: "unrelated", 2: "contradicts"})
+    assert record.outcome == Outcome.MISLEADING_HALLUCINATION
+    assert (record.scores.answer_false_claims, record.scores.answer_unsupported_claims) == (1, 1)
+    assert [claim.claim for claim in record.scores.false_claim_details] == ["טענה 2"]
+    assert [item.verdict for item in record.scores.false_claim_verifications] == ["unrelated", "contradicts"]
+    assert record.scores.verification_calls == 1
+
+
+def test_second_pass_skips_the_call_for_a_quote_not_in_the_evidence_and_demotes_it():
+    record, prompts = _verification_setup(["ציטוט שלא מופיע בשום מקום"], {})
+    assert prompts == []
+    assert record.scores.verification_calls == 0
+    assert (record.scores.answer_false_claims, record.scores.answer_unsupported_claims) == (0, 1)
+    assert [item.verdict for item in record.scores.false_claim_verifications] == ["quote_not_found"]
+    # Only the claim whose quote is present is sent; indexes in the call restart at 1.
+    record, prompts = _verification_setup(["ציטוט שלא מופיע", "מענק השחרור... 773 שקלים"], {1: "contradicts"})
+    assert len(prompts) == 1 and "ציטוט שלא מופיע" not in prompts[0]
+    assert [item.verdict for item in record.scores.false_claim_verifications] == ["quote_not_found", "contradicts"]
+    assert record.outcome == Outcome.MISLEADING_HALLUCINATION
+
+
+def test_second_pass_can_be_switched_off_and_rejects_a_wrong_verdict_list():
+    record, prompts = _verification_setup(["ציטוט שלא מופיע"], {}, verify=False)
+    assert prompts == [] and record.outcome == Outcome.MISLEADING_HALLUCINATION
+    assert record.scores.false_claim_verifications == [] and record.scores.answer_false_claims == 1
+    record, _ = _verification_setup(["מענק השחרור הוא 773 שקלים"], {2: "supports"})
+    assert record.outcome == Outcome.JUDGE_ERROR and "claim indexes" in record.judge_error
+
+
+def test_claim_targeted_retrieval_adds_the_passage_that_holds_the_answers_number():
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.retrieval import PassageLookup
+
+    chunks = [
+        Chunk("a.md#chunk-1", "a.md", "ל1", "מענק השחרור לחייל משוחרר מוגדר בסעיף כללי של הנוהל ומשולם בסוף השירות"),
+        Chunk("b.md#chunk-1", "b.md", "ל2", "הנחיה לגבי הגשת בקשות: ההגשה בתוך 45 יום מתאריך השחרור הרשמי בלבד"),
+        Chunk("c.md#chunk-1", "c.md", "ל3", "נושא אחר לגמרי הנוגע לאגרת רישוי ורכב"),
+    ]
+    item = question(False)
+    item.question = "מה מענק השחרור לחייל משוחרר"
+    prompts = []
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            return scores(required=0, addressed=0, correct=0, abstention=False)
+
+    answer = "מענק השחרור משולם בסוף השירות. ההגשה בתוך 30 יום מתאריך השחרור."
+    result = ChatbotResult(question_id="Q1", answer=answer)
+
+    def run(claim_passages):
+        prompts.clear()
+        record = Evaluator(
+            object(), Judge(), "judge", knowledge_base=PassageLookup(chunks), kb_passages=1,
+            claim_passages=claim_passages,
+        ).judge_results([(item, result)])[0]
+        return record.result.metadata["judge_evidence"], prompts[0]
+
+    info, prompt = run(0)
+    assert info["kb_passage_ids"] == ["a.md#chunk-1"] and info["claim_passage_ids"] == []
+    assert "בתוך 45 יום" not in prompt
+    info, prompt = run(2)
+    assert info["claim_passage_ids"] == ["b.md#chunk-1"]
+    assert "בתוך 45 יום" in prompt and "specific details" in prompt

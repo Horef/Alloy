@@ -62,3 +62,11 @@ INCORRECT_TYPE_HEBREW = {
 REQUIRES_VERIFICATION_HEBREW = "דורש אימות"
 REQUIRES_VERIFICATION_VALUES_HEBREW = "ערכים לאימות"
 FALSE_CLAIM_DETAILS_HEBREW = "פירוט טענות שגויות"
+# The second-pass check of each contradicted claim (D19).
+FALSE_CLAIM_VERIFICATION_HEBREW = "בדיקה שנייה של טענות שגויות"
+FALSE_CLAIM_VERDICT_HEBREW = {
+    "contradicts": "הסתירה אושרה",
+    "supports": "הטענה נתמכת (בוטלה)",
+    "unrelated": "לא קשור (הוחזרה ללא ביסוס)",
+    "quote_not_found": "הציטוט לא נמצא בראיות (הוחזרה ללא ביסוס)",
+}

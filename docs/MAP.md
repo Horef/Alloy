@@ -22,7 +22,7 @@ symbols of the repo).
     - `documents.py` — Corpus ingestion: reads supported documents and splits them into structure-aware chunks. · imported by 21
     - `evaluator.py` — Claim-level LLM judging of chatbot answers and the deterministic outcome classification. · imported by 3
     - `generator.py` — Silver question generation from the corpus graph: quotas, evidence windows, validation, variants. · imported by 6
-    - `graph.py` — Corpus knowledge graph for grounded question generation. · imported by 12
+    - `graph.py` — Corpus knowledge graph for grounded question generation. · imported by 13
     - `graph_build.py` — Build a corpus knowledge graph from chunks: LLM signal extraction + deterministic assembly. · imported by 3
     - `history.py` — Loaders for earlier run outputs, used for run comparison and prompt revision. · imported by 3
     - `insights.py` — Optional LLM analysis of failure patterns across an evaluation's results. · imported by 2
@@ -43,7 +43,7 @@ symbols of the repo).
     - `report.py` — Evaluation metrics, run comparison, and the Hebrew HTML report. · imported by 6
     - `response_errors.py` — Shared helpers for answer errors: the known placeholder answer and bounded retry delays. · imported by 7
     - `results_io.py` — Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. · imported by 3
-    - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 6
+    - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 7
     - `review.py` — Human-readable review sidecar and lossless round-trip merge. · imported by 3
     - `topics.py` — Topic inference for saved questions without topics (`evaluate-file --infer-topics`). · imported by 2
     - `validation.py` — Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). · imported by 7
@@ -86,8 +86,8 @@ symbols of the repo).
 - `chatbot_eval.models` — imported by 39
 - `chatbot_eval.documents` — imported by 21
 - `chatbot_eval.llm` — imported by 17
+- `chatbot_eval.graph` — imported by 13
 - `chatbot_eval.contracts` — imported by 13
-- `chatbot_eval.graph` — imported by 12
 - `chatbot_eval.artifacts` — imported by 12
 - `chatbot_eval.io` — imported by 9
 - `chatbot_eval.cli` — imported by 9
