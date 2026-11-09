@@ -6,13 +6,16 @@ appears in at least one persona (strength 1: every value at least once). Dimensi
 bool fields (their whole domain), date and number fields with `sample_values`, and derived fields
 with `sample_values`, for which the source date is set so the derived value is exactly that.
 `write_personas` / `read_personas` store them as JSONL; `pair_coverage` measures a persona list.
+`rule_personas(schema, rule, as_of, base_personas, seed=, limit=)` builds the few personas that
+exercise one `conditions.ProfileRule`: one that satisfies it, one that violates it, one missing the
+decisive field, and the exact date or number boundary on each side, with every date boundary found
+by scanning the derivation itself rather than assuming calendar arithmetic.
 
 Contracts: no LLM, no randomness beyond `random.Random(seed)`, so the same schema, date and seed give
 the same personas (D16). Identifier fields get values that cannot be mistaken for real ones
 ("בדיקה-<id>", "SYNTH-<id>"); excluded fields are left out. Every persona passes
-`profiles.profile_errors`. Rules extracted from documents will later add their own boundary values
-as `sample_values`; constraints between fields (e.g. release after mandatory-service end) are not
-modelled yet.
+`profiles.profile_errors`. Constraints between fields (e.g. release after mandatory-service end)
+are not modelled yet.
 """
 from __future__ import annotations
 
@@ -23,11 +26,14 @@ import json
 import random
 from itertools import combinations
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
-from .profiles import ProfileSchema, derive, profile_errors, render_user_info, schema_fingerprint
+from .conditions import ProfileRule, RulePredicate, evaluate_predicates
+from .profiles import (
+    ProfileField, ProfileSchema, derive, profile_errors, render_user_info, schema_fingerprint,
+)
 
 PERSONA_VERSION = 1
 
@@ -133,6 +139,27 @@ def _gain(row: dict[int, int], dim: int, value: int, strength: int, uncovered: s
     return gain
 
 
+def _finish_persona(
+    schema: ProfileSchema, profile: dict[str, Any], as_of: dt.date, fingerprint: str,
+    expected: dict[str, int] | None = None,
+) -> Persona:
+    """A `Persona` from a profile without identifier fields: its id hashes the profile, identifiers follow."""
+    profile = dict(profile)
+    digest = hashlib.sha256(json.dumps(profile, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8"))
+    persona_id = "P-" + digest.hexdigest()[:10]
+    for item in schema.fields:
+        if item.use == "identifier_only":
+            profile[item.key] = f"SYNTH-{persona_id[2:]}" if item.type == "id" else f"בדיקה-{persona_id[2:6]}"
+    derived_values = derive(schema, profile, as_of)
+    wrong = [key for key, value in (expected or {}).items() if derived_values.get(key) != value]
+    if problems := profile_errors(schema, profile) + wrong:  # a bug here, not bad input
+        raise AssertionError(f"synthetic persona {persona_id} is invalid: {problems}")
+    return Persona(
+        id=persona_id, as_of=as_of.isoformat(), profile=profile, derived=derived_values,
+        user_info=render_user_info(schema, profile) or "", schema_fingerprint=fingerprint,
+    )
+
+
 def synthesize_personas(
     schema: ProfileSchema, as_of: dt.date, *, seed: int = 0, strength: int = 2, max_personas: int = 200,
 ) -> tuple[list[Persona], dict]:
@@ -152,18 +179,8 @@ def synthesize_personas(
                 profile[derived.source] = source_date(derived.derivation, value, as_of).strftime(source.date_format)
             else:
                 profile[key] = value
-        digest = hashlib.sha256(json.dumps(profile, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8"))
-        persona_id = "P-" + digest.hexdigest()[:10]
-        for item in schema.fields:
-            if item.use == "identifier_only":
-                profile[item.key] = f"SYNTH-{persona_id[2:]}" if item.type == "id" else f"בדיקה-{persona_id[2:6]}"
-        derived_values = derive(schema, profile, as_of)
-        wrong = [key for key in chosen if key in derived_by_key and derived_values[key] != chosen[key]]
-        if problems := profile_errors(schema, profile) + wrong:  # a bug here, not bad input
-            raise AssertionError(f"synthetic persona {persona_id} is invalid: {problems}")
-        personas.append(Persona(
-            id=persona_id, as_of=as_of.isoformat(), profile=profile, derived=derived_values,
-            user_info=render_user_info(schema, profile) or "", schema_fingerprint=fingerprint,
+        personas.append(_finish_persona(
+            schema, profile, as_of, fingerprint, {key: v for key, v in chosen.items() if key in derived_by_key},
         ))
     diagnostics = {
         "persona_version": PERSONA_VERSION,
@@ -176,6 +193,171 @@ def synthesize_personas(
         "schema_fingerprint": fingerprint,
     }
     return personas, diagnostics
+
+
+class RulePersona(NamedTuple):
+    persona: Persona
+    role: str  # satisfies, violates, missing, boundary_satisfies, boundary_violates
+    variable: str = ""  # the profile field the role is about; empty for "satisfies"
+
+
+_UNSET = object()  # an update value meaning "remove the field from the profile"
+
+
+def _variables(schema: ProfileSchema, rule: ProfileRule) -> dict[str, list[RulePredicate]]:
+    """Predicates grouped by the profile field they read (a derived key reads its source date), in rule order."""
+    derived_by_key = {item.key: item for item in schema.derived}
+    groups: dict[str, list[RulePredicate]] = {}
+    for predicate in rule.when:
+        key = predicate.key.strip()
+        groups.setdefault(derived_by_key[key].source if key in derived_by_key else key, []).append(predicate)
+    return groups
+
+
+def _number(value: str) -> int | float:
+    number = float(value)
+    return int(number) if number == int(number) else number
+
+
+def _candidate_updates(
+    schema: ProfileSchema, variable: str, predicates: list[RulePredicate], as_of: dt.date,
+) -> list[tuple[dict[str, Any], bool]]:
+    """(profile update, is_edge) candidates for one variable: values around every threshold the rule uses.
+
+    Edge candidates sit exactly on a date boundary (the first or last day a derived value holds, and
+    the day just outside), where an off-by-one in the chatbot's own date arithmetic would show.
+    """
+    item = schema.field(variable)
+    derived_by_key = {d.key: d for d in schema.derived}
+    out: list[tuple[dict[str, Any], bool]] = []
+    if item.type == "enum":
+        values = list(item.values) + [v.strip() for p in predicates for v in p.values]
+        out = [({variable: value}, False) for value in values]
+    elif item.type == "bool":
+        out = [({variable: True}, False), ({variable: False}, False)]
+    elif item.type == "number":
+        for predicate in predicates:
+            for value in predicate.values:
+                base = _number(value)
+                out += [({variable: base + step}, False) for step in (0, -1, 1)]
+    elif item.type == "date":
+        for predicate in predicates:
+            key = predicate.key.strip()
+            if key in derived_by_key:
+                out += _derived_candidates(schema, derived_by_key[key], item, _number(predicate.values[0]), as_of)
+                continue
+            for value in predicate.values:
+                day = dt.date.fromisoformat(value.strip())
+                out += [({variable: (day + dt.timedelta(days=step)).strftime(item.date_format)}, False) for step in (0, -1, 1)]
+    seen: set[str] = set()
+    unique = []
+    for update, edge in out:
+        marker = json.dumps(update, sort_keys=True, default=str)
+        if marker not in seen:
+            seen.add(marker)
+            unique.append((update, edge))
+    return sorted(unique, key=lambda entry: entry[1])
+
+
+def _derived_candidates(
+    schema: ProfileSchema, derived, source: ProfileField, target: int | float, as_of: dt.date,
+) -> list[tuple[dict[str, Any], bool]]:
+    out: list[tuple[dict[str, Any], bool]] = []
+    for step in (0, -1, 1):
+        day = source_date(derived.derivation, int(target) + step, as_of)
+        out.append(({source.key: day.strftime(source.date_format)}, False))
+    center = source_date(derived.derivation, int(target), as_of)
+    window = [center + dt.timedelta(days=offset) for offset in range(-400, 401)]
+    held = [
+        day for day in window
+        if derive(schema, {source.key: day.strftime(source.date_format)}, as_of)[derived.key] == int(target)
+    ]
+    if held:
+        first, last = held[0], held[-1]
+        for day in (first, last, first - dt.timedelta(days=1), last + dt.timedelta(days=1)):
+            out.append(({source.key: day.strftime(source.date_format)}, True))
+    return out
+
+
+def _apply(profile: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    out = dict(profile)
+    for key, value in updates.items():
+        if value is _UNSET:
+            out.pop(key, None)
+        else:
+            out[key] = value
+    return out
+
+
+def rule_personas(
+    schema: ProfileSchema, rule: ProfileRule, as_of: dt.date, base_personas: list[Persona], *,
+    seed: int = 0, limit: int = 4,
+) -> tuple[list[RulePersona], str | None]:
+    """Personas that exercise `rule`, at most `limit`, in priority order, and a skip reason if none can.
+
+    Order: one that satisfies every condition; one that violates the first condition; one missing the
+    first condition's field (the chatbot should ask); the exact date or number boundary on each side
+    for conditions that have one; then violations and missing fields of the remaining conditions.
+    Other fields come from a base persona picked by seed and rule id, so the set varies between
+    rules but not between runs. Which side of the rule a persona is on is classified here by the same
+    evaluator the question stage uses, never assumed from how the persona was built.
+    """
+    groups = _variables(schema, rule)
+    rng = random.Random(f"{seed}:{rule.id}")
+    base = {
+        key: value for key, value in (rng.choice(base_personas).profile if base_personas else {}).items()
+        if (field := schema.field(key)) is None or field.use != "identifier_only"
+    }
+    sat: dict[str, dict[str, Any]] = {}
+    viol: dict[str, dict[str, Any]] = {}
+    edges: dict[str, dict[str, dict[str, Any]]] = {}
+    for variable, predicates in groups.items():
+        for update, edge in _candidate_updates(schema, variable, predicates, as_of):  # middle values come first
+            verdict = evaluate_predicates(schema, predicates, _apply(base, update), as_of)
+            if verdict is None:
+                continue
+            side = "sat" if verdict else "viol"
+            (sat if verdict else viol).setdefault(variable, update)
+            if edge:
+                edges.setdefault(variable, {}).setdefault(side, update)
+    if any(variable not in sat for variable in groups):
+        return [], "rule_unsatisfiable"
+    all_sat: dict[str, Any] = {}
+    for variable in groups:
+        all_sat.update(sat[variable])
+
+    def missing(variable: str) -> dict[str, Any]:
+        return {variable: _UNSET}
+
+    specs: list[tuple[str, str, dict[str, Any]]] = [("satisfies", "", all_sat)]
+    variables = list(groups)
+    first, rest = variables[0], variables[1:]
+    if first in viol:
+        specs.append(("violates", first, {**all_sat, **viol[first]}))
+    specs.append(("missing", first, {**all_sat, **missing(first)}))
+    for variable in variables:
+        if variable in edges:
+            if "sat" in edges[variable]:
+                specs.append(("boundary_satisfies", variable, {**all_sat, **edges[variable]["sat"]}))
+            if "viol" in edges[variable]:
+                specs.append(("boundary_violates", variable, {**all_sat, **edges[variable]["viol"]}))
+    for variable in rest:
+        if variable in viol:
+            specs.append(("violates", variable, {**all_sat, **viol[variable]}))
+        specs.append(("missing", variable, {**all_sat, **missing(variable)}))
+
+    fingerprint = schema_fingerprint(schema)
+    out: list[RulePersona] = []
+    seen: set[str] = set()
+    for role, variable, updates in specs:
+        if len(out) >= limit:
+            break
+        persona = _finish_persona(schema, _apply(base, updates), as_of, fingerprint)
+        if persona.id in seen:
+            continue
+        seen.add(persona.id)
+        out.append(RulePersona(persona, role, variable))
+    return out, None
 
 
 def pair_coverage(schema: ProfileSchema, personas: list[Persona]) -> tuple[int, int]:

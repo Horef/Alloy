@@ -2,7 +2,7 @@
 
 `CorpusAnalysisCache` stores JSON entries under `<cache>/<kind>/`: chunks, topic maps, the theme
 vocabulary, per-document node signals, the knowledge graph, inferred question topics, evaluation
-insights, and prompt packages. Each key hashes every input that can change the output (document
+insights, per-chunk profile-rule candidates, and prompt packages. Each key hashes every input that can change the output (document
 content hashes, settings, model, model route, prompt/schema or code fingerprints). Corrupt or
 mismatched entries are recomputed. `prune` deletes entries of the kinds a command used whose keys it
 did not look up. The cache holds extracted document text, so protect it like the corpus.
@@ -64,6 +64,7 @@ _KIND_SUBFOLDERS = {
     "graph": "graph",
     "question_topics": "question_topics",
     "insights": "insights",
+    "profile_rules": "profile_rules",
     "prompt_package": "prompt_packages",
 }
 
@@ -514,6 +515,64 @@ class CorpusAnalysisCache:
         else:
             self.events["question_topics"] = "disabled"
         return assignments
+
+    def load_profile_rules(
+        self,
+        chunks: list[Chunk],
+        *,
+        schema_fingerprint: str,
+        prompt_sha256: str,
+        model: str,
+        transport: str,
+        extract: Callable[[Chunk], list[dict] | None],
+        max_concurrency: int = 1,
+    ) -> tuple[dict[str, list[dict] | None], dict[str, int]]:
+        """Raw rule candidates per chunk, calling ``extract`` only for chunks whose entry is missing.
+
+        The key covers the chunk id and text, the profile schema, the rendered prompt, the model and
+        the transport; candidates are cached unvalidated, so validation changes need no re-extraction.
+        ``extract`` returns None on failure, which is not cached. Returns ``({chunk_id: candidates},
+        {"hit": n, "miss": n, "refresh": n})`` where miss/refresh count model calls.
+        """
+        keys = {
+            chunk.id: _json_hash({
+                "schema_version": CACHE_SCHEMA_VERSION, "chunk": {"id": chunk.id, "text": chunk.text},
+                "profile_schema": schema_fingerprint, "prompt_sha256": prompt_sha256,
+                "model": model, "model_identity": self.model_identity, "transport": transport,
+            })
+            for chunk in chunks
+        }
+        results: dict[str, list[dict] | None] = {}
+        missed: list[Chunk] = []
+        for chunk in chunks:
+            self._track("profile_rules", keys[chunk.id])
+            path = self.directory / "profile_rules" / f"{keys[chunk.id]}.json"
+            payload = self._read_payload(path, "profile_rules", keys[chunk.id]) if (self.enabled and not self.refresh) else None
+            if payload is not None and isinstance(payload.get("candidates"), list):
+                results[chunk.id] = payload["candidates"]
+            else:
+                missed.append(chunk)
+
+        def _extract_and_store(chunk: Chunk) -> tuple[str, list[dict] | None]:
+            candidates = extract(chunk)
+            if candidates is not None and self.enabled:
+                atomic_write_text(self.directory / "profile_rules" / f"{keys[chunk.id]}.json", json.dumps({
+                    "schema_version": CACHE_SCHEMA_VERSION, "kind": "profile_rules", "key": keys[chunk.id],
+                    "candidates": candidates,
+                }, ensure_ascii=False, separators=(",", ":")))
+            return chunk.id, candidates
+
+        if missed and max_concurrency > 1:
+            with ThreadPoolExecutor(max_workers=min(max_concurrency, len(missed))) as executor:
+                results.update(executor.map(_extract_and_store, missed))
+        else:
+            results.update(_extract_and_store(chunk) for chunk in missed)
+        events = {"hit": len(chunks) - len(missed), ("refresh" if self.enabled and self.refresh else "miss"): len(missed)}
+        self.events["profile_rules"] = (
+            "disabled" if not self.enabled else f"chunks={len(chunks)} reused={events['hit']} extracted={len(missed)}"
+        )
+        logger.info("profile_rules chunks=%d reused=%d extracted=%d", len(chunks), events["hit"], len(missed))
+        return results, events
 
     def load_insights(
         self,
