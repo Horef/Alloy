@@ -17,7 +17,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from .models import CANONICAL_SCORING, GENERATION_MODES
+from .models import CANONICAL_SCORING, GENERATION_MODES, SECOND_VOTE_MODES
 
 
 # `direct`: Google Gemini API; `apigee`: Gemini through an API gateway; `openai`: any OpenAI-compatible
@@ -131,6 +131,7 @@ class Settings:
     judge_verify_false_claims: bool = True
     judge_verify_evidence_chars: int = 4000
     judge_claim_passages: int = 4
+    second_vote: str = "harsher"
 
     def planning_parameters(self):
         from .planning import PlanningParameters
@@ -291,6 +292,8 @@ class Settings:
             errors.append("evaluation.judge_claim_passages must not be negative")
         if self.judge_verify_evidence_chars < 200:
             errors.append("evaluation.judge_verify_evidence_chars must be at least 200")
+        if self.second_vote not in SECOND_VOTE_MODES:
+            errors.append(f"evaluation.second_vote must be one of {', '.join(SECOND_VOTE_MODES)}")
         if self.insights_max_prompt_chars < 1000:
             errors.append("evaluation.insights_max_prompt_chars must be at least 1000")
         if self.gemini_request_timeout_seconds <= 0:
@@ -480,6 +483,7 @@ def load_settings(config_path: Path, require_api_key: bool = True) -> Settings:
         ),
         judge_verify_evidence_chars=int(_get(data, "evaluation", "judge_verify_evidence_chars", 4000)),
         judge_claim_passages=int(_get(data, "evaluation", "judge_claim_passages", 4)),
+        second_vote=str(_get(data, "evaluation", "second_vote", "harsher")).strip().lower(),
     ).validate()
 
 

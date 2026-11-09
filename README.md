@@ -254,6 +254,7 @@ log_level = "INFO"
 | `evaluation.judge_claim_passages` | `4` | With `--documents`, how many further knowledge-base passages are retrieved (lexically, no model call) with the answer's own sentences that carry a number, date, amount or quoted name, so a contradiction of an added detail reaches the judge. Counted inside the same `evaluation.judge_max_evidence_chars` cap; `0` turns it off. |
 | `evaluation.judge_verify_false_claims` | `true` | Second-pass check of contradicted claims (D19): one extra judge call per answer that has any, re-reading each claim against the passage its quote comes from. `false` keeps the first judge's claims as they are. |
 | `evaluation.judge_verify_evidence_chars` | `4000` | Maximum characters of the passage around the quote given to that second-pass call. |
+| `evaluation.second_vote` | `"harsher"` | Targeted second judge vote (D20) for uncertain rows only: a contradicted, demoted or overturned false claim, a `requires_verification` value, or a hallucination or unrelated outcome. `harsher` keeps the more severe of the two outcomes, `lenient` the less severe, `off` makes no second call. Rows where the votes differ are flagged `votes_disagree`. One extra judge call (plus its second-pass check) per uncertain row. Override per run with `--second-vote`. |
 | `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
 | `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for model requests on every transport (the name is historical). |
 | `evaluation.retry_deadline_seconds` | `0` | Optional limit on retrying one Gemini or chatbot call: no retry starts later than this many seconds after the first attempt, so a call takes at most this plus one request timeout. `0` disables the limit. Part of the live evaluation contract. |
@@ -996,6 +997,7 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 | `--retry-errors` | off | With `--resume`, retry prior `chatbot_error` and `judge_error` rows while preserving successful rows. |
 | `--max-concurrency N` | config value (`1`) | Opt-in concurrent chatbot/judge workers; output order remains the question-file order. |
 | `--documents DIR` | off | Document root the questions were generated from. The judge then reads full source chunks (not the stored 500-character excerpts) and `evaluation.judge_kb_passages` knowledge-base passages retrieved for each question and answer, so true added details can be verified. Must be outside `--output`; the chunking uses `generation.chunk_chars` and `chunk_overlap_chars`. |
+| `--second-vote harsher\|lenient\|off` | config value (`harsher`) | Override `evaluation.second_vote`: judge uncertain rows a second time and keep the more severe (`harsher`) or less severe (`lenient`) outcome, or skip it (`off`). |
 | `--cache-dir DIR` | config value | Cache location used for optional insights. |
 | `--refresh-cache` | off | Recompute matching cached insights. |
 | `--no-cache` | off | Do not read or write cached insights. |
@@ -1102,6 +1104,7 @@ Explicit mappings are recommended for stable production jobs.
 | `--retry-errors` | off | With `--resume`, retry prior judge errors while preserving imported chatbot errors and successful rows. |
 | `--max-concurrency N` | config value (`1`) | Opt-in concurrent judge workers; final row order remains stable. |
 | `--documents DIR` | off | Document root the questions were generated from. The judge then reads full source chunks (not the stored 500-character excerpts) and `evaluation.judge_kb_passages` knowledge-base passages retrieved for each question and answer, so true added details can be verified. Must be outside `--output`; the chunking uses `generation.chunk_chars` and `chunk_overlap_chars`. |
+| `--second-vote harsher\|lenient\|off` | config value (`harsher`) | Override `evaluation.second_vote`: judge uncertain rows a second time and keep the more severe (`harsher`) or less severe (`lenient`) outcome, or skip it (`off`). |
 | `--cache-dir DIR` | config value | Shared cache for inferred topics and optional insights. |
 | `--refresh-cache` | off | Replace matching topic-inference and insight cache entries. |
 | `--no-cache` | off | Disable those cache reads and writes. |
@@ -1437,6 +1440,21 @@ different entitlement, period or group: demoted to unsupported). Each decision i
 `false_claim_verifications` (CSV column "בדיקה שנייה של טענות שגויות", JSONL, HTML details) and the
 summary counts the calls, confirmed and overturned claims. `evaluation.judge_verify_false_claims = false` skips it.
 
+**Targeted second vote (D20).** The judge's own run-to-run noise (a claim lost or a hallucination
+flipping to a partial answer between two identical runs) is larger than the second pass can repair.
+After the first pass and its verification, a row is *uncertain* if it has a contradicted claim, a
+demoted or overturned false claim, a `requires_verification` value, or the outcome
+`misleading_hallucination` or `unrelated_answer`. Only those rows (about 5% in the noise study) get a
+second, independent judge call (the prompt carries the vote index, so the call cache never returns the
+first answer), followed by the same second-pass check and `classify`. `evaluation.second_vote`
+(`--second-vote`) chooses what to keep: `harsher` (default, owner's choice in D20) the more severe
+outcome by the order hallucination > should-have-abstained > missing clarification > incorrect abstention
+> unrelated > partial too little > partial too much > correct outcomes (a tie keeps the first vote);
+`lenient` the less severe; `off` no second call. When the two outcomes differ the row is marked
+`votes_disagree` with both outcomes stored (`vote_outcomes`, CSV column "סיווגי ההצבעות"), and the
+report and summary count them. A failed second call leaves the first vote and is recorded in
+`second_vote_error`.
+
 Every factual-answer question stores stable, independently checkable `reference_claims`. The judge
 reports one assessment per fixed claim ID; application code validates those IDs and derives the
 aggregate counts. Older silver files and premade imports without claims remain readable: their
@@ -1492,14 +1510,14 @@ Both evaluation workflows write:
 
 | File | Contents |
 |---|---|
-| `evaluation_details.csv` | Hebrew row-level results and claim/retrieval counts, including `דורש אימות` (count), `ערכים לאימות` (the values) and `פירוט טענות שגויות` (false claims with the quoted contradicting evidence) and `בדיקה שנייה של טענות שגויות` (the second-pass verdict and reason per claim). |
+| `evaluation_details.csv` | Hebrew row-level results and claim/retrieval counts, including `דורש אימות` (count), `ערכים לאימות` (the values) and `פירוט טענות שגויות` (false claims with the quoted contradicting evidence) and `בדיקה שנייה של טענות שגויות` (the second-pass verdict and reason per claim), `הצבעות השופט לא תאמו` and `סיווגי ההצבעות` (the second vote, D20). |
 | `evaluation_details.jsonl` | Lossless `EvaluationRecord` objects. With `--documents`, each result's `metadata.judge_evidence` lists how many source chunks were read in full and which knowledge-base passages the judge saw. |
-| `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, `requires_verification_*` counts and rate, the second-pass counts (`false_claim_verification_calls`, `false_claims_checked`, `false_claims_confirmed`, `false_claims_overturned`), and pipeline diagnostics. |
+| `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, `requires_verification_*` counts and rate, the second-pass counts (`false_claim_verification_calls`, `false_claims_checked`, `false_claims_confirmed`, `false_claims_overturned`), the second-vote counts (`second_vote_rows`, `second_vote_calls`, `votes_disagree_count`, `votes_disagree_question_ids`, `second_vote_errors`), and pipeline diagnostics. |
 | `evaluation_report.html` | Interactive Hebrew RTL report; a `דורש אימות` card and a filter for flagged rows; a card with the claims the second pass overturned. |
 | `evaluation_insights.json` | Written only when optional insights succeed. |
 | `evaluation_insights_status.json` | Always written; records whether insights were disabled, generated, or failed and the evaluation-record fingerprint. |
 | `evaluation_checkpoint.jsonl` | Durable per-question records used by `--resume`. |
-| `run_manifest.json` | Redacted settings, input and implementation hashes, versions, timing, status, and result counts. |
+| `run_manifest.json` | Redacted settings, input and implementation hashes, versions, timing, status, and result counts (for evaluations also `second_vote_calls`, `votes_disagree` and `second_vote_errors`). |
 
 The `report` command writes `report_manifest.json` so report-generation metadata cannot be confused
 with an evaluation run manifest. A previous-run directory only supplies `evaluation_insights.json`

@@ -28,7 +28,7 @@ symbols of the repo).
     - `insights.py` — Optional LLM analysis of failure patterns across an evaluation's results. · imported by 2
     - `io.py` — Reading and writing question sets and evaluation records as paired CSV and JSONL files. · imported by 9
     - `labels.py` — Hebrew display labels and report colors for question forms, expected behaviors and outcomes. · imported by 3
-    - `llm.py` — The model layer: structured Gemini calls, the seeded call cache, and embeddings. · imported by 17
+    - `llm.py` — The model layer: structured Gemini calls, the seeded call cache, and embeddings. · imported by 18
     - `llm_providers.py` — Model providers beyond the Google GenAI SDK, and the factory that builds the client for a transport. · imported by 2
     - `logging_utils.py` — Logging setup: console plus optional file handler, with SDK transport chatter quieted. · imported by 1
     - `models.py` — Pydantic data contracts shared by every component. · imported by 39
@@ -40,7 +40,7 @@ symbols of the repo).
     - `progress.py` — Progress bars (`track`) that show elapsed time and can be switched off with `--no-progress`. · imported by 7
     - `prompt_generator.py` — Drafts a reviewable Hebrew chatbot system prompt package from the corpus and prior results. · imported by 2
     - `prompt_policy.py` — Versioned, model-independent behavioral guidance assembled outside the LLM. · imported by 5
-    - `report.py` — Evaluation metrics, run comparison, and the Hebrew HTML report. · imported by 6
+    - `report.py` — Evaluation metrics, run comparison, and the Hebrew HTML report. · imported by 7
     - `response_errors.py` — Shared helpers for answer errors: the known placeholder answer and bounded retry delays. · imported by 7
     - `results_io.py` — Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. · imported by 3
     - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 8
@@ -85,7 +85,7 @@ symbols of the repo).
 
 - `chatbot_eval.models` — imported by 39
 - `chatbot_eval.documents` — imported by 21
-- `chatbot_eval.llm` — imported by 17
+- `chatbot_eval.llm` — imported by 18
 - `chatbot_eval.graph` — imported by 13
 - `chatbot_eval.contracts` — imported by 13
 - `chatbot_eval.artifacts` — imported by 12

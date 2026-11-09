@@ -42,7 +42,7 @@ from .io import read_questions, write_evaluations, write_questions
 from .llm import CachedStructuredLLM
 from .llm_providers import build_llm
 from .logging_utils import configure_logging
-from .models import ChatbotResult, Outcome, QuestionForm, SilverQuestion, ThemeVocabulary
+from .models import ChatbotResult, Outcome, QuestionForm, SECOND_VOTE_MODES, SilverQuestion, ThemeVocabulary
 from .pdf_markdown import convert_path
 from .personal_questions import build_personal_questions
 from .personas import pair_coverage, synthesize_personas, write_personas
@@ -158,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--retry-errors", action="store_true", help="Retry checkpointed chatbot/judge errors while preserving successes")
     evaluate.add_argument("--max-concurrency", type=int, help="Concurrent chatbot/judge workers; default is config value 1")
     evaluate.add_argument("--documents", type=Path, help="Document root the questions were generated from; the judge then reads full source chunks and knowledge-base passages instead of 500-character excerpts")
+    evaluate.add_argument("--second-vote", choices=SECOND_VOTE_MODES, help="Judge uncertain rows a second time and keep the harsher or the more lenient outcome, or off; default is config evaluation.second_vote")
     _add_cache_arguments(evaluate)
 
     evaluate_file = commands.add_parser("evaluate-file", help="Judge premade chatbot questions and answers")
@@ -191,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--retry-errors", action="store_true", help="Retry checkpointed judge errors while preserving other rows")
     evaluate_file.add_argument("--max-concurrency", type=int, help="Concurrent judge workers; default is config value 1")
     evaluate_file.add_argument("--documents", type=Path, help="Document root the questions were generated from; the judge then reads full source chunks and knowledge-base passages instead of 500-character excerpts")
+    evaluate_file.add_argument("--second-vote", choices=SECOND_VOTE_MODES, help="Judge uncertain rows a second time and keep the harsher or the more lenient outcome, or off; default is config evaluation.second_vote")
     _add_cache_arguments(evaluate_file)
 
     review_export = commands.add_parser(
@@ -559,7 +561,18 @@ def _judge_evidence_contract(settings, knowledge_base: PassageLookup | None) -> 
         "claim_passages": settings.judge_claim_passages if knowledge_base else 0,
         "verify_false_claims": settings.judge_verify_false_claims,
         "verify_evidence_chars": settings.judge_verify_evidence_chars,
+        "second_vote": settings.second_vote,
         "knowledge_base_sha256": knowledge_base.fingerprint() if knowledge_base else "",
+    }
+
+
+def _second_vote_totals(records) -> dict:
+    """Second-vote counts (D20) for the run manifest."""
+    scored = [record.scores for record in records if record.scores]
+    return {
+        "second_vote_calls": sum(scores.second_vote_calls for scores in scored),
+        "votes_disagree": sum(scores.votes_disagree for scores in scored),
+        "second_vote_errors": sum(bool(scores.second_vote_error) for scores in scored),
     }
 
 
@@ -842,6 +855,8 @@ def main(argv: list[str] | None = None) -> int:
         if (args.backend or configured.conversion_backend) == "local":
             offline_commands.add("convert-pdf")
     settings = load_settings(args.config, require_api_key=args.command not in offline_commands)
+    if getattr(args, "second_vote", None):
+        settings = replace(settings, second_vote=args.second_vote)
     log_path = args.log_file or (Path(settings.log_file) if settings.log_file else None)
     configure_logging(log_path, args.log_level or settings.log_level)
     progress_enabled = settings.progress_enabled and not args.no_progress
@@ -1480,6 +1495,7 @@ def main(argv: list[str] | None = None) -> int:
                     claim_passages=settings.judge_claim_passages,
                     verify_false_claims=settings.judge_verify_false_claims,
                     verify_evidence_chars=settings.judge_verify_evidence_chars,
+                    second_vote=settings.second_vote,
                 ), premade=True, contract=contract,
             )
             insights, insights_path = _optional_insights(
@@ -1498,7 +1514,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_paths.append(insights_path)
             manifest.complete(
                 record_count=len(records), resumed_count=resumed_count, insights_status=args.insights_status,
-                cache=cache.summary(),
+                cache=cache.summary(), **_second_vote_totals(records),
                 outputs=input_inventory(output_paths),
             )
         print(f"Evaluated {len(records)} premade results.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")
@@ -1582,6 +1598,7 @@ def main(argv: list[str] | None = None) -> int:
                 claim_passages=settings.judge_claim_passages,
                 verify_false_claims=settings.judge_verify_false_claims,
                 verify_evidence_chars=settings.judge_verify_evidence_chars,
+                second_vote=settings.second_vote,
             ), premade=False, contract=contract,
         )
         insights, insights_path = _optional_insights(
@@ -1600,7 +1617,7 @@ def main(argv: list[str] | None = None) -> int:
             output_paths.append(insights_path)
         manifest.complete(
             record_count=len(records), resumed_count=resumed_count, insights_status=args.insights_status,
-            cache=cache.summary(),
+            cache=cache.summary(), **_second_vote_totals(records),
             outputs=input_inventory(output_paths),
         )
     print(f"Evaluated {len(records)} questions.\nDetails: {details_csv}\nRaw details: {details_jsonl}\nSummary: {summary_json}\nReport: {report_html}")

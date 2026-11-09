@@ -247,3 +247,14 @@ def test_audience_is_whitespace_normalized_and_bounded(tmp_path):
     path.write_text(f'[generation]\naudience = "{"א" * 501}"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="generation.audience"):
         load_settings(path, require_api_key=False)
+
+
+def test_second_vote_setting_defaults_to_harsher_and_rejects_unknown_modes(tmp_path):
+    path = tmp_path / "vote.toml"
+    path.write_text("", encoding="utf-8")
+    assert load_settings(path, require_api_key=False).second_vote == "harsher"
+    path.write_text('[evaluation]\nsecond_vote = " Lenient "\n', encoding="utf-8")
+    assert load_settings(path, require_api_key=False).second_vote == "lenient"
+    path.write_text('[evaluation]\nsecond_vote = "majority"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="evaluation.second_vote"):
+        load_settings(path, require_api_key=False)

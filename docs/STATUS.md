@@ -4,6 +4,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 ## Works (verified)
 | Capability | How verified |
 |---|---|
+| Targeted second judge vote on uncertain rows (D20, `evaluation.second_vote`, `--second-vote`; default `harsher`) | `python -m pytest -q` → 486 passed (offline, fake judge: qualifying and non-qualifying rows, harsher/lenient/off, disagreement flag, failed second vote, call cache per vote, old records load, report/CSV/summary counts), 2026-11-09, branch `feat/judge-second-vote`, not merged. **Not run live**: the cost (about 42 of 842 rows) and the effect on noise are estimates from the noise study |
 | Judge second pass (D19): a re-check of every contradicted claim against its quoted text plus claim-targeted KB passages | `python -m pytest -q` → 454 passed (offline, fake LLMs); live `evaluate-file` v4 on the two golden sets, 2026-11-09, no judge errors: corpus A 3 claims checked, 3 confirmed; corpus B 11 checked, 9 confirmed, 2 overturned (one row, a hand-confirmed false positive; corpus A ROW00243, first hand-reviewed as a false positive, is a real error: the passage limits single rooms to lone combatants, the answer says lone soldiers); each corpus's `calibration_check.md` (v3 → v4). Not re-run for noise: unchanged rows swap between `correct_answer` and `partial_too_much`, and two hand-audited real hallucinations (corpus B) lost their false claim in the first pass. See WORKLOG |
 | Judge calibration (D18): hallucination needs a quoted contradiction; `--documents` evidence; `requires_verification` flag | `python -m pytest -q` → 366 passed (offline); live `evaluate-file` on two golden sets, 2026-11-09: hallucinations 7 → 3 and 22 → 9, 27 of 29 hand-audited rows agree (WORKLOG 2026-11-09). The quote is model output, not machine-checked |
 |---|---|
@@ -31,7 +32,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 - Exclusion lists are files, not a review database.
 
 ## Next actions
-0. Owner: review the rows still labelled hallucination in v4 and the `דורש אימות` rows. Next: measure first-pass judge noise with one more v4 run (corpus B ROW00048 and ROW00257 lost their false claim in the first pass, so the second pass never saw them).
+0. Owner: review the rows still labelled hallucination in v4 and the `דורש אימות` rows. Next: run one live v5 `evaluate-file` with the second vote on a golden set and check how many rows disagree and whether the two lost real hallucinations (corpus B ROW00048, ROW00257) are now kept; decide on merging `feat/judge-second-vote`.
 1. Generate the corpus C set from its 700-user-facing plan (owner runs `generate --plan`); then `review-export` and check whether reviewers still remove document references.
 2. Re-verify the design docs against the code at the next milestone (`python tools/docmap.py docs`); `lifecycle_strict` is on, so a missing or stale Status line now fails `check`.
 3. Owner: answer the remaining open questions in `docs/BRIEF.md`.

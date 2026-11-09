@@ -1,6 +1,8 @@
 """Tests for evaluator: the classify outcome matrix, fixed-claim recounting, and Evaluator runs."""
 from chatbot_eval.evaluator import Evaluator, apply_fixed_claims, classify
-from chatbot_eval.models import ChatbotResult, ClaimAssessment, ExpectedBehavior, JudgeScores, Outcome, SilverQuestion
+from chatbot_eval.models import (
+    ChatbotResult, ClaimAssessment, ExpectedBehavior, FalseClaim, JudgeScores, Outcome, SilverQuestion, SourceRef,
+)
 
 
 def scores(
@@ -489,3 +491,155 @@ def test_claim_targeted_retrieval_adds_the_passage_that_holds_the_answers_number
     info, prompt = run(2)
     assert info["claim_passage_ids"] == ["b.md#chunk-1"]
     assert "בתוך 45 יום" in prompt and "specific details" in prompt
+
+
+def _vote_run(mode, first, second=None, *, verify=False):
+    """An unanswerable-task row judged by a fake judge that returns ``first`` for the first vote and
+    ``second`` for the independent vote. Returns (record, prompts of judge calls)."""
+    prompts = []
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            if "INDEPENDENT ASSESSMENT" in prompt:
+                if isinstance(second, Exception):
+                    raise second
+                return second.model_copy(deep=True)
+            return first.model_copy(deep=True)
+
+    record = Evaluator(
+        object(), Judge(), "judge", second_vote=mode, verify_false_claims=verify,
+    ).judge_results([(question(False), ChatbotResult(question_id="Q1", answer="תשובה"))])[0]
+    return record, prompts
+
+
+def _flagged(abstention):
+    judged = scores(required=0, addressed=0, correct=0, abstention=abstention)
+    judged.requires_verification = ["סכום 773"]
+    return judged
+
+
+def _plain(abstention):
+    return scores(required=0, addressed=0, correct=0, abstention=abstention)
+
+
+def test_second_vote_runs_only_for_uncertain_rows_with_a_different_prompt():
+    record, prompts = _vote_run("harsher", _flagged(False), _plain(True))
+    assert len(prompts) == 2 and prompts[1].startswith(prompts[0]) and prompts[1] != prompts[0]
+    assert record.scores.second_vote_calls == 1
+    # Neither a clean correct row nor a plain behavior failure qualifies.
+    for clean in (_plain(True), _plain(False)):
+        record, prompts = _vote_run("harsher", clean, _flagged(True))
+        assert len(prompts) == 1 and record.scores.second_vote_calls == 0 and record.scores.vote_outcomes == []
+    # A hallucination qualifies, and so does an unrelated answer.
+    hallucination = _plain(False)
+    hallucination.answer_false_claims = 1
+    hallucination.false_claim_details = [FalseClaim(claim="טענה", contradicting_evidence="ציטוט")]
+    assert len(_vote_run("harsher", hallucination, _plain(True))[1]) == 2
+    answer = SilverQuestion(id="Q1", topic="x", question="q", expected_answer="a", reference_claims=["a"])
+    unrelated = scores(required=1, addressed=0, correct=0, incorrect_type="unrelated")
+    unrelated.claim_assessments = [ClaimAssessment(claim_id="C001", addressed=False, correct=False)]
+    prompts = []
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            return unrelated.model_copy(deep=True)
+
+    Evaluator(object(), Judge(), "judge", second_vote="lenient").judge_results(
+        [(answer, ChatbotResult(question_id="Q1", answer="תשובה"))],
+    )
+    assert len(prompts) == 2
+
+
+def test_second_vote_modes_keep_the_more_or_less_severe_outcome_and_flag_disagreement():
+    harsher, _ = _vote_run("harsher", _flagged(False), _plain(True))
+    assert harsher.outcome == Outcome.SHOULD_HAVE_ABSTAINED
+    assert harsher.scores.votes_disagree and harsher.scores.vote_outcomes == ["should_have_abstained", "correct_abstention"]
+    lenient, _ = _vote_run("lenient", _flagged(False), _plain(True))
+    assert lenient.outcome == Outcome.CORRECT_ABSTENTION
+    assert lenient.scores.votes_disagree and lenient.scores.vote_outcomes == ["should_have_abstained", "correct_abstention"]
+    # The second vote can be the harsher one.
+    harsher, _ = _vote_run("harsher", _flagged(True), _plain(False))
+    assert harsher.outcome == Outcome.SHOULD_HAVE_ABSTAINED and harsher.scores.vote_outcomes == ["correct_abstention", "should_have_abstained"]
+    lenient, _ = _vote_run("lenient", _flagged(True), _plain(False))
+    assert lenient.outcome == Outcome.CORRECT_ABSTENTION
+    # Agreement is recorded without a disagreement flag; off makes no second call.
+    agreed, _ = _vote_run("harsher", _flagged(True), _plain(True))
+    assert agreed.scores.vote_outcomes == ["correct_abstention"] * 2 and not agreed.scores.votes_disagree
+    off, prompts = _vote_run("off", _flagged(False), _plain(True))
+    assert len(prompts) == 1 and off.outcome == Outcome.SHOULD_HAVE_ABSTAINED and off.scores.vote_outcomes == []
+
+
+def test_second_vote_failure_keeps_the_first_vote_and_is_recorded():
+    record, _ = _vote_run("harsher", _flagged(False), RuntimeError("quota"))
+    assert record.outcome == Outcome.SHOULD_HAVE_ABSTAINED
+    assert record.scores.second_vote_error == "quota" and record.scores.second_vote_calls == 1
+    assert record.scores.vote_outcomes == [] and not record.scores.votes_disagree
+
+
+def test_second_vote_verification_calls_are_summed_over_both_votes():
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import ClaimVerdict, ClaimVerificationResponse
+    from chatbot_eval.retrieval import PassageLookup
+
+    chunk = Chunk("d.md#chunk-1", "d.md", "ל1", "בסעיף זה נקבע כי מענק השחרור הוא 773 שקלים לחייל מסיים שירות.")
+    item = question(False)
+    item.sources = [SourceRef(source_id="d.md#chunk-1", file="d.md", location="ל1", excerpt=chunk.text)]
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            if schema is ClaimVerificationResponse:
+                return ClaimVerificationResponse(verdicts=[ClaimVerdict(claim_index=1, verdict="contradicts", reason="סיבה")])
+            judged = scores(required=0, addressed=0, correct=0, abstention="INDEPENDENT" in prompt, false_claims=1, incorrect_type="hallucination")
+            judged.false_claim_details = [FalseClaim(claim="טענה", contradicting_evidence="מענק השחרור הוא 773 שקלים")]
+            return judged
+
+    record = Evaluator(object(), Judge(), "judge", knowledge_base=PassageLookup([chunk]), second_vote="harsher").judge_results(
+        [(item, ChatbotResult(question_id="Q1", answer="תשובה"))],
+    )[0]
+    assert record.outcome == Outcome.MISLEADING_HALLUCINATION and record.scores.verification_calls == 2
+    assert record.scores.second_vote_calls == 1 and not record.scores.votes_disagree
+
+
+def test_severity_order_puts_risky_outcomes_first_and_successes_last():
+    from chatbot_eval.models import OUTCOME_SEVERITY
+    from chatbot_eval.report import BEHAVIOR_FAILURE_OUTCOMES, RISKY
+
+    ranks = OUTCOME_SEVERITY
+    assert min(ranks[outcome] for outcome in RISKY | BEHAVIOR_FAILURE_OUTCOMES) > max(
+        ranks[outcome] for outcome in (Outcome.UNRELATED_ANSWER, Outcome.PARTIAL_TOO_LITTLE, Outcome.PARTIAL_TOO_MUCH)
+    )
+    assert ranks[Outcome.MISLEADING_HALLUCINATION] == max(ranks.values())
+    assert ranks[Outcome.CORRECT_ANSWER] == ranks[Outcome.CORRECT_ABSTENTION] == min(ranks.values())
+    assert ranks[Outcome.PARTIAL_TOO_LITTLE] > ranks[Outcome.PARTIAL_TOO_MUCH] > ranks[Outcome.CORRECT_ANSWER]
+
+
+def test_records_without_second_vote_fields_still_load():
+    old = scores().model_dump()
+    for key in ("vote_outcomes", "votes_disagree", "second_vote_calls", "second_vote_error"):
+        old.pop(key)
+    loaded = JudgeScores.model_validate(old)
+    assert (loaded.vote_outcomes, loaded.votes_disagree, loaded.second_vote_calls, loaded.second_vote_error) == ([], False, 0, "")
+
+
+def test_second_vote_calls_are_cached_per_vote_index(tmp_path):
+    from chatbot_eval.llm import CachedStructuredLLM
+
+    calls = []
+
+    class Inner:
+        def generate(self, prompt, schema, model):
+            calls.append("INDEPENDENT ASSESSMENT" in prompt)
+            return _flagged(False) if len(calls) == 1 else _plain(True)
+
+    def run():
+        return Evaluator(
+            object(), CachedStructuredLLM(Inner(), tmp_path / "calls.jsonl"), "judge", second_vote="harsher", verify_false_claims=False,
+        ).judge_results([(question(False), ChatbotResult(question_id="Q1", answer="תשובה"))])[0]
+
+    first = run()
+    assert calls == [False, True]
+    # A re-run replays both votes from the cache; the second vote never returns the first vote's entry.
+    again = run()
+    assert calls == [False, True] and again.scores.vote_outcomes == first.scores.vote_outcomes == ["should_have_abstained", "correct_abstention"]

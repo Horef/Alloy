@@ -357,6 +357,34 @@ def test_second_pass_counts_are_summarized_exported_and_shown(tmp_path):
     assert "בדיקה שנייה של טענות שגויות" in csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
 
 
+def test_second_vote_counts_are_summarized_exported_and_shown(tmp_path):
+    from chatbot_eval.io import write_evaluations
+
+    def voted(identifier, outcomes, disagree):
+        judged = _judged()
+        judged.vote_outcomes, judged.votes_disagree, judged.second_vote_calls = outcomes, disagree, 1
+        return EvaluationRecord(
+            question=SilverQuestion(id=identifier, topic="x", question="q", expected_answer="a"),
+            result=ChatbotResult(question_id=identifier, answer="a"), scores=judged, outcome=Outcome.MISLEADING_HALLUCINATION,
+        )
+
+    records = [voted("1", ["misleading_hallucination", "correct_answer"], True), voted("2", ["unrelated_answer"] * 2, False)]
+    records.append(EvaluationRecord(
+        question=SilverQuestion(id="3", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="3", answer="a"), scores=_judged(), outcome=Outcome.CORRECT_ANSWER,
+    ))
+    summary = build_summary(records)
+    assert (summary["second_vote_rows"], summary["second_vote_calls"], summary["votes_disagree_count"]) == (2, 2, 1)
+    assert summary["votes_disagree_question_ids"] == ["1"] and summary["second_vote_errors"] == 0
+    assert build_summary(records[2:])["second_vote_rows"] == 0
+    _, report_path = write_report(records, tmp_path)
+    report = report_path.read_text(encoding="utf-8")
+    assert "הצבעות שופט שלא תאמו" in report and "הצבעות השופט לא תאמו" in report
+    csv_path, jsonl_path = write_evaluations(records, tmp_path)
+    assert "הצבעות השופט לא תאמו" in csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
+    assert '"votes_disagree":true' in jsonl_path.read_text(encoding="utf-8")
+
+
 def test_all_task_false_claims_remain_visible():
     judged = JudgeScores(claim_assessments=[], required_points_total=0, answer_points_addressed=0, answer_points_correct=0,
         answer_false_claims=1, answer_unsupported_claims=2, answer_extraneous_claims=0,

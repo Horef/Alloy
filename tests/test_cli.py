@@ -140,6 +140,15 @@ def test_evaluate_file_parser_exposes_behavioral_metadata_columns():
     assert args.reference_sources_column == "gold_docs"
 
 
+def test_evaluate_commands_accept_second_vote_override():
+    parser = cli.build_parser()
+    assert parser.parse_args(["evaluate-file", "--results", "r.jsonl"]).second_vote is None
+    assert parser.parse_args(["evaluate-file", "--results", "r.jsonl", "--second-vote", "lenient"]).second_vote == "lenient"
+    assert parser.parse_args(["evaluate", "--questions", "q.jsonl", "--chatbot-url", "http://x", "--second-vote", "off"]).second_vote == "off"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["evaluate-file", "--results", "r.jsonl", "--second-vote", "majority"])
+
+
 def test_report_passes_evaluation_contracts_to_comparison(tmp_path, monkeypatch):
     settings_path = tmp_path / "config.toml"
     settings_path.write_text("", encoding="utf-8")

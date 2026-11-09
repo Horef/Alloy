@@ -35,6 +35,12 @@ second pass is reported as a card ("טענות שגויות שנסתרו בבד�
 `quote_not_found`) and `false_claims_overturned_question_ids`; they are counts of claims, not a rate
 over rows, and the hallucination metrics already use the post-verification outcome.
 
+The second vote (D20) adds `second_vote_rows` (rows judged twice), `second_vote_calls`,
+`second_vote_errors`, `votes_disagree_count` and `votes_disagree_question_ids`, shown as a card
+("הצבעות שופט שלא תאמו", only when some row had a second vote). A row's details list both outcomes, and
+`evaluation_details.csv` has the columns "הצבעות השופט לא תאמו" and "סיווגי ההצבעות". Outcome metrics use
+the kept vote's outcome; `review-export` does not export evaluation rows, so it carries no vote data.
+
 ## 14.2 Diagnosing the pipeline
 
 Answer tasks with retrieval telemetry fall into a 2 × 2 matrix: retrieval good or poor × answer good

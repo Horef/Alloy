@@ -45,7 +45,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `insights.py` | Optional LLM analysis of failure patterns across an evaluation's results. | `cli`, `test_insights` |
 | `io.py` | Reading and writing question sets and evaluation records as paired CSV and JSONL files. | `cli`, `results_io`, `review`, `review_probes` (+5) |
 | `labels.py` | Hebrew display labels and report colors for question forms, expected behaviors and outcomes. | `io`, `report`, `review` |
-| `llm.py` | The model layer: structured Gemini calls, the seeded call cache, and embeddings. | `cli`, `conditions`, `contracts`, `evaluator` (+13) |
+| `llm.py` | The model layer: structured Gemini calls, the seeded call cache, and embeddings. | `cli`, `conditions`, `contracts`, `evaluator` (+14) |
 | `llm_providers.py` | Model providers beyond the Google GenAI SDK, and the factory that builds the client for a transport. | `cli`, `test_llm_providers` |
 | `logging_utils.py` | Logging setup: console plus optional file handler, with SDK transport chatter quieted. | `cli` |
 | `models.py` | Pydantic data contracts shared by every component. | `adapters`, `artifacts`, `cache`, `cli` (+35) |
@@ -57,7 +57,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `progress.py` | Progress bars (`track`) that show elapsed time and can be switched off with `--no-progress`. | `cli`, `documents`, `evaluator`, `generator` (+3) |
 | `prompt_generator.py` | Drafts a reviewable Hebrew chatbot system prompt package from the corpus and prior results. | `cli`, `test_prompt_generator` |
 | `prompt_policy.py` | Versioned, model-independent behavioral guidance assembled outside the LLM. | `cache`, `cli`, `prompt_generator`, `test_cache` (+1) |
-| `report.py` | Evaluation metrics, run comparison, and the Hebrew HTML report. | `cli`, `insights`, `prompt_generator`, `review_probes` (+2) |
+| `report.py` | Evaluation metrics, run comparison, and the Hebrew HTML report. | `cli`, `insights`, `prompt_generator`, `review_probes` (+3) |
 | `response_errors.py` | Shared helpers for answer errors: the known placeholder answer and bounded retry delays. | `adapters`, `evaluator`, `llm`, `llm_providers` (+3) |
 | `results_io.py` | Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. | `cli`, `review_probes`, `test_results_io` |
 | `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `conditions`, `evaluator`, `generator` (+4) |

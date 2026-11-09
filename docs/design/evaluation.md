@@ -67,6 +67,27 @@ the outcome rules are unchanged: they only see the surviving false claims. A lim
 the same model family reading the same evidence, so it removes slips of comparison, not gaps in the
 knowledge base.
 
+**Targeted second vote (D20).** The noise study (the same v4 judge run twice on the corpus B set) showed
+the first judge's own variance: real hallucinations losing their false claim, rows swapping between
+`correct_answer` and `partial_too_much`. `Evaluator._judge_pass` is one complete vote (judge call,
+`apply_fixed_claims`, the D19 pass, `classify`). After the first vote, `needs_second_vote` selects
+uncertain rows: `answer_false_claims > 0`, `demoted_false_claims > 0`, a verification verdict other than
+`contradicts`, a `requires_verification` item, or the outcome `misleading_hallucination` or
+`unrelated_answer`. For those, `Evaluator._second_vote` runs `_judge_pass` again with `VOTE_NOTE` (vote
+index 2, "assess from scratch") appended to the prompt, so the call-cache key differs from the first
+vote's. `evaluation.second_vote` decides: `harsher` keeps the outcome with the higher
+`models.OUTCOME_SEVERITY` rank, `lenient` the lower, `off` skips the call; equal rank keeps the first
+vote. The severity order, most severe first, is `misleading_hallucination`, `should_have_abstained`,
+`missing_clarification`, `incorrect_abstention`, `unrelated_answer`, `partial_too_little`,
+`partial_too_much`, then the success outcomes (`correct_answer`, `correct_abstention`,
+`correct_clarification`) sharing one rank. It agrees with `report.RISKY` (the first three) and
+`BEHAVIOR_FAILURE_OUTCOMES` (the first four, with hallucination outside it). The kept vote's scores
+become the record's scores; `vote_outcomes` holds both outcomes, `votes_disagree` is true when they
+differ, `second_vote_calls` is 1 and `verification_calls` sums both votes. A second vote that raises is
+logged, recorded in `second_vote_error` and leaves the first vote. In the study about 42 of 842 rows were
+uncertain (about 0.55M tokens). The setting is part of the evaluation contract, so changing it makes an
+older checkpoint non-resumable; records written before D20 load with the new fields at their defaults.
+
 The judge returns **counts and per-claim assessments, not a grade**:
 
 - for each fixed claim: addressed? correct?;

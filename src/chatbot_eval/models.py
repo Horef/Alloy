@@ -123,6 +123,7 @@ BOUNDARY_KINDS = ("missing_detail", "false_premise", "out_of_scope")
 # boundary question gets one user phrasing and becomes its anchor.
 GENERATION_MODES = ("standard", "user_facing")
 CANONICAL_SCORING = ("gap", "include", "exclude")
+SECOND_VOTE_MODES = ("harsher", "lenient", "off")
 
 
 class GeneratedQuestion(BaseModel):
@@ -356,6 +357,13 @@ class JudgeScores(BaseModel):
     # `false_claim_details`.
     false_claim_verifications: list[ClaimVerification] = Field(default_factory=list)
     verification_calls: int = Field(default=0, ge=0)
+    # Targeted second vote (D20): the outcome of each judge vote in order (empty when the row had no
+    # second vote), whether they differ, the second vote's judge call (the verification calls of both
+    # votes are summed in `verification_calls`), and why a failed second vote was ignored.
+    vote_outcomes: list[str] = Field(default_factory=list)
+    votes_disagree: bool = False
+    second_vote_calls: int = Field(default=0, ge=0)
+    second_vote_error: str = ""
 
     @model_validator(mode="after")
     def validate_counts(self) -> "JudgeScores":
@@ -396,6 +404,26 @@ class Outcome(str, Enum):
     MISSING_CLARIFICATION = "missing_clarification"
     CHATBOT_ERROR = "chatbot_error"
     JUDGE_ERROR = "judge_error"
+
+
+# Judge outcomes from most to least severe, in one place: the second vote (D20) keeps the more or the
+# less severe of two outcomes by this order. The first three are `report.RISKY`; with incorrect
+# abstention the first four after hallucination are the behavior failures. Outcomes that count as
+# success share the lowest rank, so a tie keeps the first vote. Error outcomes are never compared.
+_SEVERITY_ORDER: tuple[tuple[Outcome, ...], ...] = (
+    (Outcome.MISLEADING_HALLUCINATION,),
+    (Outcome.SHOULD_HAVE_ABSTAINED,),
+    (Outcome.MISSING_CLARIFICATION,),
+    (Outcome.INCORRECT_ABSTENTION,),
+    (Outcome.UNRELATED_ANSWER,),
+    (Outcome.PARTIAL_TOO_LITTLE,),
+    (Outcome.PARTIAL_TOO_MUCH,),
+    (Outcome.CORRECT_ANSWER, Outcome.CORRECT_ABSTENTION, Outcome.CORRECT_CLARIFICATION),
+)
+OUTCOME_SEVERITY: dict[Outcome, int] = {
+    outcome: len(_SEVERITY_ORDER) - position
+    for position, group in enumerate(_SEVERITY_ORDER) for outcome in group
+}
 
 
 class TopicAssignment(BaseModel):

@@ -4,6 +4,17 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-09 - Targeted second judge vote (D20)
+Changed (branch `feat/judge-second-vote`, from main): after the first vote and its D19 verification, uncertain rows (a contradicted, demoted or overturned false claim, a `requires_verification` item, outcome hallucination or unrelated) get a second independent judge call (vote index in the prompt, so a different cache key) and the same verification and `classify`. `evaluation.second_vote` / `--second-vote` = `harsher` (default) | `lenient` | `off`; the severity order is `models.OUTCOME_SEVERITY` (consistent with `report.RISKY` and `BEHAVIOR_FAILURE_OUTCOMES`). `votes_disagree`, `vote_outcomes`, `second_vote_calls`, `second_vote_error` on `JudgeScores`; counts in the summary, HTML card and row details, CSV columns and the run manifest. See D20. `review-export` exports no evaluation rows, so nothing to add there.
+
+| Verification | Result |
+|---|---|
+| `python -m pytest -q` | 486 passed (offline, fake judge; 10 new tests across `tests/test_evaluator.py`, `test_report.py`, `test_config.py`, `test_cli.py`) |
+| `python tools/docmap.py update` then `check` | 0 errors; warnings: docmap version 5.6.0 vs skill 5.11.0, no `AGENTS.local.md` in the worktree (both pre-existing) |
+| Live run | none (daily model quota); cost and noise reduction are not measured |
+
+Next: one live v5 run on a golden set to count disagreements; decide on merging.
+
 ## 2026-11-09 - Judge second pass (D19) and live v4 re-run on corpora A and B
 Changed (branch `feat/judge-verify`, commit `11dd2bb`): every contradicted claim is re-checked in a second call that sees the claim, its quoted text and the passages (verdict `contradicts`, `supports` or `unrelated`); a quote not found in the evidence demotes the claim without a call; claim-targeted KB passages are added to the judge evidence. Settings `judge_verify_false_claims`, `judge_verify_evidence_chars`, `judge_claim_passages`. See D19.
 

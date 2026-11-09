@@ -64,6 +64,9 @@ REQUIRES_VERIFICATION_VALUES_HEBREW = "ערכים לאימות"
 FALSE_CLAIM_DETAILS_HEBREW = "פירוט טענות שגויות"
 # The second-pass check of each contradicted claim (D19).
 FALSE_CLAIM_VERIFICATION_HEBREW = "בדיקה שנייה של טענות שגויות"
+# The targeted second judge vote on uncertain rows (D20).
+VOTES_DISAGREE_HEBREW = "הצבעות השופט לא תאמו"
+VOTE_OUTCOMES_HEBREW = "סיווגי ההצבעות"
 FALSE_CLAIM_VERDICT_HEBREW = {
     "contradicts": "הסתירה אושרה",
     "supports": "הטענה נתמכת (בוטלה)",

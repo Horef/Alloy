@@ -145,6 +145,10 @@ judge_claim_passages = 4
 # hallucination. judge_verify_evidence_chars bounds the passage given to that call.
 judge_verify_false_claims = true
 judge_verify_evidence_chars = 4000
+# Targeted second judge vote (D20) on uncertain rows only (a contradicted, demoted or overturned false
+# claim, a requires_verification value, a hallucination or unrelated outcome): "harsher" keeps the more
+# severe of the two outcomes, "lenient" the less severe, "off" makes no second call. --second-vote overrides it.
+second_vote = "harsher"
 insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
 # Optional overall limit, in seconds, on retrying one Gemini or chatbot call: no retry starts later

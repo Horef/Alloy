@@ -10,6 +10,8 @@ Hallucination requires a contradicted claim that cites the contradicting evidenc
 the question and for the answer's specific sentences), and returns a `requires_verification` list
 that never affects the outcome. A second structured call (`VERIFY_PROMPT`, D19) re-reads every
 contradicted claim against the passage its quote comes from; only claims still contradicted count.
+A targeted second vote (D20, `needs_second_vote`, `evaluation.second_vote`) judges uncertain rows a
+second time and keeps the more or less severe outcome (`models.OUTCOME_SEVERITY`).
 Changing `classify` or the judge inputs changes what past runs mean.
 """
 from __future__ import annotations
@@ -26,7 +28,7 @@ from .graph import normalize_entity
 from .llm import StructuredLLM
 from .models import (
     ChatbotResult, ClaimVerification, ClaimVerificationResponse, EvaluationRecord, ExpectedBehavior, JudgeResponse,
-    JudgeScores, Outcome, QuestionForm, SilverQuestion,
+    JudgeScores, OUTCOME_SEVERITY, Outcome, QuestionForm, SECOND_VOTE_MODES, SilverQuestion,
 )
 from .progress import track
 from .response_errors import placeholder_error
@@ -257,6 +259,24 @@ response_is_clarification first. Count a claim as false only when you can quote 
 it; extra detail alone is not a false claim.
 """
 
+# Appended to the judge prompt for vote 2 (D20). It makes the prompt, and with it the call-cache key,
+# differ from vote 1's, and asks for a fresh reading; it names no earlier verdict.
+VOTE_NOTE = """
+INDEPENDENT ASSESSMENT (vote {vote}): assess this answer from scratch. Another judge may have assessed
+the same answer; do not assume what it concluded. Check every claim against the evidence yourself.
+"""
+
+
+def needs_second_vote(scores: JudgeScores, outcome: Outcome) -> bool:
+    """Whether a judged row is uncertain enough for a second vote: a contradicted claim, a claim the
+    judge flagged but code or the second pass did not confirm (demoted, overturned), a value left to
+    verify, or an outcome that rests on that kind of call (hallucination, unrelated answer)."""
+    return bool(
+        scores.answer_false_claims or scores.demoted_false_claims or scores.requires_verification
+        or any(item.verdict != "contradicts" for item in scores.false_claim_verifications)
+        or outcome in {Outcome.MISLEADING_HALLUCINATION, Outcome.UNRELATED_ANSWER}
+    )
+
 
 VERIFY_PROMPT = """Act as a strict second-pass reviewer. A first judge claimed that statements in a
 chatbot's answer are contradicted by a document, and quoted the contradicting text. Decide for each
@@ -402,12 +422,16 @@ class Evaluator:
         max_context_chars: int = 60_000, max_concurrency: int = 1,
         knowledge_base: PassageLookup | None = None, max_evidence_chars: int = 30_000, kb_passages: int = 6,
         claim_passages: int = 4, verify_false_claims: bool = True, verify_evidence_chars: int = 4000,
+        second_vote: str = "off",
     ):
         if (
             min(max_answer_chars, max_context_chars, max_concurrency, max_evidence_chars, verify_evidence_chars) < 1
             or kb_passages < 0 or claim_passages < 0
         ):
             raise ValueError("Judge input limits and max_concurrency must be positive")
+        if second_vote not in SECOND_VOTE_MODES:
+            raise ValueError(f"second_vote must be one of {', '.join(SECOND_VOTE_MODES)}")
+        self.second_vote = second_vote
         self.knowledge_base, self.max_evidence_chars, self.kb_passages = knowledge_base, max_evidence_chars, kb_passages
         self.claim_passages, self.verify_false_claims = claim_passages, verify_false_claims
         self.verify_evidence_chars = verify_evidence_chars
@@ -574,6 +598,40 @@ class Evaluator:
             scores.incorrect_type = "unrelated" if scores.answer_points_correct == 0 else "not_applicable"
         return scores
 
+    def _judge_pass(
+        self, question: SilverQuestion, prompt: str, blocks: list[tuple[str, str]],
+    ) -> tuple[JudgeScores, Outcome]:
+        """One full judging vote: the judge call, the fixed-claim check, the D19 second pass, `classify`."""
+        scores = self.judge.generate(prompt, JudgeResponse, self.judge_model)
+        if type(scores) is not JudgeScores:
+            scores = JudgeScores.model_validate(scores.model_dump())
+        scores = apply_fixed_claims(question, scores)
+        if self.verify_false_claims:
+            scores = self._verify_false_claims(question, scores, blocks)
+        return scores, classify(question, scores)
+
+    def _second_vote(
+        self, question: SilverQuestion, prompt: str, blocks: list[tuple[str, str]],
+        first: JudgeScores, first_outcome: Outcome,
+    ) -> tuple[JudgeScores, Outcome]:
+        """Targeted second vote (D20): an independent judge call, then keep the more severe outcome
+        (`harsher`) or the less severe (`lenient`); a tie keeps the first vote. A failed second vote
+        leaves the first as it was and records the error."""
+        try:
+            second, second_outcome = self._judge_pass(question, prompt + VOTE_NOTE.format(vote=2), blocks)
+        except Exception as exc:
+            logger.warning("second_vote_error question_id=%s error=%r", question.id, exc)
+            first.second_vote_calls, first.second_vote_error = 1, str(exc)
+            return first, first_outcome
+        first_rank, second_rank = OUTCOME_SEVERITY[first_outcome], OUTCOME_SEVERITY[second_outcome]
+        take_second = second_rank > first_rank if self.second_vote == "harsher" else second_rank < first_rank
+        chosen, outcome = (second, second_outcome) if take_second else (first, first_outcome)
+        chosen.vote_outcomes = [first_outcome.value, second_outcome.value]
+        chosen.votes_disagree = first_outcome != second_outcome
+        chosen.second_vote_calls = 1
+        chosen.verification_calls = first.verification_calls + second.verification_calls
+        return chosen, outcome
+
     def _judge_one(
         self, question: SilverQuestion, result: ChatbotResult,
         on_record: Callable[[EvaluationRecord], None] | None,
@@ -633,13 +691,9 @@ class Evaluator:
             }.get(question.expected_behavior, ""),
         )
         try:
-            scores = self.judge.generate(prompt, JudgeResponse, self.judge_model)
-            if type(scores) is not JudgeScores:
-                scores = JudgeScores.model_validate(scores.model_dump())
-            scores = apply_fixed_claims(question, scores)
-            if self.verify_false_claims:
-                scores = self._verify_false_claims(question, scores, blocks)
-            outcome = classify(question, scores)
+            scores, outcome = self._judge_pass(question, prompt, blocks)
+            if self.second_vote != "off" and needs_second_vote(scores, outcome):
+                scores, outcome = self._second_vote(question, prompt, blocks, scores, outcome)
         except Exception as exc:
             logger.exception("judge_error question_id=%s", question.id)
             record = EvaluationRecord(question=question, result=result, outcome=Outcome.JUDGE_ERROR, judge_error=str(exc))
