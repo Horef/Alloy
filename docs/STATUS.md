@@ -4,6 +4,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 ## Works (verified)
 | Capability | How verified |
 |---|---|
+| Judge second pass (D19): a re-check of every contradicted claim against its quoted text plus claim-targeted KB passages (branch `feat/judge-verify`) | `python -m pytest -q` → 454 passed (offline, fake LLMs); live `evaluate-file` v4 on the two golden sets, 2026-11-09, no judge errors: hova 3 claims checked, 3 confirmed; keva 11 checked, 9 confirmed, 2 overturned (one row, a hand-confirmed false positive); each corpus's `calibration_check.md` (v3 → v4). Not re-run for noise: unchanged rows swap between `correct_answer` and `partial_too_much`, and two hand-audited real hallucinations (keva) lost their false claim in the first pass. See WORKLOG |
 | Judge calibration (D18): hallucination needs a quoted contradiction; `--documents` evidence; `requires_verification` flag | `python -m pytest -q` → 366 passed (offline); live `evaluate-file` on two golden sets, 2026-11-09: hallucinations 7 → 3 and 22 → 9, 27 of 29 hand-audited rows agree (WORKLOG 2026-11-09). The quote is model output, not machine-checked |
 |---|---|
 | All CLI workflows (`convert-pdf`, `plan`, `generate`, `review-export`/`review-merge`, `reground`, `revary`, `add-broad`, `evaluate`, `evaluate-file`, `generate-prompt`, `report`) | Offline suite with fake LLMs: `python -m pytest -q` → **342 passed** in 2.2 s, 2026-11-01 (`python` from `AGENTS.local.md`, Python 3.13) |
@@ -23,14 +24,14 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 ## Known limitations (README "Current limitations"; details in `docs/design/limitations.md`)
 - Personalized questions: `generate-personal` writes `personal_integration` (and optionally `personal_basic`) silver questions, but only offline-tested; steps 5-6 (adapter persona delivery, judge input, metrics) are not built, so they cannot be evaluated yet. `generate` still rejects personal types. The rule prefilter can miss chunks that never name a profile field. Enum value lists and the birth-date format are provisional (`open_values`). Persona delivery (D17, provisional): the platform's dataset-evaluation upload sends no user line; the proposed platform patch is not in this repository.
 - Silver references and variant wording still need human review.
-- LLM judge calibrated by a 29-row hand audit (D18), not yet against a double-reviewed sample with kappa.
+- LLM judge calibrated by a 29-row hand audit (D18, D19), not yet against a double-reviewed sample with kappa. The second pass uses the same model family on the same evidence, so it removes comparison slips, not knowledge-base gaps.
 - Corpus PDFs passed to `generate` directly are not OCR'd; scanned pages need `convert-pdf` (Tesseract or Gemini backend) first.
 - Question-targeted retrieval is BM25 with optional embedding fusion; evidence the ranking misses can leave a reference incomplete.
 - Concurrent evaluation is for stateless endpoints only.
 - Exclusion lists are files, not a review database.
 
 ## Next actions
-0. Owner: review the rows still labelled hallucination and the `דורש אימות` rows in the two v3 reports; decide whether a second-pass check of the quoted contradiction is worth its cost (D18 consequences).
+0. Owner: review the v4 calibration notes and the rows still labelled hallucination (hova ROW00078, ROW00243, ROW00299; keva 7 rows) and the `דורש אימות` rows. Decide whether to merge `feat/judge-verify` (D19), and whether to re-run v4 once to measure first-pass noise (keva ROW00048 and ROW00257 lost their false claim without a second-pass call; hova ROW00243 was confirmed as contradicted although hand-reviewed as a false positive).
 1. Generate the corpus C set from its 700-user-facing plan (owner runs `generate --plan`); then `review-export` and check whether reviewers still remove document references.
 2. Re-verify the design docs against the code at the next milestone (`python tools/docmap.py docs`); `lifecycle_strict` is on, so a missing or stale Status line now fails `check`.
 3. Owner: answer the remaining open questions in `docs/BRIEF.md`.

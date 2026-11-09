@@ -4,6 +4,23 @@ Earlier history: `git log` (commit bodies explain each change) and `docs/archive
 
 Earlier months: `docs/worklog/YYYY-MM.md`.
 
+## 2026-11-09 - Judge second pass (D19) and live v4 re-run on corpora A and B
+Changed (branch `feat/judge-verify`, commit `11dd2bb`): every contradicted claim is re-checked in a second call that sees the claim, its quoted text and the passages (verdict `contradicts`, `supports` or `unrelated`); a quote not found in the evidence demotes the claim without a call; claim-targeted KB passages are added to the judge evidence. Settings `judge_verify_false_claims`, `judge_verify_evidence_chars`, `judge_claim_passages`. See D19.
+
+| Verification | Result |
+|---|---|
+| `python -m pytest -q` | 454 passed (offline, fake LLMs) |
+| `python tools/docmap.py check` | 0 errors; warnings: docmap version, no `AGENTS.local.md` in the worktree |
+| Live `evaluate-file --documents ... --soft-compare` v4 on the two golden sets, same parameters as v3 except `--compare-with` v3 (v3 had compared with v2) | no judge errors; hova 328 rows, keva 514 rows |
+| Second pass | hova: 3 calls, 3 claims checked, 3 confirmed. keva: 8 calls, 11 claims checked, 9 confirmed, 2 overturned (`supports`, one row, keva ROW00164, a hand-confirmed false positive) |
+| Claim-targeted evidence | hova: 173 of 284 scored rows got claim passages (692 in total); keva: 326 of 448 (1300). Mean `request_used` per Gemini call in the console logs: 12.5k (hova), 13.3k (keva) |
+| Audit agreement (`calibration_check.md`) | hova: 7 of 7 audited rows agree (v3 also 7 of 7). keva: 19 of 22 (v3 20 of 22); ROW00164 now agrees; ROW00048 and ROW00257 (hand-confirmed real) lost their false claim in the first pass and moved to `unrelated_answer` and `partial_too_much` |
+| Hallucinations v3 → v4 | hova 3 → 3 (ROW00298 left, ROW00078 entered); keva 9 → 7 |
+
+Findings: the second pass confirmed 12 of 14 contradicted claims; the one overturn is the targeted false positive. It cannot recover the two real rows lost in the first pass; that change comes from the new passages or run-to-run variance (not measured). Hova ROW00243 (hand-reviewed as a false positive in the earlier review) is confirmed as contradicted by the verifier; needs the owner's look. New hallucination hova ROW00078: the chatbot said the documents have no rule although the KB passage found by the claim retrieval states it, so it is arguably right. Keva ROW00407 (real fabrication) is still not flagged. About 10 rows per corpus swap between `correct_answer` and `partial_too_much` without a second-pass call, so use v3 → v4 outcome deltas with care.
+
+Next: owner reviews the remaining hallucination rows; consider one more v4 run to measure noise; decide on merging the branch.
+
 ## 2026-11-09 - Judge calibration (D18) and live re-run on corpora A and B
 Changed: `misleading_hallucination` now needs a contradicted claim with a quoted contradicting text (the judge's `incorrect_type` label and the nothing-correct fallback no longer decide it; nothing correct and nothing contradicted is `unrelated_answer`); uncited false claims are demoted to unsupported. New `--documents` gives the judge full cited chunks plus top-k knowledge-base passages (`judge_max_evidence_chars`, `judge_kb_passages`). New `requires_verification` flag (דורש אימות) per row, in the CSV, JSONL, summary and HTML (card, details, filter); it never changes an outcome. The judge asks for `JudgeResponse` so the two list fields are schema-required (a first live run left the flag empty on every row because defaulted fields are dropped by structured output). Decision D18.
 
