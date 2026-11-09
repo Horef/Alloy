@@ -36,14 +36,14 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `conditions.py` | Profile-conditioned applicability rules: extracted from document chunks, validated and evaluated in code. | `cli`, `personal_questions`, `personas`, `test_conditions` (+1) |
 | `config.py` | Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment. | `artifacts`, `cli`, `test_artifacts`, `test_cli` (+3) |
 | `contracts.py` | Small nonsecret identities for model-derived artifacts and evaluation records. | `cache`, `cli`, `evaluator`, `generator` (+9) |
-| `documents.py` | Corpus ingestion: reads supported documents and splits them into structure-aware chunks. | `cache`, `conditions`, `generator`, `graph` (+16) |
+| `documents.py` | Corpus ingestion: reads supported documents and splits them into structure-aware chunks. | `cache`, `conditions`, `generator`, `graph` (+17) |
 | `evaluator.py` | Claim-level LLM judging of chatbot answers and the deterministic outcome classification. | `cli`, `review_probes`, `test_evaluator` |
 | `generator.py` | Silver question generation from the corpus graph: quotas, evidence windows, validation, variants. | `cli`, `conditions`, `personal_questions`, `review_probes` (+2) |
 | `graph.py` | Corpus knowledge graph for grounded question generation. | `cache`, `cli`, `generator`, `graph_build` (+8) |
 | `graph_build.py` | Build a corpus knowledge graph from chunks: LLM signal extraction + deterministic assembly. | `cli`, `test_generator`, `test_graph_build` |
 | `history.py` | Loaders for earlier run outputs, used for run comparison and prompt revision. | `cli`, `review_probes`, `test_history` |
 | `insights.py` | Optional LLM analysis of failure patterns across an evaluation's results. | `cli`, `test_insights` |
-| `io.py` | Reading and writing question sets and evaluation records as paired CSV and JSONL files. | `cli`, `results_io`, `review`, `review_probes` (+4) |
+| `io.py` | Reading and writing question sets and evaluation records as paired CSV and JSONL files. | `cli`, `results_io`, `review`, `review_probes` (+5) |
 | `labels.py` | Hebrew display labels and report colors for question forms, expected behaviors and outcomes. | `io`, `report`, `review` |
 | `llm.py` | The model layer: structured Gemini calls, the seeded call cache, and embeddings. | `cli`, `conditions`, `contracts`, `evaluator` (+13) |
 | `llm_providers.py` | Model providers beyond the Google GenAI SDK, and the factory that builds the client for a transport. | `cli`, `test_llm_providers` |
@@ -60,7 +60,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `report.py` | Evaluation metrics, run comparison, and the Hebrew HTML report. | `cli`, `insights`, `prompt_generator`, `review_probes` (+2) |
 | `response_errors.py` | Shared helpers for answer errors: the known placeholder answer and bounded retry delays. | `adapters`, `evaluator`, `llm`, `llm_providers` (+3) |
 | `results_io.py` | Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. | `cli`, `review_probes`, `test_results_io` |
-| `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `conditions`, `generator`, `test_generator` (+1) |
+| `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `conditions`, `evaluator`, `generator` (+2) |
 | `review.py` | Human-readable review sidecar and lossless round-trip merge. | `cli`, `test_personal_questions`, `test_review` |
 | `topics.py` | Topic inference for saved questions without topics (`evaluate-file --infer-topics`). | `cli`, `test_topics` |
 | `validation.py` | Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). | `evaluator`, `io`, `results_io`, `review` (+3) |

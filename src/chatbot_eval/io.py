@@ -18,7 +18,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, TextIO
 
-from .labels import ANSWER_SCOPE_HEBREW, EXPECTED_BEHAVIOR_HEBREW, INCORRECT_TYPE_HEBREW, OUTCOME_HEBREW, QUESTION_FORM_HEBREW
+from .labels import (
+    ANSWER_SCOPE_HEBREW, EXPECTED_BEHAVIOR_HEBREW, FALSE_CLAIM_DETAILS_HEBREW, INCORRECT_TYPE_HEBREW, OUTCOME_HEBREW,
+    QUESTION_FORM_HEBREW, REQUIRES_VERIFICATION_HEBREW, REQUIRES_VERIFICATION_VALUES_HEBREW,
+)
 from .models import EvaluationRecord, EvidenceQuote, ExpectedBehavior, QuestionForm, QuestionType, SilverQuestion, SourceRef
 from .validation import normalize_question_payload, validate_question_set
 
@@ -205,6 +208,7 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
         "טענות עודפות", "היקף התשובה", "סוג שגיאה", "פרטים שנמצאו באחזור",
         "מספר מקטעים", "מקטעים רלוונטיים", "מקטעים סותרים", "הסבר הבדיקה", "מידע חסר או שגוי",
         "הסבר האחזור", "זמן תגובה במילישניות", "שגיאת מערכת", "פירוט טענות הייחוס",
+        REQUIRES_VERIFICATION_HEBREW, REQUIRES_VERIFICATION_VALUES_HEBREW, FALSE_CLAIM_DETAILS_HEBREW,
     ]
     with (
         _staged_text_file(csv_path, encoding="utf-8-sig", newline="") as (csv_handle, csv_temporary),
@@ -241,6 +245,12 @@ def write_evaluations(records: list[EvaluationRecord], output_dir: Path) -> tupl
                 "שגיאת מערכת": record.result.error or record.judge_error,
                 "פירוט טענות הייחוס": json.dumps(
                     [assessment.model_dump() for assessment in scores.claim_assessments] if scores else [],
+                    ensure_ascii=False,
+                ),
+                REQUIRES_VERIFICATION_HEBREW: len(scores.requires_verification) if scores else "",
+                REQUIRES_VERIFICATION_VALUES_HEBREW: "\n".join(scores.requires_verification) if scores else "",
+                FALSE_CLAIM_DETAILS_HEBREW: json.dumps(
+                    [claim.model_dump() for claim in scores.false_claim_details] if scores else [],
                     ensure_ascii=False,
                 ),
             }))

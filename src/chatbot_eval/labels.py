@@ -57,3 +57,8 @@ INCORRECT_TYPE_HEBREW = {
     "unrelated": "תשובה לא קשורה",
     "hallucination": "הזיה מטעה",
 }
+
+# A flag on a judged answer, not an outcome: specific values the evidence neither supports nor contradicts.
+REQUIRES_VERIFICATION_HEBREW = "דורש אימות"
+REQUIRES_VERIFICATION_VALUES_HEBREW = "ערכים לאימות"
+FALSE_CLAIM_DETAILS_HEBREW = "פירוט טענות שגויות"

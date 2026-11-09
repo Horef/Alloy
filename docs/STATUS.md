@@ -21,7 +21,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 ## Known limitations (README "Current limitations"; details in `docs/design/limitations.md`)
 - Personalized questions: `generate-personal` writes `personal_integration` (and optionally `personal_basic`) silver questions, but only offline-tested; steps 5-6 (adapter persona delivery, judge input, metrics) are not built, so they cannot be evaluated yet. `generate` still rejects personal types. The rule prefilter can miss chunks that never name a profile field. Enum value lists and the birth-date format are provisional (`open_values`). Persona delivery (D17, provisional): the platform's dataset-evaluation upload sends no user line; the proposed platform patch is not in this repository.
 - Silver references and variant wording still need human review.
-- LLM judge not yet calibrated against a human-reviewed sample.
+- LLM judge calibrated by a 29-row hand audit (D18), not yet against a double-reviewed sample with kappa.
 - Corpus PDFs passed to `generate` directly are not OCR'd; scanned pages need `convert-pdf` (Tesseract or Gemini backend) first.
 - Question-targeted retrieval is BM25 with optional embedding fusion; evidence the ranking misses can leave a reference incomplete.
 - Concurrent evaluation is for stateless endpoints only.

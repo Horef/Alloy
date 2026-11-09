@@ -52,7 +52,7 @@ from .prompt_generator import SystemPromptGenerator, prompt_generation_fingerpri
 from .progress import track
 from .prompt_policy import POLICY_VERSION
 from .report import write_report
-from .retrieval import CachedEmbedder, ModelEmbedder
+from .retrieval import CachedEmbedder, ModelEmbedder, PassageLookup
 from .review import MergeDiagnostics, merge_review_file, write_review_file
 from .results_io import ImportDiagnostics, ResultColumns, read_premade_results
 from .contracts import cache_identity, model_endpoint, model_identity, records_hash
@@ -157,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--soft-compare", action="store_true", help="Show approximate deltas on matched questions even when the benchmark or evaluation contract changed; warnings remain but are informational")
     evaluate.add_argument("--retry-errors", action="store_true", help="Retry checkpointed chatbot/judge errors while preserving successes")
     evaluate.add_argument("--max-concurrency", type=int, help="Concurrent chatbot/judge workers; default is config value 1")
+    evaluate.add_argument("--documents", type=Path, help="Document root the questions were generated from; the judge then reads full source chunks and knowledge-base passages instead of 500-character excerpts")
     _add_cache_arguments(evaluate)
 
     evaluate_file = commands.add_parser("evaluate-file", help="Judge premade chatbot questions and answers")
@@ -189,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_file.add_argument("--soft-compare", action="store_true", help="Show approximate deltas on matched questions even when the benchmark or evaluation contract changed; warnings remain but are informational")
     evaluate_file.add_argument("--retry-errors", action="store_true", help="Retry checkpointed judge errors while preserving other rows")
     evaluate_file.add_argument("--max-concurrency", type=int, help="Concurrent judge workers; default is config value 1")
+    evaluate_file.add_argument("--documents", type=Path, help="Document root the questions were generated from; the judge then reads full source chunks and knowledge-base passages instead of 500-character excerpts")
     _add_cache_arguments(evaluate_file)
 
     review_export = commands.add_parser(
@@ -531,6 +533,25 @@ def _analysis_cache(args, settings) -> CorpusAnalysisCache:
     if getattr(args, "output", None) and args.output.resolve().is_relative_to(args.documents.resolve()):
         raise ValueError("The output directory must be outside --documents")
     return _workflow_cache(args, settings, args.documents)
+
+
+def _judge_knowledge_base(args, settings, cache, progress_enabled: bool) -> PassageLookup | None:
+    """The knowledge base the evaluation judge reads full evidence from (``--documents``), if given."""
+    if args.documents is None:
+        return None
+    if args.output.resolve().is_relative_to(args.documents.resolve()):
+        raise ValueError("The output directory must be outside --documents")
+    chunks, _ = cache.load_chunks(args.documents, settings.chunk_chars, settings.chunk_overlap_chars, progress_enabled)
+    return PassageLookup(chunks)
+
+
+def _judge_evidence_contract(settings, knowledge_base: PassageLookup | None) -> dict:
+    """Judge-evidence settings and the knowledge-base identity, part of the evaluation contract."""
+    return {
+        "max_evidence_chars": settings.judge_max_evidence_chars,
+        "kb_passages": settings.judge_kb_passages if knowledge_base else 0,
+        "knowledge_base_sha256": knowledge_base.fingerprint() if knowledge_base else "",
+    }
 
 
 def _build_graph_bundle(
@@ -1403,7 +1424,8 @@ def main(argv: list[str] | None = None) -> int:
         concurrency = settings.max_concurrency if args.max_concurrency is None else args.max_concurrency
         if concurrency < 1:
             raise ValueError("--max-concurrency must be positive")
-        cache = _workflow_cache(args, settings)
+        cache = _workflow_cache(args, settings, args.documents)
+        judge_kb = _judge_knowledge_base(args, settings, cache, progress_enabled)
 
         class NeverCalledAdapter:
             def ask(self, question: SilverQuestion) -> ChatbotResult:
@@ -1411,7 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
 
         with RunManifest(
             args.output, command=args.command, settings=settings,
-            inputs=[args.results] + ([args.compare_with] if args.compare_with else []),
+            inputs=[args.results] + ([args.compare_with] if args.compare_with else []) + ([args.documents] if args.documents else []),
             parameters={
                 "sheet": args.sheet, "infer_topics": args.infer_topics, "import_diagnostics": import_diagnostics.as_dict(),
                 "generate_insights": args.generate_insights, "resume": args.resume, "strict": args.strict,
@@ -1436,14 +1458,16 @@ def main(argv: list[str] | None = None) -> int:
                 "judge_implementation": judge_contract_fingerprint(), "model_identity": model_identity(settings),
                 "max_answer_chars": settings.judge_max_answer_chars,
                 "max_context_chars": settings.judge_max_context_chars,
+                **_judge_evidence_contract(settings, judge_kb),
             }
-            manifest.data["evaluation_contract"] = contract
             records, resumed_count, checkpoint_path = _checkpointed_evaluation(
                 args, pairs, Evaluator(
                     NeverCalledAdapter(), llm, settings.judge_model, progress_enabled,
                     max_answer_chars=settings.judge_max_answer_chars,
                     max_context_chars=settings.judge_max_context_chars,
-                    max_concurrency=concurrency,
+                    max_concurrency=concurrency, knowledge_base=judge_kb,
+                    max_evidence_chars=settings.judge_max_evidence_chars,
+                    kb_passages=settings.judge_kb_passages,
                 ), premade=True, contract=contract,
             )
             insights, insights_path = _optional_insights(
@@ -1489,7 +1513,8 @@ def main(argv: list[str] | None = None) -> int:
     if concurrency < 1:
         raise ValueError("--max-concurrency must be positive")
     request_headers = _headers(args.header)
-    cache = _workflow_cache(args, settings)
+    cache = _workflow_cache(args, settings, args.documents)
+    judge_kb = _judge_knowledge_base(args, settings, cache, progress_enabled)
     adapter = HttpChatbotAdapter(
         args.chatbot_url, args.question_field, args.answer_field, args.context_field,
         settings.request_timeout_seconds, request_headers,
@@ -1502,7 +1527,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     with RunManifest(
         args.output, command=args.command, settings=settings,
-        inputs=[args.questions] + ([args.compare_with] if args.compare_with else []),
+        inputs=[args.questions] + ([args.compare_with] if args.compare_with else []) + ([args.documents] if args.documents else []),
         parameters={
             "chatbot_url_sha256": hashlib.sha256(args.chatbot_url.encode()).hexdigest(),
             "question_field": args.question_field, "answer_field": args.answer_field,
@@ -1519,6 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
             "judge_implementation": judge_contract_fingerprint(), "model_identity": model_identity(settings),
             "max_answer_chars": settings.judge_max_answer_chars,
             "max_context_chars": settings.judge_max_context_chars,
+            **_judge_evidence_contract(settings, judge_kb),
             "chatbot_url_sha256": hashlib.sha256(args.chatbot_url.encode()).hexdigest(),
             "question_field": args.question_field, "answer_field": args.answer_field,
             "context_field": args.context_field,
@@ -1538,7 +1564,9 @@ def main(argv: list[str] | None = None) -> int:
                 adapter, llm, settings.judge_model, progress_enabled,
                 max_answer_chars=settings.judge_max_answer_chars,
                 max_context_chars=settings.judge_max_context_chars,
-                max_concurrency=concurrency,
+                max_concurrency=concurrency, knowledge_base=judge_kb,
+                max_evidence_chars=settings.judge_max_evidence_chars,
+                kb_passages=settings.judge_kb_passages,
             ), premade=False, contract=contract,
         )
         insights, insights_path = _optional_insights(

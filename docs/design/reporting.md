@@ -1,5 +1,5 @@
 # 14. Metrics and reporting (`report.py`)
-Status: current (verified 2026-10-23)
+Status: current (verified 2026-11-09)
 
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
@@ -19,10 +19,16 @@ metrics mislead:
 | `behavior_failure_rate`            | missing clarification, incorrect abstention, should have abstained | evaluable records                   |
 | `good_retrieval_rate`              | all required points retrieved, no contradictory chunk              | answer tasks with retrieval context |
 | `infrastructure_error_rate`        | chatbot or judge errors                                            | all records                         |
+| `requires_verification_rate`       | at least one value the judge flagged `requires_verification`       | scored records, all task types      |
 
 Infrastructure errors are excluded from every quality denominator. **Missing retrieval context is
 missing telemetry, not bad retrieval**: records without context (including `"[]"`, `"{}"`, `null`)
 are excluded from retrieval metrics rather than counted as failures.
+
+`requires_verification_*` (the `דורש אימות` card and filter; summary fields count, rate, denominator,
+total values and question IDs) is a review aid: the values are shown in each row's details, and the
+flag never changes an outcome or any other metric. A row's details also list its false claims with
+the contradicting evidence the judge quoted.
 
 ## 14.2 Diagnosing the pipeline
 

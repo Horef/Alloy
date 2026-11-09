@@ -133,6 +133,10 @@ chatbot_max_response_bytes = 5000000
 chatbot_require_json_content_type = true
 judge_max_answer_chars = 20000
 judge_max_context_chars = 60000
+# Judge evidence: characters of source text per prompt block, and knowledge-base passages retrieved
+# per question when --documents is given (0 turns the retrieval off).
+judge_max_evidence_chars = 30000
+judge_kb_passages = 6
 insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
 # Optional overall limit, in seconds, on retrying one Gemini or chatbot call: no retry starts later

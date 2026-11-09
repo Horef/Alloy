@@ -151,6 +151,8 @@ chatbot_max_response_bytes = 5000000
 chatbot_require_json_content_type = true
 judge_max_answer_chars = 20000
 judge_max_context_chars = 60000
+judge_max_evidence_chars = 30000
+judge_kb_passages = 6
 insights_max_prompt_chars = 80000
 gemini_request_timeout_seconds = 120
 max_concurrency = 1
@@ -244,6 +246,8 @@ log_level = "INFO"
 | `evaluation.chatbot_require_json_content_type` | `true` | Reject live responses whose media type is not JSON or `+json`. |
 | `evaluation.judge_max_answer_chars` | `20000` | Maximum chatbot-answer characters placed in one judge prompt. Longer values retain the beginning and end and record the omitted count. |
 | `evaluation.judge_max_context_chars` | `60000` | Maximum retrieved-context characters placed in one judge prompt, with the same bounded truncation metadata. |
+| `evaluation.judge_max_evidence_chars` | `30000` | Maximum characters of source evidence, and separately of knowledge-base passages, placed in one judge prompt (same bounded truncation). Full source chunks are used when `--documents` is given; otherwise the stored 500-character excerpts. |
+| `evaluation.judge_kb_passages` | `6` | With `--documents`, how many knowledge-base passages (full chunks, other than the cited sources) are retrieved for the question and answer and given to the judge to verify added details. `0` turns the retrieval off. |
 | `evaluation.insights_max_prompt_chars` | `80000` | Approximate total character budget for optional insight evidence. Risky and failed results are prioritized. |
 | `evaluation.gemini_request_timeout_seconds` | `120` | Per-call timeout for model requests on every transport (the name is historical). |
 | `evaluation.retry_deadline_seconds` | `0` | Optional limit on retrying one Gemini or chatbot call: no retry starts later than this many seconds after the first attempt, so a call takes at most this plus one request timeout. `0` disables the limit. Part of the live evaluation contract. |
@@ -985,6 +989,7 @@ Nested response fields use dotted paths. For `{"data":{"message":{"answer":"..."
 | `--soft-compare` | off | Show approximate deltas on matched questions even when the benchmark or evaluation contract changed. Warnings still appear but are framed as informational. Requires `--compare-with`. |
 | `--retry-errors` | off | With `--resume`, retry prior `chatbot_error` and `judge_error` rows while preserving successful rows. |
 | `--max-concurrency N` | config value (`1`) | Opt-in concurrent chatbot/judge workers; output order remains the question-file order. |
+| `--documents DIR` | off | Document root the questions were generated from. The judge then reads full source chunks (not the stored 500-character excerpts) and `evaluation.judge_kb_passages` knowledge-base passages retrieved for each question and answer, so true added details can be verified. Must be outside `--output`; the chunking uses `generation.chunk_chars` and `chunk_overlap_chars`. |
 | `--cache-dir DIR` | config value | Cache location used for optional insights. |
 | `--refresh-cache` | off | Recompute matching cached insights. |
 | `--no-cache` | off | Do not read or write cached insights. |
@@ -1090,6 +1095,7 @@ Explicit mappings are recommended for stable production jobs.
 | `--soft-compare` | off | Show approximate deltas on matched questions even when the benchmark or evaluation contract changed. Warnings still appear but are framed as informational. Requires `--compare-with`. |
 | `--retry-errors` | off | With `--resume`, retry prior judge errors while preserving imported chatbot errors and successful rows. |
 | `--max-concurrency N` | config value (`1`) | Opt-in concurrent judge workers; final row order remains stable. |
+| `--documents DIR` | off | Document root the questions were generated from. The judge then reads full source chunks (not the stored 500-character excerpts) and `evaluation.judge_kb_passages` knowledge-base passages retrieved for each question and answer, so true added details can be verified. Must be outside `--output`; the chunking uses `generation.chunk_chars` and `chunk_overlap_chars`. |
 | `--cache-dir DIR` | config value | Shared cache for inferred topics and optional insights. |
 | `--refresh-cache` | off | Replace matching topic-inference and insight cache entries. |
 | `--no-cache` | off | Disable those cache reads and writes. |
@@ -1396,8 +1402,12 @@ personas treat profile fields as independent (no demographic constraints between
 
 ## Judging logic and outcomes
 
-Gemini receives the question, reference answer, available source evidence, candidate answer, and
+Gemini receives the question, reference answer, source evidence, candidate answer, and
 retrieved context. It returns structured `JudgeScores`; automatic function calling is disabled.
+The source evidence is the stored 500-character source excerpts plus verified quotes; with
+`--documents` it is the full text of each cited chunk, plus `evaluation.judge_kb_passages`
+knowledge-base passages retrieved for the question and answer (capped by
+`evaluation.judge_max_evidence_chars`), so a true detail the reference omits can be verified.
 
 Every factual-answer question stores stable, independently checkable `reference_claims`. The judge
 reports one assessment per fixed claim ID; application code validates those IDs and derives the
@@ -1409,7 +1419,11 @@ claims and are excluded from factual-answer and retrieval denominators.
 The judge reports:
 
 - required, addressed, and correctly answered details;
-- false, unsupported, and unnecessary claims;
+- false, unsupported, and unnecessary claims; a false claim counts only when it quotes the contradicting
+  reference/evidence text (otherwise it is counted as unsupported);
+- `requires_verification` (Hebrew label דורש אימות): the specific values (numbers, dates, amounts,
+  conditions) the evidence neither supports nor contradicts. A flag for a human reviewer; it never
+  changes the outcome;
 - required details found in retrieval;
 - total, relevant, and contradictory retrieved chunks;
 - abstention, clarification, answer scope, and incorrect-answer type; and
@@ -1427,14 +1441,14 @@ The final outcome is deterministic from those scores:
 
 | Outcome | Meaning |
 |---|---|
-| `correct_answer` | All required details correct, with no false/unsupported claims or excessive scope. |
+| `correct_answer` | All required details correct, with no false claims or excessive scope. Unsupported detail alone does not prevent it. |
 | `partial_too_little` | Useful information is present, but necessary details are missing. |
 | `partial_too_much` | Core answer is present, but excessive unrelated information reduces quality. |
-| `unrelated_answer` | Clearly off-topic/nonresponsive. |
-| `misleading_hallucination` | Plausible/assertive but materially false or unsupported. |
+| `unrelated_answer` | Nonresponsive, off-topic, or answers from another document: no correct required detail and no contradicted claim. |
+| `misleading_hallucination` | At least one claim is contradicted by the reference or evidence (quoted by the judge), on any task, even when the rest of the answer is correct. Unsupported or unverifiable claims alone never give it. |
 | `incorrect_abstention` | Declined an answerable question. |
 | `correct_abstention` | Correctly declined an unanswerable question. |
-| `should_have_abstained` | Attempted an answer to an unanswerable question. |
+| `should_have_abstained` | Attempted an answer to an unanswerable question (with no contradicted claim). |
 | `correct_clarification` | Asked an appropriate focused follow-up for an ambiguous question. |
 | `missing_clarification` | Answered or otherwise proceeded although a material discriminator was missing. |
 | `chatbot_error` | Live/imported chatbot failure; excluded from quality scores. |
@@ -1450,10 +1464,10 @@ Both evaluation workflows write:
 
 | File | Contents |
 |---|---|
-| `evaluation_details.csv` | Hebrew row-level results and claim/retrieval counts. |
-| `evaluation_details.jsonl` | Lossless `EvaluationRecord` objects. |
-| `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, and pipeline diagnostics. |
-| `evaluation_report.html` | Interactive Hebrew RTL report. |
+| `evaluation_details.csv` | Hebrew row-level results and claim/retrieval counts, including `דורש אימות` (count), `ערכים לאימות` (the values) and `פירוט טענות שגויות` (false claims with the quoted contradicting evidence). |
+| `evaluation_details.jsonl` | Lossless `EvaluationRecord` objects. With `--documents`, each result's `metadata.judge_evidence` lists how many source chunks were read in full and which knowledge-base passages the judge saw. |
+| `evaluation_summary.json` | Aggregate outcomes, topic metrics, answer/retrieval metrics, `requires_verification_*` counts and rate, and pipeline diagnostics. |
+| `evaluation_report.html` | Interactive Hebrew RTL report; a `דורש אימות` card and a filter for flagged rows. |
 | `evaluation_insights.json` | Written only when optional insights succeed. |
 | `evaluation_insights_status.json` | Always written; records whether insights were disabled, generated, or failed and the evaluation-record fingerprint. |
 | `evaluation_checkpoint.jsonl` | Durable per-question records used by `--resume`. |

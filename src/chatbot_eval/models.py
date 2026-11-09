@@ -298,6 +298,13 @@ class ClaimAssessment(BaseModel):
         return self
 
 
+class FalseClaim(BaseModel):
+    """A candidate claim the judge says the reference or evidence contradicts, with the proof."""
+    claim: str
+    contradicting_evidence: str = ""
+    explanation: str = ""
+
+
 class JudgeScores(BaseModel):
     claim_assessments: list[ClaimAssessment]
     required_points_total: int = Field(ge=0)
@@ -317,6 +324,13 @@ class JudgeScores(BaseModel):
     explanation: str
     missing_or_wrong: str
     retrieval_explanation: str
+    # Contradicted claims with the quoted contradicting evidence; `apply_fixed_claims` keeps only
+    # the ones that cite evidence and counts the rest as unsupported.
+    false_claim_details: list[FalseClaim] = Field(default_factory=list)
+    # Specific values (numbers, dates, amounts, conditions) the evidence neither supports nor
+    # contradicts: a flag for human verification, not an outcome.
+    requires_verification: list[str] = Field(default_factory=list)
+    demoted_false_claims: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_counts(self) -> "JudgeScores":

@@ -243,3 +243,28 @@ class ChunkRetriever:
                 fused[index] += 1 / (_RRF_K + rank + 1)
         ranked = sorted(fused, key=lambda index: (-fused[index], index))
         return [self.chunks[index] for index in ranked[:limit]]
+
+
+class PassageLookup:
+    """Chunks of a knowledge base by id, plus lexical top-k search, for the evaluation judge.
+
+    The judge reads full chunk text where a question only stores a 500-character source excerpt,
+    and searches the knowledge base for passages that can verify what an answer asserts.
+    """
+
+    def __init__(self, chunks: list[Chunk]):
+        self.chunks = chunks
+        self._by_id = {chunk.id: chunk for chunk in chunks}
+        self._retriever = ChunkRetriever(chunks)
+
+    def get(self, source_id: str) -> Chunk | None:
+        return self._by_id.get(source_id)
+
+    def search(self, query: str, limit: int) -> list[Chunk]:
+        return self._retriever.rank(query, limit)
+
+    def fingerprint(self) -> str:
+        digest = hashlib.sha256()
+        for chunk in self.chunks:
+            digest.update(f"{chunk.id}\0{chunk.text}\0".encode("utf-8"))
+        return digest.hexdigest()

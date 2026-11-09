@@ -217,9 +217,10 @@ def test_unsupported_elaboration_does_not_become_hallucination():
     assert classify(item, scores(unsupported_claims=1, incorrect_type="not_applicable")) == Outcome.CORRECT_ANSWER
     # Same, but the extra detail also broadened the scope: still not a hallucination, just partial.
     assert classify(item, scores(unsupported_claims=1, scope="too_much")) == Outcome.PARTIAL_TOO_MUCH
-    # Genuine misinformation is still caught: a contradicted claim, or the judge's own verdict.
+    # Genuine misinformation is a contradicted claim only; the judge's own label does not decide it.
     assert classify(item, scores(false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
-    assert classify(item, scores(addressed=1, correct=0, incorrect_type="hallucination")) == Outcome.MISLEADING_HALLUCINATION
+    assert classify(item, scores(addressed=1, correct=0, incorrect_type="hallucination")) == Outcome.UNRELATED_ANSWER
+    assert classify(item, scores(incorrect_type="hallucination", unsupported_claims=2)) == Outcome.CORRECT_ANSWER
 
 
 def test_judge_results_boundary_validation_and_no_adapter_mutation():
@@ -254,6 +255,112 @@ def test_nonresponsive_answer_is_not_counted_as_misinformation():
     item = question(True)
     # Nothing addressed, nothing asserted ("contact your HR office"): nonresponsive, not misleading.
     assert classify(item, scores(addressed=0, correct=0)) == Outcome.UNRELATED_ANSWER
-    # A required point answered wrongly, or a likely fabricated assertion, still misleads.
-    assert classify(item, scores(addressed=1, correct=0)) == Outcome.MISLEADING_HALLUCINATION
-    assert classify(item, scores(addressed=0, correct=0, unsupported_claims=1)) == Outcome.MISLEADING_HALLUCINATION
+    # A required point answered wrongly or a likely fabricated assertion is still not misinformation
+    # unless a claim is contradicted (answer_false_claims counts only those).
+    assert classify(item, scores(addressed=1, correct=0)) == Outcome.UNRELATED_ANSWER
+    assert classify(item, scores(addressed=0, correct=0, unsupported_claims=1)) == Outcome.UNRELATED_ANSWER
+    assert classify(item, scores(addressed=1, correct=0, false_claims=1)) == Outcome.MISLEADING_HALLUCINATION
+
+
+def judged_with(**changes):
+    judged = scores(**{key: changes.pop(key) for key in list(changes) if key in scores.__code__.co_varnames})
+    for key, value in changes.items():
+        setattr(judged, key, value)
+    return judged
+
+
+def test_false_claim_without_cited_evidence_is_demoted_to_unsupported():
+    from chatbot_eval.models import FalseClaim
+
+    item = question(False)
+    judged = judged_with(
+        abstention=False, false_claims=2,
+        false_claim_details=[
+            FalseClaim(claim="ס", contradicting_evidence="ציטוט מהמקור"),
+            FalseClaim(claim="ע", contradicting_evidence="  "),
+        ],
+        incorrect_type="hallucination",
+    )
+    result = apply_fixed_claims(item, judged)
+    assert (result.answer_false_claims, result.answer_unsupported_claims, result.demoted_false_claims) == (1, 1, 1)
+    assert classify(item, result) == Outcome.MISLEADING_HALLUCINATION
+
+    uncited = judged_with(abstention=False, false_claims=1, incorrect_type="hallucination")
+    result = apply_fixed_claims(item, uncited)
+    assert (result.answer_false_claims, result.answer_unsupported_claims) == (0, 1)
+    assert result.incorrect_type == "unrelated"
+    # An abstain task with only unverified specifics is judged on behavior, not as a hallucination.
+    assert classify(item, result) == Outcome.SHOULD_HAVE_ABSTAINED
+
+
+def test_single_cited_false_claim_on_correct_answer_stays_hallucination():
+    from chatbot_eval.models import FalseClaim
+
+    item = question(True)
+    item.reference_claims = ["א"]
+    judged = judged_with(
+        required=1, addressed=1, correct=1, false_claims=1,
+        false_claim_details=[FalseClaim(claim="x", contradicting_evidence="y")],
+        claim_assessments=[ClaimAssessment(claim_id="C001", addressed=True, correct=True)],
+    )
+    assert classify(item, apply_fixed_claims(item, judged)) == Outcome.MISLEADING_HALLUCINATION
+
+
+def test_unsupported_only_answer_task_with_nothing_correct_is_unrelated_not_hallucination():
+    item = question(True)
+    item.reference_claims = ["א"]
+    judged = judged_with(
+        required=1, addressed=0, correct=0, unsupported_claims=3, incorrect_type="hallucination",
+        claim_assessments=[ClaimAssessment(claim_id="C001", addressed=False, correct=False)],
+    )
+    result = apply_fixed_claims(item, judged)
+    assert classify(item, result) == Outcome.UNRELATED_ANSWER
+
+
+class _Kb:
+    def __init__(self, chunks):
+        self.chunks = {chunk.id: chunk for chunk in chunks}
+        self.queries = []
+
+    def get(self, source_id):
+        return self.chunks.get(source_id)
+
+    def search(self, query, limit):
+        self.queries.append(query)
+        return list(self.chunks.values())[:limit]
+
+
+def test_judge_receives_full_source_chunks_passages_and_flags_flow_into_details():
+    from chatbot_eval.documents import Chunk
+    from chatbot_eval.models import SourceRef
+
+    full = "ראש " + "ט" * 900 + " סוף-המקטע-המלא"
+    chunks = [Chunk("d.md#chunk-1", "d.md", "ל1", full), Chunk("e.md#chunk-1", "e.md", "ל2", "פסקה-מהמאגר")]
+    item = question(False)
+    item.sources = [SourceRef(source_id="d.md#chunk-1", file="d.md", location="ל1", excerpt=full[:500])]
+    prompts = []
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            prompts.append(prompt)
+            judged = scores(required=0, addressed=0, correct=0, abstention=False)
+            judged.requires_verification = ["סכום 773 ש״ח", "  "]
+            return judged
+
+    kb = _Kb(chunks)
+    record = Evaluator(
+        object(), Judge(), "judge", knowledge_base=kb, max_evidence_chars=5000, kb_passages=3,
+    ).judge_results([(item, ChatbotResult(question_id="Q1", answer="תשובה עם 773"))])[0]
+
+    assert "סוף-המקטע-המלא" in prompts[0]
+    assert "KNOWLEDGE BASE PASSAGES (retrieved" in prompts[0] and "פסקה-מהמאגר" in prompts[0]
+    assert "TASK NOTE: this question was written to be UNANSWERABLE" in prompts[0]
+    assert record.result.metadata["judge_evidence"]["source_chunks_full"] == 1
+    assert record.result.metadata["judge_evidence"]["kb_passage_ids"] == ["e.md#chunk-1"]
+    assert record.scores.requires_verification == ["סכום 773 ש״ח"]
+    assert record.outcome == Outcome.SHOULD_HAVE_ABSTAINED
+
+    # Without a knowledge base the stored excerpt is all the judge gets.
+    prompts.clear()
+    Evaluator(object(), Judge(), "judge").judge_results([(item, ChatbotResult(question_id="Q1", answer="תשובה"))])
+    assert "סוף-המקטע-המלא" not in prompts[0] and "retrieved from the document base" not in prompts[0]

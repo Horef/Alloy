@@ -306,6 +306,31 @@ def test_metric_population_changes_suppress_quality_delta():
     assert build_comparison(swapped, new)["metrics"]["factual_answer_success_rate"]["delta"] is None
 
 
+def test_requires_verification_flag_is_counted_filtered_and_exported(tmp_path):
+    from chatbot_eval.io import write_evaluations
+
+    judged = _judged()
+    judged.requires_verification = ["סכום 773 ש״ח"]
+    flagged = EvaluationRecord(
+        question=SilverQuestion(id="1", topic="x", question="q", expected_answer="a"),
+        result=ChatbotResult(question_id="1", answer="a"), scores=judged, outcome=Outcome.CORRECT_ANSWER,
+    )
+    plain = flagged.model_copy(deep=True)
+    plain.question.id = plain.result.question_id = "2"
+    plain.scores = _judged()
+    summary = build_summary([flagged, plain])
+    assert (summary["requires_verification_count"], summary["requires_verification_rate"]) == (1, 0.5)
+    assert summary["requires_verification_question_ids"] == ["1"]
+    assert summary["outcomes"]["correct_answer"] == 2  # the flag never changes an outcome
+
+    _, report_path = write_report([flagged, plain], tmp_path)
+    report = report_path.read_text(encoding="utf-8")
+    assert 'data-verify="1"' in report and "סכום 773" in report and 'id="verify"' in report
+    csv_path, jsonl_path = write_evaluations([flagged, plain], tmp_path)
+    assert "דורש אימות" in csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
+    assert "סכום 773" in jsonl_path.read_text(encoding="utf-8")
+
+
 def test_all_task_false_claims_remain_visible():
     judged = JudgeScores(claim_assessments=[], required_points_total=0, answer_points_addressed=0, answer_points_correct=0,
         answer_false_claims=1, answer_unsupported_claims=2, answer_extraneous_claims=0,

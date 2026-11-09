@@ -1,15 +1,21 @@
 # 19. Known limitations
-Status: current (verified 2026-11-06)
+Status: current (verified 2026-11-09)
 
 Part of the Alloy design reference; index and invariants in [../ARCHITECTURE.md](../ARCHITECTURE.md). Citations such as [R1] are listed in [references.md](references.md).
 
 These are inherent tradeoffs worth knowing when interpreting results, with the settings that
 mitigate them.
 
-1. **The judge is not calibrated yet.** LLM judges have length, style, and model-family biases
+1. **The judge is only partly calibrated.** D18 (2026-11-09) fixed one measured failure: unsupported
+   true additions and general advice were labelled hallucination. A hand audit of 29 hallucination
+   rows found 9 real, and the gate now requires a quoted contradiction. It is still not a kappa
+   against a reviewed sample. LLM judges have length, style, and model-family biases
    [R28], and even strong judges diverge from humans [R31]. Before using a metric as a release gate,
    double-review a sample by hand and measure agreement (Cohen's kappa rather than percent agreement,
-   as [R31] recommends).
+   as [R31] recommends). Without `--documents` the judge sees only 500-character source excerpts and
+   will treat true detail beyond them as unsupported; `requires_verification` lists such values for
+   a reviewer, but the quoted contradiction is itself model output and is not checked against the
+   evidence in code.
 2. **Boundary questions are only as unanswerable as the evidence checked.** Without
    `verify_unanswerable`, absence is established against one window; with it, against a retrieval
    sample from the whole corpus. Neither is exhaustive, which is one more reason boundary questions
