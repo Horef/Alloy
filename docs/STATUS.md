@@ -4,7 +4,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 ## Works (verified)
 | Capability | How verified |
 |---|---|
-| Judge second pass (D19): a re-check of every contradicted claim against its quoted text plus claim-targeted KB passages (branch `feat/judge-verify`) | `python -m pytest -q` → 454 passed (offline, fake LLMs); live `evaluate-file` v4 on the two golden sets, 2026-11-09, no judge errors: hova 3 claims checked, 3 confirmed; keva 11 checked, 9 confirmed, 2 overturned (one row, a hand-confirmed false positive); each corpus's `calibration_check.md` (v3 → v4). Not re-run for noise: unchanged rows swap between `correct_answer` and `partial_too_much`, and two hand-audited real hallucinations (keva) lost their false claim in the first pass. See WORKLOG |
+| Judge second pass (D19): a re-check of every contradicted claim against its quoted text plus claim-targeted KB passages | `python -m pytest -q` → 454 passed (offline, fake LLMs); live `evaluate-file` v4 on the two golden sets, 2026-11-09, no judge errors: corpus A 3 claims checked, 3 confirmed; corpus B 11 checked, 9 confirmed, 2 overturned (one row, a hand-confirmed false positive; corpus A ROW00243, first hand-reviewed as a false positive, is a real error: the passage limits single rooms to lone combatants, the answer says lone soldiers); each corpus's `calibration_check.md` (v3 → v4). Not re-run for noise: unchanged rows swap between `correct_answer` and `partial_too_much`, and two hand-audited real hallucinations (corpus B) lost their false claim in the first pass. See WORKLOG |
 | Judge calibration (D18): hallucination needs a quoted contradiction; `--documents` evidence; `requires_verification` flag | `python -m pytest -q` → 366 passed (offline); live `evaluate-file` on two golden sets, 2026-11-09: hallucinations 7 → 3 and 22 → 9, 27 of 29 hand-audited rows agree (WORKLOG 2026-11-09). The quote is model output, not machine-checked |
 |---|---|
 | All CLI workflows (`convert-pdf`, `plan`, `generate`, `review-export`/`review-merge`, `reground`, `revary`, `add-broad`, `evaluate`, `evaluate-file`, `generate-prompt`, `report`) | Offline suite with fake LLMs: `python -m pytest -q` → **342 passed** in 2.2 s, 2026-11-01 (`python` from `AGENTS.local.md`, Python 3.13) |
@@ -31,7 +31,7 @@ Updated 2026-11-09. Snapshot only - overwrite each session; history is in `docs/
 - Exclusion lists are files, not a review database.
 
 ## Next actions
-0. Owner: review the v4 calibration notes and the rows still labelled hallucination (hova ROW00078, ROW00243, ROW00299; keva 7 rows) and the `דורש אימות` rows. Decide whether to merge `feat/judge-verify` (D19), and whether to re-run v4 once to measure first-pass noise (keva ROW00048 and ROW00257 lost their false claim without a second-pass call; hova ROW00243 was confirmed as contradicted although hand-reviewed as a false positive).
+0. Owner: review the rows still labelled hallucination in v4 and the `דורש אימות` rows. Next: measure first-pass judge noise with one more v4 run (corpus B ROW00048 and ROW00257 lost their false claim in the first pass, so the second pass never saw them).
 1. Generate the corpus C set from its 700-user-facing plan (owner runs `generate --plan`); then `review-export` and check whether reviewers still remove document references.
 2. Re-verify the design docs against the code at the next milestone (`python tools/docmap.py docs`); `lifecycle_strict` is on, so a missing or stale Status line now fails `check`.
 3. Owner: answer the remaining open questions in `docs/BRIEF.md`.

@@ -11,13 +11,13 @@ Changed (branch `feat/judge-verify`, commit `11dd2bb`): every contradicted claim
 |---|---|
 | `python -m pytest -q` | 454 passed (offline, fake LLMs) |
 | `python tools/docmap.py check` | 0 errors; warnings: docmap version, no `AGENTS.local.md` in the worktree |
-| Live `evaluate-file --documents ... --soft-compare` v4 on the two golden sets, same parameters as v3 except `--compare-with` v3 (v3 had compared with v2) | no judge errors; hova 328 rows, keva 514 rows |
-| Second pass | hova: 3 calls, 3 claims checked, 3 confirmed. keva: 8 calls, 11 claims checked, 9 confirmed, 2 overturned (`supports`, one row, keva ROW00164, a hand-confirmed false positive) |
-| Claim-targeted evidence | hova: 173 of 284 scored rows got claim passages (692 in total); keva: 326 of 448 (1300). Mean `request_used` per Gemini call in the console logs: 12.5k (hova), 13.3k (keva) |
-| Audit agreement (`calibration_check.md`) | hova: 7 of 7 audited rows agree (v3 also 7 of 7). keva: 19 of 22 (v3 20 of 22); ROW00164 now agrees; ROW00048 and ROW00257 (hand-confirmed real) lost their false claim in the first pass and moved to `unrelated_answer` and `partial_too_much` |
-| Hallucinations v3 → v4 | hova 3 → 3 (ROW00298 left, ROW00078 entered); keva 9 → 7 |
+| Live `evaluate-file --documents ... --soft-compare` v4 on the two golden sets, same parameters as v3 except `--compare-with` v3 (v3 had compared with v2) | no judge errors; corpus A 328 rows, corpus B 514 rows |
+| Second pass | corpus A: 3 calls, 3 claims checked, 3 confirmed. corpus B: 8 calls, 11 claims checked, 9 confirmed, 2 overturned (`supports`, one row, corpus B ROW00164, a hand-confirmed false positive) |
+| Claim-targeted evidence | corpus A: 173 of 284 scored rows got claim passages (692 in total); corpus B: 326 of 448 (1300). Mean `request_used` per Gemini call in the console logs: 12.5k (corpus A), 13.3k (corpus B) |
+| Audit agreement (`calibration_check.md`) | corpus A: 7 of 7 audited rows agree (v3 also 7 of 7). corpus B: 19 of 22 (v3 20 of 22); ROW00164 now agrees; ROW00048 and ROW00257 (hand-confirmed real) lost their false claim in the first pass and moved to `unrelated_answer` and `partial_too_much` |
+| Hallucinations v3 → v4 | corpus A 3 → 3 (ROW00298 left, ROW00078 entered); corpus B 9 → 7 |
 
-Findings: the second pass confirmed 12 of 14 contradicted claims; the one overturn is the targeted false positive. It cannot recover the two real rows lost in the first pass; that change comes from the new passages or run-to-run variance (not measured). Hova ROW00243 (hand-reviewed as a false positive in the earlier review) is confirmed as contradicted by the verifier; needs the owner's look. New hallucination hova ROW00078: the chatbot said the documents have no rule although the KB passage found by the claim retrieval states it, so it is arguably right. Keva ROW00407 (real fabrication) is still not flagged. About 10 rows per corpus swap between `correct_answer` and `partial_too_much` without a second-pass call, so use v3 → v4 outcome deltas with care.
+Findings: the second pass confirmed 12 of 14 contradicted claims; the one overturn is the targeted false positive. It cannot recover the two real rows lost in the first pass; that change comes from the new passages or run-to-run variance (not measured). Corpus A ROW00243 (hand-reviewed as a false positive in the earlier review) is confirmed as contradicted by the verifier; needs the owner's look. New hallucination corpus A ROW00078: the chatbot said the documents have no rule although the KB passage found by the claim retrieval states it, so it is arguably right. Corpus B ROW00407 (real fabrication) is still not flagged. About 10 rows per corpus swap between `correct_answer` and `partial_too_much` without a second-pass call, so use v3 → v4 outcome deltas with care.
 
 Next: owner reviews the remaining hallucination rows; consider one more v4 run to measure noise; decide on merging the branch.
 
@@ -31,7 +31,7 @@ Changed: `misleading_hallucination` now needs a contradicted claim with a quoted
 | Live `evaluate-file --documents ... --soft-compare` on the two golden sets (run ids `61e642d5-4cca-4fa9-bfd8-16b77d5b0683`, `b699e3e4-82fe-45b7-aadd-6f4b32da98f3`; commit recorded in each manifest is the data checkout's, not this branch) | no judge errors; hallucinations 7 -> 3 (328 rows) and 22 -> 9 (514 rows); correct answers 160 -> 168 and 205 -> 230 |
 | Hand-audit agreement (29 audited v2 hallucinations) | 27 of 29 agree; details in each corpus's `calibration_check.md` |
 
-Findings: two audited rows disagree. One kept hallucination although the judge's quoted "contradiction" supports the claim (same pattern in one hova row), so the quote is not machine-checked (limitations item 1). One real row moved to `should_have_abstained` and is flagged for verification, because the KB neither supports nor contradicts the claim (unsupported never gives hallucination by the owner's rule). `requires_verification` flagged 0 of 284 rows on corpus A (its answers were KB-grounded) and 26 of 448 on corpus B.
+Findings: two audited rows disagree. One kept hallucination although the judge's quoted "contradiction" supports the claim (same pattern in one corpus A row), so the quote is not machine-checked (limitations item 1). One real row moved to `should_have_abstained` and is flagged for verification, because the KB neither supports nor contradicts the claim (unsupported never gives hallucination by the owner's rule). `requires_verification` flagged 0 of 284 rows on corpus A (its answers were KB-grounded) and 26 of 448 on corpus B.
 
 Next: owner reviews the flagged and remaining hallucination rows; consider a second-pass check that a quoted contradiction really contradicts.
 
@@ -123,8 +123,8 @@ Changed: `lifecycle_strict = true` and `tools/docmap.py` 5.4.0 from the skill. N
 |---|---|
 | `python -m pytest -q` | 359 passed (19 new: 15 in `tests/test_llm_providers.py` with real HTTP round trips, retries, a fake Bedrock client, the factory and cache identity, plus config tests) |
 | `python tools/docmap.py update && python tools/docmap.py check` | 0 errors, 0 warnings, with `lifecycle_strict` on |
-| `git ls-files \| xargs grep -rIniE 'hova\|keva\|meitav\|digital\.idf\|\barmy\b'` | no matches outside `tools/docmap.py` |
-| `git check-ignore -v hova keva meitav docs/RUNS.md` | ignored by `.git/info/exclude` and `.gitignore` |
+| `git ls-files \| xargs grep -rIniE 'corpus A\|corpus B\|meitav\|digital\.idf\|\barmy\b'` | no matches outside `tools/docmap.py` |
+| `git check-ignore -v corpus A corpus B meitav docs/RUNS.md` | ignored by `.git/info/exclude` and `.gitignore` |
 
 Not verified: both new transports against a live endpoint or a real boto3 client. Next: try them live; decide on a neutral prompt variant.
 
