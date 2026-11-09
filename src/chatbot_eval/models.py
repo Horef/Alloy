@@ -347,6 +347,17 @@ class JudgeScores(BaseModel):
         return self
 
 
+class JudgeResponse(JudgeScores):
+    """The judge's structured output: `JudgeScores` with the list fields marked required.
+
+    Pydantic leaves defaulted fields out of the JSON schema's `required`, and structured-output
+    models then drop them, so `requires_verification` and `false_claim_details` were never filled.
+    Records keep the defaulted `JudgeScores`, so older files still load.
+    """
+    false_claim_details: list[FalseClaim]
+    requires_verification: list[str]
+
+
 class Outcome(str, Enum):
     CORRECT_ANSWER = "correct_answer"
     PARTIAL_TOO_LITTLE = "partial_too_little"

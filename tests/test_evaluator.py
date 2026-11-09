@@ -364,3 +364,22 @@ def test_judge_receives_full_source_chunks_passages_and_flags_flow_into_details(
     prompts.clear()
     Evaluator(object(), Judge(), "judge").judge_results([(item, ChatbotResult(question_id="Q1", answer="תשובה"))])
     assert "סוף-המקטע-המלא" not in prompts[0] and "retrieved from the document base" not in prompts[0]
+
+
+def test_judge_schema_requires_the_flag_and_false_claim_lists_but_records_stay_loadable():
+    from chatbot_eval.models import JudgeResponse
+
+    required = set(JudgeResponse.model_json_schema()["required"])
+    assert {"requires_verification", "false_claim_details"} <= required
+    assert not {"requires_verification", "false_claim_details"} & set(JudgeScores.model_json_schema()["required"])
+    seen = []
+
+    class Judge:
+        def generate(self, prompt, schema, model):
+            seen.append(schema)
+            return JudgeResponse.model_validate({**scores(required=0, addressed=0, correct=0, abstention=False).model_dump(),
+                                                 "requires_verification": ["x"]})
+
+    item = question(False)
+    record = Evaluator(object(), Judge(), "judge").judge_results([(item, ChatbotResult(question_id="Q1", answer="תשובה"))])[0]
+    assert seen == [JudgeResponse] and type(record.scores) is JudgeScores and record.scores.requires_verification == ["x"]

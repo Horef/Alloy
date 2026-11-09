@@ -20,7 +20,7 @@ from collections.abc import Callable
 from .adapters import ChatbotAdapter
 from .contracts import code_fingerprint
 from .llm import StructuredLLM
-from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeScores, Outcome, QuestionForm, SilverQuestion
+from .models import ChatbotResult, EvaluationRecord, ExpectedBehavior, JudgeResponse, JudgeScores, Outcome, QuestionForm, SilverQuestion
 from .progress import track
 from .response_errors import placeholder_error
 from .retrieval import PassageLookup
@@ -441,7 +441,9 @@ class Evaluator:
             }.get(question.expected_behavior, ""),
         )
         try:
-            scores = self.judge.generate(prompt, JudgeScores, self.judge_model)
+            scores = self.judge.generate(prompt, JudgeResponse, self.judge_model)
+            if type(scores) is not JudgeScores:
+                scores = JudgeScores.model_validate(scores.model_dump())
             scores = apply_fixed_claims(question, scores)
             outcome = classify(question, scores)
         except Exception as exc:

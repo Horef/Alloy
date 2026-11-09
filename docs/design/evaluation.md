@@ -50,7 +50,10 @@ The judge returns **counts and per-claim assessments, not a grade**:
   not contradicted), extraneous claims (true but unnecessary);
 - `requires_verification`: specific values (numbers, dates, amounts, conditions) the evidence neither
   supports nor contradicts. It is stored per row, shown in the report with a count, rate and filter,
-  and **never changes the outcome**: it is a to-do list for a human reviewer;
+  and **never changes the outcome**: it is a to-do list for a human reviewer. The judge is asked for
+  it through `JudgeResponse` (`JudgeScores` with this list and `false_claim_details` marked required
+  in the JSON schema); a defaulted field is otherwise dropped by structured-output models, which
+  left the flag empty on every row of the first live run;
 - retrieval: required points present in the context, chunks total / relevant / contradictory;
 - whole-response flags: abstention, clarification; answer scope; incorrect type.
 
