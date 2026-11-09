@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from chatbot_eval import cli
+from chatbot_eval.conditions import ProfileRule, RulePredicate
 from chatbot_eval.personas import (
-    dimensions, pair_coverage, read_personas, source_date, synthesize_personas, write_personas,
+    dimensions, pair_coverage, read_personas, rule_personas, source_date, synthesize_personas, write_personas,
 )
 from chatbot_eval.profiles import ProfileSchema, derive, load_profile_schema, profile_errors
 
@@ -120,3 +121,58 @@ def test_pairs_are_checked_independently_of_the_helper():
     for (a, va), (b, vb) in combinations(dims, 2):
         get = lambda p, k: p.derived[k] if k == "age" else p.profile[k]
         assert {(x, y) for x in va for y in vb} <= {(get(p, a), get(p, b)) for p in personas}
+
+
+def _family_schema() -> ProfileSchema:
+    return ProfileSchema.model_validate({
+        "fields": [
+            {"key": "birth", "label": "תאריך לידה", "type": "date"},
+            {"key": "children", "label": "מספר ילדים", "type": "number", "sample_values": [0, 1, 2]},
+            {"key": "kid.birth", "label": "תאריך לידת ילד", "type": "date"},
+        ],
+        "derived": [
+            {"key": "age", "label": "גיל", "source": "birth", "derivation": "years_since", "sample_values": [20, 26, 40]},
+            {"key": "kid_age", "label": "גיל הילד", "source": "kid.birth", "derivation": "years_since", "sample_values": [0, 3, 12, 18]},
+        ],
+        "constraints": [
+            {"kind": "count_matches_entries", "count": "children", "entries": ["kid.birth"]},
+            {"kind": "date_gap", "earlier": "birth", "later": "kid.birth", "min_years": 16},
+        ],
+    })
+
+
+def _coherent(schema, persona) -> bool:
+    profile = persona.profile
+    if "kid.birth" not in profile or "birth" not in profile:
+        return profile.get("children", 1) >= 1 or "kid.birth" not in profile
+    born = dt.date.fromisoformat(profile["birth"])
+    child = dt.date.fromisoformat(profile["kid.birth"])
+    return profile.get("children", 1) >= 1 and child >= born.replace(year=born.year + 16)
+
+
+def test_constraints_keep_children_and_parent_dates_consistent_in_every_persona():
+    schema = _family_schema()
+    personas, _ = synthesize_personas(schema, AS_OF, seed=2)
+    assert all(_coherent(schema, persona) for persona in personas)
+    assert any(persona.profile.get("children") == 0 and "kid.birth" not in persona.profile for persona in personas)
+    assert any(persona.profile.get("children", 0) >= 1 and "kid.birth" in persona.profile for persona in personas)
+    unconstrained, _ = synthesize_personas(ProfileSchema.model_validate({**_family_schema().model_dump(), "constraints": []}), AS_OF, seed=2)
+    assert not all(_coherent(schema, persona) for persona in unconstrained)  # the same personas would have been incoherent
+
+
+def test_rule_personas_are_coherent_and_an_impossible_rule_is_unsatisfiable():
+    schema = _family_schema()
+    base, _ = synthesize_personas(schema, AS_OF, seed=2)
+
+    def rule(*predicates):
+        return ProfileRule(
+            id="R-1", source_id="a#1", file="a.md", location="d", consequence="c", quote="q", exclusive=True,
+            when=[RulePredicate(key=k, op=o, values=v) for k, o, v in predicates],
+        )
+
+    for item in (rule(("kid_age", "gte", ["12"])), rule(("children", "eq", ["0"])), rule(("children", "gte", ["2"]), ("age", "lt", ["30"]))):
+        chosen, skipped = rule_personas(schema, item, AS_OF, base, seed=1, limit=8)
+        assert skipped is None and chosen
+        assert all(_coherent(schema, entry.persona) for entry in chosen)
+    # a 26-year-old with a 12-year-old child does not exist; the rule is reported, not given a fake persona
+    assert rule_personas(schema, rule(("kid_age", "gte", ["12"]), ("age", "lt", ["27"])), AS_OF, base, seed=1)[1] == "rule_unsatisfiable"

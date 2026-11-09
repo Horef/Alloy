@@ -115,6 +115,23 @@ def test_the_clarification_asks_for_exactly_the_missing_fields():
             assert label not in question.user_info  # it asks for a field the profile really lacks
 
 
+def test_a_non_exclusive_rule_gets_one_clarification_and_none_when_its_consequence_is_general():
+    rule = RULE.model_copy(update={"exclusive": False, "when": [
+        RulePredicate(key="age", op="gte", values=["21"]), RulePredicate(key="kind", op="eq", values=["קבע"]),
+    ]})
+    clarifies = lambda result: [q for q in result.questions if q.expected_behavior == ExpectedBehavior.CLARIFY]
+    needs = _build(FakeLLM(DRAFT.model_copy(update={"answer_if_not": "", "claims_if_not": []})), rule=rule, personas_per_rule=8)
+    assert len(clarifies(needs)) == 1  # not one per condition
+    general = _build(
+        FakeLLM(DRAFT.model_copy(update={"answer_if_not": "", "claims_if_not": [], "depends_on_profile": False})),
+        rule=rule, personas_per_rule=8,
+    )
+    assert clarifies(general) == [] and general.questions
+    assert general.diagnostics["rejected"] == {"clarify_skipped_generic_consequence": 1}
+    exclusive = _build(FakeLLM(DRAFT.model_copy(update={"depends_on_profile": False})), rule=rule.model_copy(update={"exclusive": True}), personas_per_rule=8)
+    assert len(clarifies(exclusive)) == 2  # for an exclusive rule the answer always depends on the profile
+
+
 def test_a_question_that_restates_a_condition_or_lacks_claims_is_rejected():
     restating = _build(FakeLLM(DRAFT.model_copy(update={"question": "אני בן 21, האם מגיע לי מענק?"})))
     assert restating.questions == [] and restating.diagnostics["rejected"] == {"question_restates_condition": 1}

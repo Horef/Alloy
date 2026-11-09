@@ -7,8 +7,8 @@ import pytest
 
 from chatbot_eval import cli
 from chatbot_eval.profiles import (
-    ProfileSchema, derive, load_profile_schema, missing_keys, profile_errors, profile_value, render_user_info,
-    schema_errors, schema_fingerprint, unknown_keys, unlisted_value_keys,
+    ProfileSchema, apply_constraints, derive, load_profile_schema, missing_keys, profile_errors, profile_value,
+    render_user_info, schema_errors, schema_fingerprint, unknown_keys, unlisted_value_keys,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,3 +156,70 @@ def test_derived_sample_values_cannot_duplicate_or_go_negative():
     errors = schema_errors(schema)
     assert any("not both" in error for error in errors)
     assert any("cannot be negative" in error for error in errors)
+
+
+@pytest.mark.parametrize("field, message", [
+    ({"key": "e", "label": "x", "type": "enum", "values": ["a", "b"], "aliases": {"c": ["w"]}}, "not one of the values"),
+    ({"key": "e", "label": "x", "type": "enum", "values": ["a", "b"], "aliases": {"a": [" "]}}, "must be nonempty"),
+    ({"key": "e", "label": "x", "type": "enum", "values": ["a", "b"], "aliases": {"a": ["w"], "b": ["w"]}}, "given to both"),
+    ({"key": "e", "label": "x", "type": "enum", "values": ["a", "b"], "aliases": {"a": ["b"]}}, "itself a value"),
+    ({"key": "t", "label": "x", "type": "bool", "aliases": {"a": ["w"]}}, "only enum fields take aliases"),
+    ({"key": "t", "label": "x", "type": "bool", "label_aliases": [""]}, "label_aliases must be nonempty"),
+])
+def test_aliases_are_validated(field, message):
+    schema = ProfileSchema.model_validate({"fields": [field]})
+    assert any(message in error for error in schema_errors(schema))
+
+
+def test_aliases_are_part_of_the_schema_fingerprint():
+    plain = {"fields": [{"key": "e", "label": "x", "type": "enum", "values": ["a", "b"]}]}
+    aliased = {"fields": [{"key": "e", "label": "x", "type": "enum", "values": ["a", "b"], "aliases": {"a": ["w"]}}]}
+    assert schema_fingerprint(ProfileSchema.model_validate(plain)) != schema_fingerprint(ProfileSchema.model_validate(aliased))
+
+
+FAMILY = {
+    "fields": [
+        {"key": "birth", "label": "תאריך לידה", "type": "date"},
+        {"key": "children", "label": "מספר ילדים", "type": "number", "sample_values": [0, 1, 2]},
+        {"key": "kid.birth", "label": "תאריך לידת ילד", "type": "date"},
+    ],
+    "constraints": [
+        {"kind": "count_matches_entries", "count": "children", "entries": ["kid.birth"]},
+        {"kind": "date_gap", "earlier": "birth", "later": "kid.birth", "min_years": 16},
+    ],
+}
+
+
+@pytest.mark.parametrize("constraint, message", [
+    ({"kind": "count_matches_entries", "count": "birth", "entries": ["kid.birth"]}, "must be a number field"),
+    ({"kind": "count_matches_entries", "count": "children", "entries": ["nope"]}, "entries must name fields"),
+    ({"kind": "date_gap", "earlier": "children", "later": "kid.birth", "min_years": 16}, "must be a date field"),
+    ({"kind": "date_gap", "earlier": "birth", "later": "birth", "min_years": 16}, "must differ"),
+    ({"kind": "date_gap", "earlier": "birth", "later": "kid.birth", "min_years": 0}, "at least 1"),
+])
+def test_constraints_are_validated(constraint, message):
+    schema = ProfileSchema.model_validate({**FAMILY, "constraints": [constraint]})
+    assert any(message in error for error in schema_errors(schema))
+    assert schema_errors(ProfileSchema.model_validate(FAMILY)) == []
+
+
+def test_apply_constraints_settles_conflicts_on_the_side_that_is_not_pinned():
+    schema = ProfileSchema.model_validate(FAMILY)
+    fix = lambda profile, *pinned: apply_constraints(schema, profile, set(pinned))
+    # no children: the child's fields go; a child's date raises a zero count to one
+    assert fix({"children": 0, "kid.birth": "2020-01-01"}, "children") == {"children": 0}
+    assert fix({"children": 0, "kid.birth": "2020-01-01"}, "kid.birth")["children"] == 1
+    assert fix({"children": 2, "kid.birth": "2020-01-01"}, "children") == {"children": 2, "kid.birth": "2020-01-01"}
+    # a child needs a parent at least 16 years older, by moving whichever date is not pinned
+    young = {"birth": "2000-06-01", "kid.birth": "2010-01-01"}
+    assert fix(young, "birth")["kid.birth"] >= "2016-06-01" and fix(young, "birth")["birth"] == "2000-06-01"
+    assert fix(young, "kid.birth")["birth"] <= "1994-01-01" and fix(young, "kid.birth")["kid.birth"] == "2010-01-01"
+    # both pinned: the pair cannot exist, so the child's date is dropped
+    assert "kid.birth" not in fix(young, "birth", "kid.birth")
+    # absent fields are never invented
+    assert fix({"birth": "2000-06-01"}) == {"birth": "2000-06-01"}
+
+
+def test_example_schema_carries_aliases():
+    schema = load_profile_schema(EXAMPLE)
+    assert schema.field("religion").aliases and schema.field("gender").aliases

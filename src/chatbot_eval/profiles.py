@@ -14,8 +14,10 @@ its system prompt; `schema_fingerprint(schema)` is the cache identity of the sch
 
 Contracts: no LLM and no I/O beyond reading the schema file. Keys are the chatbot platform's own keys;
 a dotted key (`service.type`) addresses a nested object. Identifier fields (names, ID numbers) can
-never be conditions. Error messages name fields, never values, so a real profile checked locally
-does not leak into logs.
+never be conditions. Optional `aliases` (enum value -> words the documents use) and `label_aliases`
+(other words for a field) feed rule extraction; `[[constraints]]` (`count_matches_entries`,
+`date_gap`) keep synthetic personas believable (`apply_constraints`). Error messages name fields, never
+values, so a real profile checked locally does not leak into logs.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ import hashlib
 import json
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -50,6 +52,12 @@ class ProfileField(BaseModel):
     # Values synthetic personas may take for a date or number field (dates in `date_format`); enum
     # and bool fields use their whole domain. A field with neither is left out of personas.
     sample_values: list[str | int | float] = Field(default_factory=list)
+    # Words the documents use for an enum value or for the field itself when they differ from the
+    # platform's (value "Islamic" is written "מוסלמי"; the field "אינדיקציית אסיר" is written "אסיר").
+    # Rule extraction checks that a quote names a condition with them and lists them in its prompt;
+    # predicates and personas still use only `values` and the label.
+    aliases: dict[str, list[str]] = Field(default_factory=dict, description="Enum value -> other words for it")
+    label_aliases: list[str] = Field(default_factory=list, description="Other words for the field itself")
 
 
 class DerivedField(BaseModel):
@@ -59,12 +67,37 @@ class DerivedField(BaseModel):
     derivation: Derivation
     # Values personas may take (e.g. ages); personas set the source date so the field has that value.
     sample_values: list[int] = Field(default_factory=list)
+    label_aliases: list[str] = Field(default_factory=list, description="Other words for the field itself")
+
+
+class CountConstraint(BaseModel):
+    """A count field (`numberOfChildren`) and the entry fields that describe one of the counted items.
+
+    A profile holds one entry, so the count is 0 exactly when no entry field is present: a persona with
+    a child's birth date has at least one child, one with no children has no child fields.
+    """
+    kind: Literal["count_matches_entries"]
+    count: str
+    entries: list[str]
+
+
+class GapConstraint(BaseModel):
+    """The `later` date must fall at least `min_years` after the `earlier` date (a child after its parent)."""
+    kind: Literal["date_gap"]
+    earlier: str
+    later: str
+    min_years: int
+
+
+Constraint = Annotated[CountConstraint | GapConstraint, Field(discriminator="kind")]
 
 
 class ProfileSchema(BaseModel):
     version: int = 1
     fields: list[ProfileField]
     derived: list[DerivedField] = Field(default_factory=list)
+    # Relations between fields that make a synthetic persona believable; see `apply_constraints`.
+    constraints: list[Constraint] = Field(default_factory=list)
 
     def field(self, key: str) -> ProfileField | None:
         return next((item for item in self.fields if item.key == key), None)
@@ -114,18 +147,69 @@ def schema_errors(schema: ProfileSchema) -> list[str]:
                     errors.append(f"{name}: sample_values must be numbers")
             else:
                 errors.append(f"{name}: only date and number fields take sample_values")
+        errors += _alias_errors(item)
     for item in schema.derived:
         source = schema.field(item.source)
         if not item.label.strip():
             errors.append(f"{item.key}: label is empty")
+        if any(not alias.strip() for alias in item.label_aliases):
+            errors.append(f"{item.key}: label_aliases must be nonempty")
         if source is None or source.type != "date" or source.use == "excluded":
             errors.append(f"{item.key}: source {item.source!r} must be a date field that is not excluded")
         elif source.sample_values and item.sample_values:
             errors.append(f"{item.key}: give sample_values on the derived field or on {item.source!r}, not both")
         if item.derivation in {"years_since", "months_since"} and any(value < 0 for value in item.sample_values):
             errors.append(f"{item.key}: completed years/months sample_values cannot be negative")
+    errors += _constraint_errors(schema)
     if not schema.fields:
         errors.append("the schema has no fields")
+    return errors
+
+
+def _alias_errors(item: ProfileField) -> list[str]:
+    errors = []
+    if any(not alias.strip() for alias in item.label_aliases):
+        errors.append(f"{item.key}: label_aliases must be nonempty")
+    if item.aliases and item.type != "enum":
+        errors.append(f"{item.key}: only enum fields take aliases")
+        return errors
+    owner: dict[str, str] = {}
+    for value, words in item.aliases.items():
+        if value not in item.values:
+            errors.append(f"{item.key}: aliases name {value!r}, which is not one of the values")
+        for word in words:
+            if not word.strip():
+                errors.append(f"{item.key}: aliases of {value!r} must be nonempty")
+            elif word.strip() in item.values:
+                errors.append(f"{item.key}: alias {word.strip()!r} of {value!r} is itself a value")
+            elif owner.setdefault(word.strip(), value) != value:
+                errors.append(f"{item.key}: alias {word.strip()!r} is given to both {owner[word.strip()]!r} and {value!r}")
+    return errors
+
+
+def _constraint_errors(schema: ProfileSchema) -> list[str]:
+    errors = []
+
+    def field_type(key: str) -> str | None:
+        item = schema.field(key)
+        return item.type if item and item.use != "excluded" else None
+
+    for constraint in schema.constraints:
+        if isinstance(constraint, CountConstraint):
+            if field_type(constraint.count) != "number":
+                errors.append(f"constraint {constraint.kind}: count {constraint.count!r} must be a number field that is not excluded")
+            if not constraint.entries or any(field_type(key) is None for key in constraint.entries):
+                errors.append(f"constraint {constraint.kind}: entries must name fields of the schema that are not excluded")
+            elif constraint.count in constraint.entries:
+                errors.append(f"constraint {constraint.kind}: the count field cannot be one of its entries")
+        else:
+            for role in ("earlier", "later"):
+                if field_type(getattr(constraint, role)) != "date":
+                    errors.append(f"constraint {constraint.kind}: {role} {getattr(constraint, role)!r} must be a date field that is not excluded")
+            if constraint.earlier == constraint.later:
+                errors.append(f"constraint {constraint.kind}: earlier and later must differ")
+            if constraint.min_years < 1:
+                errors.append(f"constraint {constraint.kind}: min_years must be at least 1")
     return errors
 
 
@@ -245,6 +329,53 @@ def unknown_keys(schema: ProfileSchema, profile: dict, prefix: str = "") -> list
         else:
             out.append(path)
     return out
+
+
+def _add_years(day: dt.date, years: int) -> dt.date:
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:  # 29 February
+        return day.replace(year=day.year + years, day=28)
+
+
+def apply_constraints(schema: ProfileSchema, profile: dict, pinned: frozenset[str] | set[str] = frozenset()) -> dict:
+    """A copy of the flat `profile` made consistent with `schema.constraints`.
+
+    `pinned` are the keys the caller chose on purpose (a persona's condition values) and wants kept.
+    A conflict is settled by changing the side that is not pinned; when both are pinned the
+    combination cannot exist, so the dependent side (the later date, the count's entries) is dropped
+    and the caller sees the condition on it as missing. Fields that are absent are never invented.
+    """
+    out = dict(profile)
+    for constraint in schema.constraints:
+        if isinstance(constraint, GapConstraint):
+            _apply_gap(schema, out, constraint, pinned)
+    for constraint in schema.constraints:
+        if isinstance(constraint, CountConstraint):
+            count = profile_value(out, constraint.count)
+            present = [key for key in constraint.entries if profile_value(out, key) is not None]
+            if isinstance(count, bool) or not isinstance(count, (int, float)) or count >= 1 or not present:
+                continue
+            if constraint.count not in pinned and any(key in pinned for key in present):
+                out[constraint.count] = 1
+            else:
+                for key in present:
+                    out.pop(key, None)
+    return out
+
+
+def _apply_gap(schema: ProfileSchema, profile: dict, constraint: GapConstraint, pinned) -> None:
+    earlier_item, later_item = schema.field(constraint.earlier), schema.field(constraint.later)
+    earlier = _parse_date(earlier_item, profile_value(profile, constraint.earlier))
+    later = _parse_date(later_item, profile_value(profile, constraint.later))
+    if earlier is None or later is None or later >= _add_years(earlier, constraint.min_years):
+        return
+    if constraint.later not in pinned:
+        profile[constraint.later] = _add_years(earlier, constraint.min_years + 1).strftime(later_item.date_format)
+    elif constraint.earlier not in pinned:
+        profile[constraint.earlier] = _add_years(later, -(constraint.min_years + 1)).strftime(earlier_item.date_format)
+    else:
+        profile.pop(constraint.later, None)
 
 
 def _months_between(start: dt.date, end: dt.date) -> int:

@@ -21,6 +21,27 @@ Findings: the second pass confirmed 12 of 14 contradicted claims; the one overtu
 
 Next: owner reviews the remaining hallucination rows; consider one more v4 run to measure noise; decide on merging the branch.
 
+## 2026-11-09 - Personal round 2: aliases, persona constraints, exclusive wording, dedupe, clarify cap
+Changed (branch `fix/personal-round2`), after live reviews of corpus A (30 + 54 questions) and corpus B (111) found false `condition_not_in_quote` rejects on synonyms, under-used `exclusive`, incoherent personas (children older than parents), morphology duplicates and generic clarification questions:
+1. Schema `aliases` (enum value to document words) and `label_aliases`; used by `predicate_stated`, the rule prompt (`also_called`), the prefilter, validated by `profile-check`, which also prints them.
+2. Rule prompt lists exclusive wording (רק, בלבד, closed lists, criteria sections, exemptions, bands); a non-empty `otherwise` makes a rule exclusive in `validate_candidate`.
+3. `[[constraints]]` (`count_matches_entries`, `date_gap`) and `profiles.apply_constraints`, applied to every persona; `rule_personas` keeps a persona only if the rule's verdict matches its role. `PERSONA_VERSION` 2.
+4. Duplicate merge compares stemmed tokens (`consequence_similarity`); differing numbers never merge.
+5. Non-exclusive rules get one missing-field persona, none when the draft says `depends_on_profile` is false.
+
+| Verification | Result |
+|---|---|
+| `python -m pytest -q` | 470 passed (442 before; offline, fake LLMs) |
+| `python tools/docmap.py check` | see the commit; expected warnings: docmap 5.6.0 vs skill 5.11.0, no `AGENTS.local.md` in the worktree |
+| `profile-check` on the git-ignored corpus A and corpus B schemas with aliases (and the two constraints on corpus B) | both valid |
+| Replay of the cached candidates (`/tmp/s5/measure_b.py`, no model calls) | `condition_not_in_quote` rejects: corpus A 10 to 2 of 25, corpus B 21 to 13 of 58; recovered ones are holiday-table religion rows and prisoner (כליאה) quotes, read by eye, plausible |
+| `otherwise` implies exclusive on the same replay | no change: every cached candidate with a non-empty `otherwise` was already exclusive; the wording change in the prompt cannot be measured without a live run |
+| Hebrew morphology pair | similarity 0.57 to 0.83, so merged; corpus B same-condition pairs with different amounts stay 0 |
+
+Findings: "חייל" and "חיילת" share a stem, so they cannot be gender aliases ("גבר", "נשים" can). The stem rule is loose for four-letter words ("אישה" matches "אישור"), so that alias was left out. Constraints leave some value pairs ungenerated, so pair coverage stays below 100% for them. Aliases broaden the prefilter (more chunks sent).
+
+Next: owner reviews; then a live re-run of the corpus A pilot and corpus B to check the exclusive share and persona coherence.
+
 ## 2026-11-09 - Judge calibration (D18) and live re-run on corpora A and B
 Changed: `misleading_hallucination` now needs a contradicted claim with a quoted contradicting text (the judge's `incorrect_type` label and the nothing-correct fallback no longer decide it; nothing correct and nothing contradicted is `unrelated_answer`); uncited false claims are demoted to unsupported. New `--documents` gives the judge full cited chunks plus top-k knowledge-base passages (`judge_max_evidence_chars`, `judge_kb_passages`). New `requires_verification` flag (דורש אימות) per row, in the CSV, JSONL, summary and HTML (card, details, filter); it never changes an outcome. The judge asks for `JudgeResponse` so the two list fields are schema-required (a first live run left the flag empty on every row because defaulted fields are dropped by structured output). Decision D18.
 

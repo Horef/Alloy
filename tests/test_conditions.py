@@ -5,12 +5,14 @@ import pytest
 
 from chatbot_eval.cache import CorpusAnalysisCache
 from chatbot_eval.conditions import (
-    ProfileRule, RuleBatch, RuleCandidate, RulePredicate, decisive_fields, evaluate_rule, extract_rules,
+    ProfileRule, RuleBatch, RuleCandidate, RulePredicate, consequence_similarity, decisive_fields, evaluate_rule,
+    extract_rules, mentions_profile, predicate_stated, profile_field_lines, profile_terms, prompt_fingerprint,
     validate_candidate,
 )
 from chatbot_eval.documents import Chunk
 from chatbot_eval.personas import rule_personas, synthesize_personas
 from chatbot_eval.profiles import ProfileSchema, derive
+from chatbot_eval.retrieval import dedup_tokens, token_similarity
 
 AS_OF = dt.date(2026, 10, 27)
 TEXT = "חייל בגיל 21 ומעלה זכאי למענק. חייל בודד זכאי לתוספת."
@@ -262,3 +264,77 @@ def test_max_rules_takes_rules_round_robin_across_files_and_is_deterministic():
     assert [rule.id for rule in first.rules] == [rule.id for rule in again.rules]
     assert sorted(rule.file for rule in first.rules) == ["a.md", "b.md", "c.md"]  # one from each file, not three from one
     assert first.diagnostics["rules_over_max_rules"] == 3
+
+
+def _alias_schema() -> ProfileSchema:
+    return ProfileSchema.model_validate({"fields": [
+        {"key": "sex", "label": "מין", "type": "enum", "values": ["זכר", "נקבה"],
+         "aliases": {"זכר": ["גבר", "גברים"], "נקבה": ["אישה", "נשים"]}},
+        {"key": "religion", "label": "דת", "type": "enum", "values": ["Jewish", "Islamic"],
+         "aliases": {"Islamic": ["מוסלמי", "מוסלמית"]}},
+        {"key": "prisoner", "label": "אינדיקציית אסיר", "type": "bool", "label_aliases": ["כלוא"]},
+    ]})
+
+
+def test_aliases_let_a_quote_name_a_condition_in_the_documents_words():
+    # Pilot 2 falsely rejected "(מוסלמית)" for religion Islamic and "חייל/חיילת" for the gender values.
+    schema = _alias_schema()
+    plain = ProfileSchema.model_validate({"fields": [
+        {"key": "religion", "label": "דת", "type": "enum", "values": ["Jewish", "Islamic"]},
+    ]})
+
+    def stated(schema, key, value, quote, op="eq"):
+        return predicate_stated(schema, RulePredicate(key=key, op=op, values=[value]), quote)
+
+    assert stated(schema, "religion", "Islamic", "יום חג (מוסלמית) ראשון")
+    assert stated(schema, "religion", "Islamic", "חג למוסלמים", op="ne")  # endings and prefixes still tolerated
+    assert not stated(plain, "religion", "Islamic", "יום חג (מוסלמית) ראשון")  # without the alias it is the false reject
+    assert not stated(schema, "religion", "Jewish", "יום חג (מוסלמית) ראשון")  # another value's alias is no evidence
+    assert stated(schema, "sex", "נקבה", "נשים בהריון זכאיות") and not stated(schema, "sex", "זכר", "נשים בהריון זכאיות")
+    assert not stated(schema, "sex", "זכר", "חייל או חיילת בהריון זכאים")  # a gender-neutral quote names no gender
+    assert stated(schema, "prisoner", "true", "חייל כלוא פטור")  # a label alias names a bool
+    assert not stated(schema, "prisoner", "true", "חייל פטור")
+
+
+def test_the_prompt_lists_aliases_and_the_prefilter_uses_them():
+    schema = _alias_schema()
+    lines = "\n".join(profile_field_lines(schema))
+    assert '"value_also_called": {"זכר": ["גבר", "גברים"]' in lines and '"also_called": ["כלוא"]' in lines
+    assert "מוסלמית" in profile_terms(schema) and mentions_profile(Chunk("a", "a", "d", "חג מוסלמי"), profile_terms(schema))
+    assert prompt_fingerprint(schema) != prompt_fingerprint(ProfileSchema.model_validate({"fields": [
+        {"key": "sex", "label": "מין", "type": "enum", "values": ["זכר", "נקבה"]},
+    ]}))
+
+
+def test_gender_rule_naming_men_and_women_is_checked_against_aliases_and_not_exclusive():
+    # The lead's gender case: "all men, and women in role X" must not become gender = male, only-for-men.
+    schema = _alias_schema()
+    chunk = Chunk("a.md#chunk-1", "a.md", "document", "כל הגברים וכן נשים בתפקיד מסוים זכאים לתוספת.")
+    men = RuleCandidate(
+        when=[RulePredicate(key="sex", op="eq", values=["זכר"])], consequence="זכאים לתוספת",
+        quote="כל הגברים וכן נשים בתפקיד מסוים זכאים לתוספת",
+    )
+    rule, reason, _ = validate_candidate(men, chunk, schema, "fp")
+    assert reason is None and rule.exclusive is False  # the model's default; nothing says "only"
+
+
+def test_a_non_empty_otherwise_makes_the_rule_exclusive():
+    stated = _candidate().model_copy(update={"otherwise": "מי שמתחת לגיל 21 אינו זכאי"})
+    rule, _, _ = validate_candidate(stated, CHUNK, _schema(), "fp")
+    assert rule.exclusive and rule.otherwise
+    silent, _, _ = validate_candidate(_candidate(), CHUNK, _schema(), "fp")
+    assert not silent.exclusive
+    flagged, _, _ = validate_candidate(_candidate().model_copy(update={"exclusive": True}), CHUNK, _schema(), "fp")
+    assert flagged.exclusive
+
+
+def test_hebrew_morphology_variants_of_one_consequence_are_merged_but_other_amounts_are_not():
+    first = "זכאים לתקרות השתתפות חודשיות בשכר דירה השוות לאלה של משרת נשוי"
+    second = "זכאות לתקרות השתתפות חודשית בשכר דירה השוות לאלו של משרת נשוי"
+    assert consequence_similarity(first, second) >= 0.6
+    assert token_similarity(dedup_tokens(first), dedup_tokens(second)) < 0.6  # the old measure missed it
+    assert consequence_similarity("תקרת ההלוואה היא 150,000 ש\"ח ללא הגבלת ותק", "תקרת הלוואה היא 180,000 ש\"ח ללא הגבלת ותק") == 0.0
+    chunks = [_chunk("a.md", TEXT), _chunk("b.md", TEXT)]
+    llm = _FakeLLM([_candidate(consequence=first), _candidate(consequence=second)])
+    result = extract_rules(chunks, _schema(), llm, "m")
+    assert len(result.rules) == 1 and result.rules[0].other_sources == ["b.md#chunk-1"]

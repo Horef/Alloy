@@ -403,6 +403,12 @@ def _profile_check(args) -> int:
         print(f"  {group}: " + ", ".join(items))
     if schema.derived:
         print("  derived: " + ", ".join(f"{item.key} ({item.derivation} {item.source})" for item in schema.derived))
+    aliased = [item.key for item in schema.fields if item.aliases or item.label_aliases]
+    aliased += [item.key for item in schema.derived if item.label_aliases]
+    if aliased:
+        print("  aliases (words the documents use): " + ", ".join(aliased))
+    if schema.constraints:
+        print("  persona constraints: " + ", ".join(constraint.kind for constraint in schema.constraints))
     if not args.profile:
         return 0
     profile = json.loads(args.profile.read_text(encoding="utf-8"))

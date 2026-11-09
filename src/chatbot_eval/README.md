@@ -33,7 +33,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `artifacts.py` | Run artifacts: atomic writes, resumable JSONL journals, and run manifests. | `cache`, `cli`, `history`, `insights` (+8) |
 | `cache.py` | Content-addressed local cache for corpus analysis and other expensive stage outputs. | `cli`, `test_cache`, `test_cli`, `test_conditions` (+1) |
 | `cli.py` | Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. | `review_probes`, `test_cli`, `test_docs_consistency`, `test_pdf_markdown` (+5) |
-| `conditions.py` | Profile-conditioned applicability rules: extracted from document chunks, validated and evaluated in code. | `cli`, `personal_questions`, `personas`, `test_conditions` (+1) |
+| `conditions.py` | Profile-conditioned applicability rules: extracted from document chunks, validated and evaluated in code. | `cli`, `personal_questions`, `personas`, `test_conditions` (+2) |
 | `config.py` | Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment. | `artifacts`, `cli`, `test_artifacts`, `test_cli` (+3) |
 | `contracts.py` | Small nonsecret identities for model-derived artifacts and evaluation records. | `cache`, `cli`, `evaluator`, `generator` (+9) |
 | `documents.py` | Corpus ingestion: reads supported documents and splits them into structure-aware chunks. | `cache`, `conditions`, `generator`, `graph` (+17) |
@@ -60,7 +60,7 @@ The `chatbot_eval` package: all of Alloy's code, one module per component, assem
 | `report.py` | Evaluation metrics, run comparison, and the Hebrew HTML report. | `cli`, `insights`, `prompt_generator`, `review_probes` (+2) |
 | `response_errors.py` | Shared helpers for answer errors: the known placeholder answer and bounded retry delays. | `adapters`, `evaluator`, `llm`, `llm_providers` (+3) |
 | `results_io.py` | Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. | `cli`, `review_probes`, `test_results_io` |
-| `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `conditions`, `evaluator`, `generator` (+3) |
+| `retrieval.py` | Corpus retrieval for question-targeted evidence and duplicate detection. | `cli`, `conditions`, `evaluator`, `generator` (+4) |
 | `review.py` | Human-readable review sidecar and lossless round-trip merge. | `cli`, `test_personal_questions`, `test_review` |
 | `topics.py` | Topic inference for saved questions without topics (`evaluate-file --infer-topics`). | `cli`, `test_topics` |
 | `validation.py` | Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). | `evaluator`, `io`, `results_io`, `review` (+3) |

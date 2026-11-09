@@ -35,7 +35,27 @@ named at once:
   field's format or numbers, or that are given both on a derived field and on its source;
 - an `id` field whose sensitivity is not `identifier`, and any identifier field used as a
   condition: names and ID numbers must never decide an answer;
-- derived fields whose source is not a date field that the platform sends.
+- derived fields whose source is not a date field that the platform sends;
+- `aliases` (enum value to other words the documents use) that name a non-value, are empty, are
+  themselves a value, or belong to two values, `aliases` on a non-enum field, and empty
+  `label_aliases`;
+- `[[constraints]]` (below) that name unknown fields or the wrong types.
+
+**Aliases.** The documents rarely print the platform's label or value: they say "מוסלמית" for
+`Islamic` or "גברים" for `זכר`. `aliases` and `label_aliases` list those words; the rule prompt shows
+them (`also_called`), the prefilter counts them as field terms and the quote check accepts them. They
+are compared by stem, so "חייל" and "חיילת" (one stem) cannot separate male from female: use words
+that differ ("גבר", "נשים"). A gender-neutral quote ("חייל/חיילת") rightly fails the check. The
+stem comparison is loose for short words ("אישה" would match "אישור"), so prefer aliases of four
+letters or fewer only when they are unambiguous ("אשה"), and review accepted rules.
+
+**Constraints.** `[[constraints]]` state relations personas must keep. `count_matches_entries`
+(`count`, `entries`): a count of 0 means no entries, an entry means a count of at least 1.
+`date_gap` (`earlier`, `later`, `min_years`): the later date is at least `min_years` after the
+earlier (a child's birth date after the parent's). The mechanism is data-driven, so new relations are
+new schema entries. `apply_constraints(schema, profile, pinned)` repairs a profile: it changes the
+side that is not pinned (fields a rule's predicates fix), drops the dependent side when both are
+pinned, and never invents an absent field. Gaps apply before counts.
 
 `condition_keys()` is the vocabulary a later rule-extraction stage may use: condition fields plus
 derived fields. `schema_fingerprint` (SHA-256 of the canonical JSON) will key the caches of the
@@ -71,8 +91,12 @@ Persona IDs hash the condition values. Identifier fields get values nobody can m
 (`בדיקה-…`, `SYNTH-…`); excluded fields are left out. Each persona is checked with `profile_errors`
 and `derive` before it is returned, and stores its `user_info` line and the schema fingerprint.
 
-Not modelled: constraints between fields (an 18-year-old widowed career soldier is a valid
-persona). Boundary values taken from document rules come from `rule_personas` (section 22.4).
+Without constraints a persona may be absurd (a child older than the parent, three children and no
+child dates). With the schema's `[[constraints]]` (section 22.2) every row of the covering array and
+every rule persona passes through `apply_constraints`; personas that become equal are merged. A pair
+the constraints forbid (age 22 with a 12-year-old child) is thus not generated, so `pair_coverage`
+stays below 100% for it. Boundary values taken from document rules come from `rule_personas`
+(section 22.4); `PERSONA_VERSION` 2 marks this behavior in the cache keys.
 
 ## 22.4 Applicability rules and personal questions (`conditions.py`, `personal_questions.py`)
 
@@ -91,7 +115,11 @@ ids.
 `exclusive` separates a *sufficient* condition ("a lone soldier is entitled to a supplement", which
 says nothing about others) from an *exclusive* one ("only lone soldiers", or "otherwise X"). The
 pilot showed the model inventing a "does not apply" answer for the first kind; now only exclusive
-rules get violating personas and a not-side answer. The flag defaults to false, the safe side.
+rules get violating personas and a not-side answer. The flag defaults to false, the safe side, but
+round 1 showed the model then under-used it: the prompt now lists the wording that makes a rule
+exclusive ("רק", "בלבד", a closed list of the entitled, an eligibility-criteria section, an
+exemptions list, bands that split everyone), and `validate_candidate` treats a non-empty `otherwise`
+as exclusive, since a text that says what applies to everyone else is exclusive by definition.
 
 The quote check is a floor, not a proof, and is cheap on purpose: an enum predicate needs the field's
 distinctive label words or a listed value, a boolean the label, a number or derived predicate the
@@ -99,14 +127,17 @@ number (for an ordered operator also its neighbour, since "מעל 24" is `gte 25
 1 may instead be stated by the label, as in "is a parent"), a date the year. Words are compared by
 stem (Hebrew prefixes and plural endings ignored). Known false rejections: a synonym the schema does
 not list (the text says "גברים", the value is `זכר`) and a table row naming the value only by a
-section heading. On the 44 candidates cached from the pilot (made with the older prompt, which did
+section heading. Synonyms are now covered by schema `aliases` (section 22.2). On the 44 candidates cached from the pilot (made with the older prompt, which did
 not ask for a quote naming every condition) it rejects 20 and keeps 23 plus one merged duplicate;
 the new prompt should reject fewer.
 
 **Duplicates and the cap.** A rule found in several chunks (same canonical `when`, equal or
-token-similar consequence, threshold `SAME_CONSEQUENCE`) is kept once, the first in file order, with
+similar consequence, threshold `SAME_CONSEQUENCE` 0.6) is kept once, the first in file order, with
 the other chunks in `other_sources`; `exclusive` is true only if every copy says so
-(`rules_merged_duplicates`). `max_rules` then picks rules round-robin by file, in a seeded order, so
+(`rules_merged_duplicates`). Similarity (`consequence_similarity`) is the larger of the plain token
+Jaccard and the Jaccard of stemmed tokens (Hebrew prefix and up to two suffixes stripped), so
+morphology variants ("מגיע"/"זכאי", "לחודש"/"בחודש") merge; a pair whose digit tokens differ (150,000
+vs 180,000) scores 0 and stays apart, so different amounts are never merged. `max_rules` then picks rules round-robin by file, in a seeded order, so
 a cap no longer spends itself on the first document. Rules are extracted before the cap, so the cap
 saves question calls, not rule calls.
 
@@ -124,7 +155,11 @@ mentions: a persona that satisfies every predicate, one with a decisive field re
 predicates remove the source date), for each numeric, date or derived predicate the exact boundary
 (the first and last value that satisfy it; for derived values, the first and last day found by
 scanning around `as_of`), and, for an exclusive rule only, personas that violate a predicate,
-including the value just outside each boundary. Output is
+including the value just outside each boundary. A non-exclusive rule gets at most one persona with
+a missing field (one clarification per rule is enough). Every candidate and final profile passes
+through `apply_constraints` (predicate fields pinned), and a persona is kept only if the rule's
+verdict on it matches its role (a "satisfies" persona must evaluate True, and so on), so constraint
+repairs cannot flip a persona to the wrong side; a rule whose satisfying persona fails is skipped. Output is
 deduplicated by persona id, ordered and capped by `personas_per_rule`; a rule no persona can satisfy
 is skipped as `rule_unsatisfiable`.
 
@@ -136,7 +171,10 @@ verdict picks the side: applies, does not apply (exclusive rules only; a non-exc
 outside persona is skipped and counted as `non_exclusive_rule_persona_outside`), or `clarify` (form
 `ambiguous`, no claims). The clarification is built in code by `clarification_for` from the labels of
 the decisive fields the persona lacks, so it asks for exactly those and never for a field the persona
-holds. Claims are the branch claims plus the general-rule claim, so
+holds. The draft also says whether the answer `depends_on_profile` (default true); when it is false
+(a phone number, a procedure anyone gets) and the rule is non-exclusive, the missing-field persona is
+skipped (`clarify_skipped_generic_consequence`), because asking the user for a field the answer does
+not need is a wrong expectation. The flag only removes questions; exclusive rules are unaffected. Claims are the branch claims plus the general-rule claim, so
 a judge can tell a correct conclusion from a lucky one. The quote and chunk are the question's
 evidence. `personal_basic` questions need one call per distinct profile field for the question text;
 the answer ("לפי הפרופיל שלך, label: value") is built from the persona and cites no document.
@@ -145,8 +183,8 @@ the answer ("לפי הפרופיל שלך, label: value") is built from the pers
 `user_info`; they join the stable-id identity only when `persona_id` is set, so existing ids do not
 change. `review-export` adds a read-only `persona_readable` column.
 
-Limits: one draft per rule, so a persona-specific conclusion is the branch text; fields are
-independent in personas; as-of is not part of the rule cache key (rules do not depend on it) but
+Limits: one draft per rule, so a persona-specific conclusion is the branch text; personas keep only
+the relations the schema's constraints state (anything else is independent); as-of is not part of the rule cache key (rules do not depend on it) but
 is part of the questions' content.
 
 ## 22.5 Why

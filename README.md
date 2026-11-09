@@ -1320,6 +1320,9 @@ file and make no model calls.
 | `sensitivity` | `ordinary`, `special_category`, `identifier` | `id` fields must be `identifier`; identifiers can never be conditions. |
 | `use` | `condition`, `identifier_only`, `excluded` | Whether documents may make answers depend on the field; `excluded` fields are not sent to the chatbot and are left out of personas. |
 | `sample_values` | list | Values personas take for a date or number field, or for a derived field. |
+| `aliases` | table of lists | Enum only: other words the documents use for a value (`Islamic = ["מוסלמי", "מוסלמית"]`). A quote naming the condition with an alias passes the quote check, and the rule prompt lists them. Words that share a stem with another value's cannot tell the values apart ("חייל"/"חיילת"). An alias belongs to one value; `profile-check` rejects clashes. |
+| `label_aliases` | list | Other words for the field itself (`["אסיר", "כליאה"]` for "אינדיקציית אסיר"); also on `[[derived]]` fields. |
+| `[[constraints]]` | `count_matches_entries`, `date_gap` | Keep personas believable. `count_matches_entries` (`count`, `entries`): no children means no child fields and a child's date means at least one child. `date_gap` (`earlier`, `later`, `min_years`): a child is born at least `min_years` after its parent. A combination the constraints forbid is not generated (pair coverage stays below 100% for it), and a rule whose conditions cannot hold together is skipped as `rule_unsatisfiable`. |
 | `[[derived]]` `derivation` | `years_since`, `months_since`, `days_since`, `days_until` | Computed from a date field against a pinned as-of date (e.g. age, months since discharge). |
 
 | `profile-check` option | Required/default | Meaning |
@@ -1353,31 +1356,36 @@ Stages, in order (model calls in brackets):
 
 1. **Rules** (one call per chunk that survives the prefilter). Each chunk is shown the schema's
    condition fields; the model returns rules of the form "when these profile predicates hold, this
-   follows" with one verbatim quote and an `exclusive` flag (true only when the text says the
-   consequence holds *only* for users meeting the conditions, or says what applies otherwise; a list
-   of who is entitled is not exclusive). Code rejects a rule with an unknown or identifier field, a
+   follows" with one verbatim quote and an `exclusive` flag (true when the text says the
+   consequence holds *only* for users meeting the conditions, or says what applies otherwise: "רק",
+   "בלבד", a closed list of the entitled, an eligibility-criteria section, an exemptions list, bands
+   that split everyone; a rule whose `otherwise` is not empty is exclusive; a plain "X is entitled" is
+   not). Code rejects a rule with an unknown or identifier field, a
    field not marked `condition`, an operator or value outside the field's domain (an open enum
    field may hold an unlisted value; it is counted), no predicates, a blank consequence, a quote
    that is not verbatim in the chunk, or a quote that does not name every condition
-   (`condition_not_in_quote`: the field's label or a listed value, the threshold number, or the
+   (`condition_not_in_quote`: the field's label or a listed value or schema alias, the threshold number, or the
    year, compared by word stem so Hebrew prefixes and plurals do not matter). The same rule found in
-   several chunks (same conditions, near-identical consequence) is kept once, with the other places
+   several chunks (same conditions, near-identical consequence by stemmed words, same numbers) is kept once, with the other places
    listed in `other_sources` (`rules_merged_duplicates`). `--max-rules` then keeps rules round-robin
    across files. A chunk that names no profile field label or value is not sent
    at all (`--no-prefilter` sends every chunk). The chunk's rules are cached by chunk text, schema
    fingerprint, prompt, model and transport.
 2. **Personas** (no calls). For each rule, code builds personas from the schema: one that satisfies
-   every predicate, one with a decisive field absent from the profile, and, only for an exclusive
+   every predicate, one with a decisive field absent from the profile (a non-exclusive rule gets only one),
+   and, only for an exclusive
    rule, one that violates a predicate (a non-exclusive rule says nothing about users outside it),
    and persona values at the exact boundary of a numeric, date or derived predicate (the last day a
    derived age or tenure holds, and the day after). Persona fields the rule does not mention come from
-   the base covering personas.
+   the base covering personas; the schema's `constraints` keep them consistent (children, ages).
 3. **Questions** (one call per rule, plus one per distinct field for `personal_basic`). The model drafts
    one question (which must not restate the condition), the answer when the rule applies and, for an
-   exclusive rule, the answer when it does not. **Code decides which answer a persona gets** by
+   exclusive rule, the answer when it does not, and whether the answer depends on the profile at all. **Code decides which answer a persona gets** by
    evaluating the rule against the persona's profile: applies, does not apply, or the decisive field is
    missing, in which case the expected behavior is `clarify` and the expected answer is built in code
-   from the labels of exactly the missing fields ("כדי לענות לך אני צריך לדעת: …"). `personal_integration` questions carry the rule's quote and chunk as the source,
+   from the labels of exactly the missing fields ("כדי לענות לך אני צריך לדעת: …"); a non-exclusive rule
+   whose consequence the draft calls general information (a phone number, a procedure) gets no such
+   clarification question. `personal_integration` questions carry the rule's quote and chunk as the source,
    `persona_id`, `profile_keys` (the decisive profile fields) and `user_info`.
    `personal_basic` questions ("what is my birth date?") are built from the persona alone and cite no document.
 
@@ -1404,7 +1412,8 @@ and decisive fields. The judge does not yet receive the persona; the personalize
 later step.
 
 Everything is silver: the rule extraction and the expected answers need domain review, and
-personas treat profile fields as independent (no demographic constraints between fields).
+personas treat profile fields as independent except for the relations the schema's `[[constraints]]`
+state.
 
 ## Judging logic and outcomes
 

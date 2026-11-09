@@ -12,6 +12,8 @@
 # sensitivity: ordinary | special_category | identifier (identifiers can never be conditions)
 # open_values = true: the platform may hold values not listed; personas use only the listed ones.
 # sample_values: values personas take for a date or number field, or for a derived field.
+# aliases / label_aliases: other words the documents use for an enum value / for the field itself.
+# [[constraints]] (see the end of the file) keep synthetic personas believable.
 
 version = 1
 
@@ -40,6 +42,13 @@ values = ["זכר", "נקבה"]
 open_values = true
 sensitivity = "special_category"
 
+# Words the documents use for a value; rule extraction accepts them as naming the condition and lists
+# them in its prompt. Predicates still use the listed value. Use words that tell the values apart
+# ("חייל" and "חיילת" share a stem, so they cannot).
+[fields.aliases]
+"זכר" = ["גבר", "גברים"]
+"נקבה" = ["אשה", "נשים"]
+
 [[fields]]
 key = "birthDate"
 label = "תאריך לידה"
@@ -56,6 +65,9 @@ type = "enum"
 values = ["יהודי", "מוסלמי", "נוצרי", "דרוזי", "אחר"]
 open_values = true
 sensitivity = "special_category"
+
+[fields.aliases]
+"מוסלמי" = ["אסלאם"]
 
 [[fields]]
 key = "tashFamilyStatus"
@@ -112,3 +124,19 @@ sample_values = [18, 21, 26]
 # label = "חודשים מהשחרור"
 # source = "releaseDate"
 # derivation = "months_since"
+
+# Persona constraints. With a count field and a child's fields (one entry stands for the children):
+# a persona with no children has no child fields, one with a child has at least one, and a child is
+# born at least 16 years after its parent. A combination these forbid is simply not generated.
+# [[constraints]]
+# kind = "count_matches_entries"
+# count = "numberOfChildren"
+# entries = ["childrenInfo.childBirthDate"]
+#
+# [[constraints]]
+# kind = "date_gap"
+# earlier = "birthDate"
+# later = "childrenInfo.childBirthDate"
+# min_years = 16
+#
+# A bool or other field the documents word differently takes `label_aliases = ["אסיר", "כליאה"]`.

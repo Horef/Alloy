@@ -14,8 +14,9 @@ by scanning the derivation itself rather than assuming calendar arithmetic.
 Contracts: no LLM, no randomness beyond `random.Random(seed)`, so the same schema, date and seed give
 the same personas (D16). Identifier fields get values that cannot be mistaken for real ones
 ("בדיקה-<id>", "SYNTH-<id>"); excluded fields are left out. Every persona passes
-`profiles.profile_errors`. Constraints between fields (e.g. release after mandatory-service end)
-are not modelled yet.
+`profiles.profile_errors` and the schema's `constraints` (`profiles.apply_constraints`: a count of
+children matches the child fields, a child is born years after its parent); a combination the
+constraints forbid is not generated, so pair coverage over such pairs stays below 100%.
 """
 from __future__ import annotations
 
@@ -32,10 +33,10 @@ from pydantic import BaseModel, Field
 
 from .conditions import ProfileRule, RulePredicate, evaluate_predicates
 from .profiles import (
-    ProfileField, ProfileSchema, derive, profile_errors, render_user_info, schema_fingerprint,
+    ProfileField, ProfileSchema, apply_constraints, derive, profile_errors, render_user_info, schema_fingerprint,
 )
 
-PERSONA_VERSION = 1
+PERSONA_VERSION = 2
 
 
 class Persona(BaseModel):
@@ -179,9 +180,14 @@ def synthesize_personas(
                 profile[derived.source] = source_date(derived.derivation, value, as_of).strftime(source.date_format)
             else:
                 profile[key] = value
-        personas.append(_finish_persona(
-            schema, profile, as_of, fingerprint, {key: v for key, v in chosen.items() if key in derived_by_key},
-        ))
+        profile = apply_constraints(schema, profile, set(profile))  # an impossible pair loses its dependent side
+        expected = {
+            key: value for key, value in chosen.items()
+            if key in derived_by_key and derived_by_key[key].source in profile
+        }
+        persona = _finish_persona(schema, profile, as_of, fingerprint, expected)
+        if persona.id not in {existing.id for existing in personas}:
+            personas.append(persona)
     diagnostics = {
         "persona_version": PERSONA_VERSION,
         "as_of": as_of.isoformat(),
@@ -299,7 +305,8 @@ def rule_personas(
     first condition's field (the chatbot should ask); the exact date or number boundary on each side
     for conditions that have one; then violations and missing fields of the remaining conditions.
     A rule that is not `exclusive` gets no violating personas (the evidence never says what holds for
-    users outside the conditions), only satisfying, boundary-satisfying and missing-field ones.
+    users outside the conditions), only satisfying, boundary-satisfying and one missing-field one
+    (asking for every missing field of several conditions would mostly test the model's patience).
     Other fields come from a base persona picked by seed and rule id, so the set varies between
     rules but not between runs. Which side of the rule a persona is on is classified here by the same
     evaluator the question stage uses, never assumed from how the persona was built.
@@ -315,7 +322,8 @@ def rule_personas(
     edges: dict[str, dict[str, dict[str, Any]]] = {}
     for variable, predicates in groups.items():
         for update, edge in _candidate_updates(schema, variable, predicates, as_of):  # middle values come first
-            verdict = evaluate_predicates(schema, predicates, _apply(base, update), as_of)
+            profile = apply_constraints(schema, _apply(base, update), set(update))
+            verdict = evaluate_predicates(schema, predicates, profile, as_of)
             if verdict is None:
                 continue
             side = "sat" if verdict else "viol"
@@ -346,15 +354,22 @@ def rule_personas(
     for variable in rest:
         if variable in viol and rule.exclusive:
             specs.append(("violates", variable, {**all_sat, **viol[variable]}))
-        specs.append(("missing", variable, {**all_sat, **missing(variable)}))
+        if rule.exclusive:  # one clarification per non-exclusive rule is enough
+            specs.append(("missing", variable, {**all_sat, **missing(variable)}))
 
     fingerprint = schema_fingerprint(schema)
+    wanted = {"satisfies": True, "boundary_satisfies": True, "violates": False, "boundary_violates": False, "missing": None}
     out: list[RulePersona] = []
     seen: set[str] = set()
     for role, variable, updates in specs:
         if len(out) >= limit:
             break
-        persona = _finish_persona(schema, _apply(base, updates), as_of, fingerprint)
+        profile = apply_constraints(schema, _apply(base, updates), set(updates))
+        if evaluate_predicates(schema, rule.when, profile, as_of) is not wanted[role]:
+            if role == "satisfies":  # the conditions cannot hold together in a consistent profile
+                return [], "rule_unsatisfiable"
+            continue
+        persona = _finish_persona(schema, profile, as_of, fingerprint)
         if persona.id in seen:
             continue
         seen.add(persona.id)

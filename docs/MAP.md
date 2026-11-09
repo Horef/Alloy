@@ -16,7 +16,7 @@ symbols of the repo).
     - `artifacts.py` — Run artifacts: atomic writes, resumable JSONL journals, and run manifests. · imported by 12
     - `cache.py` — Content-addressed local cache for corpus analysis and other expensive stage outputs. · imported by 5
     - `cli.py` — Command-line entry point (`chatbot-eval`): parses arguments and wires the components together. · imported by 9
-    - `conditions.py` — Profile-conditioned applicability rules: extracted from document chunks, validated and evaluated in code. · imported by 5
+    - `conditions.py` — Profile-conditioned applicability rules: extracted from document chunks, validated and evaluated in code. · imported by 6
     - `config.py` — Settings: a frozen `Settings` dataclass loaded from TOML, with secrets from the environment. · imported by 7
     - `contracts.py` — Small nonsecret identities for model-derived artifacts and evaluation records. · imported by 13
     - `documents.py` — Corpus ingestion: reads supported documents and splits them into structure-aware chunks. · imported by 21
@@ -43,7 +43,7 @@ symbols of the repo).
     - `report.py` — Evaluation metrics, run comparison, and the Hebrew HTML report. · imported by 6
     - `response_errors.py` — Shared helpers for answer errors: the known placeholder answer and bounded retry delays. · imported by 7
     - `results_io.py` — Import of saved chatbot answers (`.xlsx`, `.csv`, `.jsonl`) for `evaluate-file`. · imported by 3
-    - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 7
+    - `retrieval.py` — Corpus retrieval for question-targeted evidence and duplicate detection. · imported by 8
     - `review.py` — Human-readable review sidecar and lossless round-trip merge. · imported by 3
     - `topics.py` — Topic inference for saved questions without topics (`evaluate-file --infer-topics`). · imported by 2
     - `validation.py` — Validation of question sets where they enter the system (CSV, JSONL, saved-answer import). · imported by 7
@@ -91,8 +91,8 @@ symbols of the repo).
 - `chatbot_eval.artifacts` — imported by 12
 - `chatbot_eval.io` — imported by 9
 - `chatbot_eval.cli` — imported by 9
+- `chatbot_eval.retrieval` — imported by 8
 - `chatbot_eval.profiles` — imported by 8
-- `chatbot_eval.validation` — imported by 7
 
 ## Enforced import boundaries
 
